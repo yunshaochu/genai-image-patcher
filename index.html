@@ -6,11 +6,112 @@
     <title>GenAI Patcher Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              skin: {
+                fill: 'var(--color-fill)',      // Main background (App bg)
+                surface: 'var(--color-surface)', // Panels, Cards
+                border: 'var(--color-border)',   // Borders
+                text: 'var(--color-text)',       // Main text
+                muted: 'var(--color-text-muted)', // Secondary text
+                primary: 'var(--color-primary)', // Brand color
+                'primary-fg': 'var(--color-primary-fg)', // Text on primary button
+                'primary-light': 'var(--color-primary-light)', // Light bg for primary accents
+              }
+            }
+          }
+        }
+      }
+    </script>
+
     <style>
       body {
         font-family: 'Inter', sans-serif;
       }
-      /* Custom scrollbar - Light Theme */
+      
+      /* --- THEME CONFIGURATION --- */
+      /* Each theme defines the 8 core variables that drive the UI */
+
+      /* 1. Light (Professional Slate - The default you liked) */
+      :root[data-theme="light"] {
+        --color-fill: #f8fafc;       /* slate-50 */
+        --color-surface: #ffffff;    /* white */
+        --color-border: #e2e8f0;     /* slate-200 */
+        --color-text: #0f172a;       /* slate-900 */
+        --color-text-muted: #64748b; /* slate-500 */
+        --color-primary: #4f46e5;    /* indigo-600 */
+        --color-primary-fg: #ffffff;
+        --color-primary-light: #e0e7ff; /* indigo-100 */
+        
+        --checker-1: #e2e8f0;
+        --checker-2: transparent;
+      }
+
+      /* 2. Dark (Midnight Zinc - Premium Dark Mode) */
+      :root[data-theme="dark"] {
+        --color-fill: #09090b;       /* zinc-950 */
+        --color-surface: #18181b;    /* zinc-900 */
+        --color-border: #27272a;     /* zinc-800 */
+        --color-text: #f4f4f5;       /* zinc-100 */
+        --color-text-muted: #a1a1aa; /* zinc-400 */
+        --color-primary: #6366f1;    /* indigo-500 */
+        --color-primary-fg: #ffffff;
+        --color-primary-light: #2e305e; /* dark indigo tint */
+        
+        --checker-1: #27272a;
+        --checker-2: transparent;
+      }
+
+      /* 3. Ocean (Calm Blue - Sky Tones) */
+      :root[data-theme="ocean"] {
+        --color-fill: #f0f9ff;       /* sky-50 */
+        --color-surface: #ffffff;
+        --color-border: #bae6fd;     /* sky-200 */
+        --color-text: #0c4a6e;       /* sky-900 */
+        --color-text-muted: #0284c7; /* sky-600 */
+        --color-primary: #0ea5e9;    /* sky-500 */
+        --color-primary-fg: #ffffff;
+        --color-primary-light: #e0f2fe; /* sky-100 */
+
+        --checker-1: #bae6fd;
+        --checker-2: transparent;
+      }
+
+      /* 4. Rose (Soft Pink - Warm Tones) */
+      :root[data-theme="rose"] {
+        --color-fill: #fff1f2;       /* rose-50 */
+        --color-surface: #ffffff;
+        --color-border: #fecdd3;     /* rose-200 */
+        --color-text: #881337;       /* rose-900 */
+        --color-text-muted: #e11d48; /* rose-600 */
+        --color-primary: #f43f5e;    /* rose-500 */
+        --color-primary-fg: #ffffff;
+        --color-primary-light: #ffe4e6; /* rose-100 */
+
+        --checker-1: #fecdd3;
+        --checker-2: transparent;
+      }
+
+      /* 5. Forest (Clean Green - Emerald Tones) */
+      :root[data-theme="forest"] {
+        --color-fill: #ecfdf5;       /* emerald-50 */
+        --color-surface: #ffffff;
+        --color-border: #a7f3d0;     /* emerald-200 */
+        --color-text: #064e3b;       /* emerald-900 */
+        --color-text-muted: #059669; /* emerald-600 */
+        --color-primary: #10b981;    /* emerald-500 */
+        --color-primary-fg: #ffffff;
+        --color-primary-light: #d1fae5; /* emerald-100 */
+
+        --checker-1: #a7f3d0;
+        --checker-2: transparent;
+      }
+
+      /* Utilities */
       ::-webkit-scrollbar {
         width: 6px;
         height: 6px;
@@ -19,21 +120,17 @@
         background: transparent; 
       }
       ::-webkit-scrollbar-thumb {
-        background: #cbd5e1; /* slate-300 */
+        background: var(--color-border);
         border-radius: 3px;
       }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #94a3b8; /* slate-400 */
-      }
-
-      /* Transparency Checkerboard Pattern - Light */
+      
       .bg-checkerboard {
-        background-color: #f8fafc; /* slate-50 */
+        background-color: var(--color-fill);
         background-image: 
-          linear-gradient(45deg, #e2e8f0 25%, transparent 25%), 
-          linear-gradient(-45deg, #e2e8f0 25%, transparent 25%), 
-          linear-gradient(45deg, transparent 75%, #e2e8f0 75%), 
-          linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+          linear-gradient(45deg, var(--checker-1) 25%, var(--checker-2) 25%), 
+          linear-gradient(-45deg, var(--checker-1) 25%, var(--checker-2) 25%), 
+          linear-gradient(45deg, var(--checker-2) 75%, var(--checker-1) 75%), 
+          linear-gradient(-45deg, var(--checker-2) 75%, var(--checker-1) 75%);
         background-size: 20px 20px;
         background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
       }
@@ -51,7 +148,7 @@
 </script>
 <link rel="stylesheet" href="/index.css">
 </head>
-  <body class="bg-slate-50 text-slate-800 h-screen w-screen overflow-hidden selection:bg-indigo-100 selection:text-indigo-900">
+  <body class="bg-skin-fill text-skin-text h-screen w-screen overflow-hidden selection:bg-skin-primary-light selection:text-skin-primary transition-colors duration-300">
     <div id="root" class="h-full w-full"></div>
   <script type="module" src="/index.tsx"></script>
 </body>

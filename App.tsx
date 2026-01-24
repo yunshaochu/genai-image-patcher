@@ -4,14 +4,17 @@ import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import { loadImage, cropRegion, stitchImage, readFileAsDataURL, naturalSortCompare } from './services/imageUtils';
 import { generateRegionEdit } from './services/aiService';
+import { t } from './services/translations';
 
 const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
-const CONFIG_STORAGE_KEY = 'genai_patcher_config_v1';
+const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3'; // Bump version for new language field
 
 const DEFAULT_CONFIG: AppConfig = {
   prompt: DEFAULT_PROMPT,
   executionMode: 'concurrent',
   concurrencyLimit: 3,
+  theme: 'light',
+  language: 'zh', // Default to Chinese
   
   // Default to OpenAI as requested
   provider: 'openai',
@@ -65,7 +68,9 @@ export default function App() {
       const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
       if (saved) {
         // Merge saved config with default config to handle potential new fields in future updates
-        return { ...DEFAULT_CONFIG, ...JSON.parse(saved) };
+        const parsed = JSON.parse(saved);
+        // Ensure language is set if migrating from old config
+        return { ...DEFAULT_CONFIG, ...parsed, language: parsed.language || 'zh' };
       }
     } catch (e) {
       console.error("Failed to load config from localStorage", e);
@@ -83,6 +88,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
   }, [config]);
+
+  // Apply Theme to Document Element
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', config.theme || 'light');
+  }, [config.theme]);
 
   const selectedImage = images.find((img) => img.id === selectedImageId);
 
@@ -319,8 +329,12 @@ export default function App() {
       }
     : null;
 
+  // Localized status message
+  const statusKey = processingState.toLowerCase() as keyof typeof import('./services/translations').translations['en'];
+  const statusText = t(config.language, statusKey);
+
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-800 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+    <div className="flex h-screen bg-skin-fill text-skin-text font-sans selection:bg-skin-primary-light selection:text-skin-primary transition-colors duration-300">
       <Sidebar
         config={config}
         setConfig={setConfig}
@@ -334,35 +348,35 @@ export default function App() {
         onDownload={handleDownload}
       />
 
-      <div className="flex-1 flex flex-col relative bg-slate-50">
+      <div className="flex-1 flex flex-col relative bg-skin-fill transition-colors duration-300">
         {/* Header/Status Bar */}
-        <div className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-10">
+        <div className="h-16 bg-skin-surface border-b border-skin-border flex items-center justify-between px-6 shadow-sm z-10 transition-colors duration-300">
             <div className="flex items-center gap-6">
               <div className="flex flex-col">
-                 <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                 <div className="text-sm font-semibold text-skin-text flex items-center gap-2">
                     {selectedImage ? (
                         <>
                            <span>{selectedImage.file.name}</span>
-                           <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500 font-mono border border-slate-200">
+                           <span className="px-1.5 py-0.5 rounded text-[10px] bg-skin-fill text-skin-muted font-mono border border-skin-border">
                                {selectedImage.originalWidth}x{selectedImage.originalHeight}
                            </span>
                         </>
-                    ) : 'No image selected'}
+                    ) : t(config.language, 'idle')}
                  </div>
-                 <div className="text-xs text-slate-500">
-                    {selectedImage ? `${selectedImage.regions.length} regions defined` : 'Select an image to begin editing'}
+                 <div className="text-xs text-skin-muted">
+                    {selectedImage ? `${selectedImage.regions.length} regions` : 'Select an image'}
                  </div>
               </div>
               
               {/* View Toggle */}
               {selectedImage?.finalResultUrl && (
-                <div className="flex bg-slate-100 rounded-lg p-1 border border-slate-200">
+                <div className="flex bg-skin-fill rounded-lg p-1 border border-skin-border">
                   <button
                     onClick={() => setViewMode('original')}
                     className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
                       viewMode === 'original' 
-                        ? 'bg-white text-slate-800 shadow-sm border border-slate-200' 
-                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
+                        ? 'bg-skin-surface text-skin-text shadow-sm border border-skin-border' 
+                        : 'text-skin-muted hover:text-skin-text hover:bg-skin-surface/50'
                     }`}
                   >
                     Original
@@ -372,7 +386,7 @@ export default function App() {
                     className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
                       viewMode === 'result' 
                         ? 'bg-emerald-50 text-emerald-700 shadow-sm border border-emerald-200' 
-                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
+                        : 'text-skin-muted hover:text-skin-text hover:bg-skin-surface/50'
                     }`}
                   >
                     Result
@@ -383,7 +397,7 @@ export default function App() {
 
             <div className="flex items-center gap-4">
               {errorMsg && (
-                  <div className="flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-1.5 rounded-full border border-red-200">
+                  <div className="flex items-center gap-2 text-rose-600 text-xs bg-rose-50 px-3 py-1.5 rounded-full border border-rose-200">
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                       {errorMsg}
                   </div>
@@ -392,20 +406,21 @@ export default function App() {
         </div>
 
         {/* Main Workspace */}
-        <div className="flex-1 relative bg-checkerboard overflow-hidden">
+        <div className="flex-1 relative bg-checkerboard overflow-hidden transition-colors duration-300">
           {displayImage ? (
             <EditorCanvas
               image={displayImage}
               onUpdateRegions={handleUpdateRegions}
               disabled={viewMode === 'result' || (processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE)}
+              language={config.language}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400">
-              <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mb-6 shadow-sm border border-slate-200 rotate-3">
-                 <svg className="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+            <div className="flex flex-col items-center justify-center h-full text-skin-muted">
+              <div className="w-20 h-20 bg-skin-surface rounded-2xl flex items-center justify-center mb-6 shadow-sm border border-skin-border rotate-3 transition-colors duration-300">
+                 <svg className="w-10 h-10 text-skin-muted/50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
               </div>
-              <p className="text-lg font-medium text-slate-600">Ready to Create</p>
-              <p className="text-sm mt-1">Upload images via the sidebar or paste from clipboard (Ctrl+V)</p>
+              <p className="text-lg font-medium text-skin-text">{t(config.language, 'readyToCreate')}</p>
+              <p className="text-sm mt-1 text-skin-muted">{t(config.language, 'uploadHint')}</p>
             </div>
           )}
         </div>

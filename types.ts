@@ -21,6 +21,10 @@ export interface UploadedImage {
 
 export type AiProvider = 'openai' | 'gemini';
 
+export type ThemeType = 'light' | 'dark' | 'ocean' | 'rose' | 'forest';
+
+export type Language = 'zh' | 'en';
+
 export interface AppConfig {
   prompt: string;
   // Execution Mode is now effectively handled by concurrencyLimit
@@ -28,6 +32,10 @@ export interface AppConfig {
   executionMode: 'concurrent' | 'serial'; 
   concurrencyLimit: number;
   
+  // Theme & Language
+  theme: ThemeType;
+  language: Language;
+
   // Provider Settings
   provider: AiProvider;
   

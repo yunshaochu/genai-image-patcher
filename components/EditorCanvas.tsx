@@ -1,13 +1,15 @@
 import React, { useRef, useState, useEffect, MouseEvent } from 'react';
-import { UploadedImage, Region } from '../types';
+import { UploadedImage, Region, Language } from '../types';
+import { t } from '../services/translations';
 
 interface EditorCanvasProps {
   image: UploadedImage;
   onUpdateRegions: (imageId: string, regions: Region[]) => void;
   disabled?: boolean;
+  language: Language;
 }
 
-const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, disabled }) => {
+const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, disabled, language }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
@@ -88,7 +90,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         <img
           src={image.previewUrl}
           alt="Workarea"
-          className="max-h-[85vh] max-w-full block object-contain pointer-events-none rounded bg-white shadow-sm ring-1 ring-slate-900/5"
+          className="max-h-[85vh] max-w-full block object-contain pointer-events-none rounded bg-skin-surface shadow-sm ring-1 ring-skin-border"
           draggable={false}
         />
 
@@ -102,8 +104,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
                 : region.status === 'processing' 
                   ? 'border-2 border-amber-500 bg-amber-500/10 animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.3)]' 
                   : region.status === 'failed'
-                    ? 'border-2 border-red-500 bg-red-500/10'
-                    : 'border-2 border-indigo-500 bg-indigo-500/10 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
+                    ? 'border-2 border-rose-500 bg-rose-500/10'
+                    : 'border-2 border-skin-primary bg-skin-primary/10 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
             }`}
             style={{
               left: `${region.x}%`,
@@ -119,7 +121,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
                   e.stopPropagation();
                   removeRegion(region.id);
                 }}
-                className="absolute -top-3 -right-3 w-6 h-6 bg-white text-rose-500 border border-slate-200 rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-rose-50 z-10"
+                className="absolute -top-3 -right-3 w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-rose-50 z-10"
               >
                 ✕
               </button>
@@ -132,7 +134,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
                  region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
                  'bg-rose-100/90 text-rose-700 border-rose-200'
               }`}>
-                {region.status.toUpperCase()}
+                {t(language, `status_${region.status}` as any)}
               </div>
             )}
           </div>
@@ -141,7 +143,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         {/* Currently Drawing Rect */}
         {isDrawing && currentRect && (
           <div
-            className="absolute border-2 border-indigo-500 bg-indigo-500/20 pointer-events-none shadow-[0_0_15px_rgba(99,102,241,0.2)]"
+            className="absolute border-2 border-skin-primary bg-skin-primary/20 pointer-events-none shadow-[0_0_15px_rgba(99,102,241,0.2)]"
             style={{
               left: `${currentRect.x}%`,
               top: `${currentRect.y}%`,
