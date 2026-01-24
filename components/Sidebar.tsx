@@ -312,6 +312,14 @@ const Sidebar: React.FC<SidebarProps> = ({
   const statusKey = processingState.toLowerCase() as any;
   const processingText = isProcessing ? t(lang, statusKey) : '';
 
+  // Dummy region for Full Image Mode (Manual)
+  const fullImageDummyRegion: Region = {
+    id: 'manual-full-image',
+    x: 0, y: 0, width: 100, height: 100,
+    type: 'rect',
+    status: 'pending'
+  };
+
   return (
     <>
       <div className="w-80 h-full bg-skin-surface border-r border-skin-border flex flex-col shadow-xl z-20 transition-colors duration-300">
@@ -701,13 +709,13 @@ const Sidebar: React.FC<SidebarProps> = ({
                 isOpen={sectionsState.manual} 
                 onToggle={() => toggleSection('manual')}
               >
-                {!currentImage || currentImage.regions.length === 0 ? (
+                {(!currentImage || (currentImage.regions.length === 0 && !config.processFullImageIfNoRegions)) ? (
                   <div className="text-xs text-skin-muted text-center py-4 italic">
                     {t(lang, 'noRegions')}
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {currentImage.regions.map(r => (
+                    {currentImage && currentImage.regions.map(r => (
                       <ManualPatchRow 
                         key={r.id} 
                         region={r} 
@@ -716,6 +724,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                         lang={lang}
                       />
                     ))}
+                    {/* Render Full Image Manual Row if configured */}
+                    {currentImage && config.processFullImageIfNoRegions && currentImage.regions.length === 0 && (
+                       <ManualPatchRow 
+                        key="manual-full-image"
+                        region={fullImageDummyRegion}
+                        image={currentImage}
+                        onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, fullImageDummyRegion.id, base64)}
+                        lang={lang}
+                      />
+                    )}
                   </div>
                 )}
               </Section>

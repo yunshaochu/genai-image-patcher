@@ -87,6 +87,13 @@ export default function App() {
 
   const selectedImage = images.find((img) => img.id === selectedImageId);
 
+  // Auto-switch view mode if result doesn't exist for the selected image
+  useEffect(() => {
+    if (selectedImage && !selectedImage.finalResultUrl && viewMode === 'result') {
+      setViewMode('original');
+    }
+  }, [selectedImageId, selectedImage?.finalResultUrl, viewMode]);
+
   const processFiles = async (fileList: File[]) => {
     const newImages: UploadedImage[] = [];
     const imageFiles = fileList.filter(f => f.type.startsWith('image/'));
@@ -187,9 +194,27 @@ export default function App() {
     setImages(prev => {
         const nextState = prev.map(img => {
             if (img.id !== imageId) return img;
-            const updatedRegions = img.regions.map(r => 
-                r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
-            );
+            
+            let updatedRegions: Region[];
+            
+            // Special Case: User pasted into the "Full Image" placeholder in Manual Mode
+            if (regionId === 'manual-full-image') {
+               const fullRegion: Region = {
+                   id: crypto.randomUUID(),
+                   x: 0, y: 0, width: 100, height: 100,
+                   type: 'rect',
+                   status: 'completed',
+                   processedImageBase64: base64
+               };
+               // Add this new region to the image
+               updatedRegions = [...img.regions, fullRegion];
+            } else {
+               // Normal Case: Update existing region
+               updatedRegions = img.regions.map(r => 
+                 r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
+               );
+            }
+
             return { ...img, regions: updatedRegions };
         });
         
