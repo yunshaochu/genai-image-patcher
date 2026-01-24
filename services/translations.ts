@@ -1,4 +1,9 @@
 
+
+
+
+
+
 import { Language } from "../types";
 
 export const translations = {
@@ -13,12 +18,16 @@ export const translations = {
     // Gallery
     galleryTitle: "图库",
     selectToEdit: "点击选择编辑",
+    deleteImage: "删除图片",
     downloadZip: "下载压缩包",
     zipping: "压缩中...",
     
     // Prompt
     promptTitle: "提示词",
+    promptGlobalLabel: "全局默认提示词",
+    promptSpecificLabel: "当前图片专用提示词",
     promptPlaceholder: "描述你想要修改的内容 (例如: 去除水印, 换成蓝天)...",
+    promptSpecificPlaceholder: "在此追加针对本图的额外细节描述...",
     
     // Settings
     settingsTitle: "连接设置",
@@ -51,6 +60,8 @@ export const translations = {
     modeConcurrent: "并发执行 (快)",
     modeSerial: "串行执行 (稳)",
     concurrency: "并发数量",
+    processFullImage: "无选区时处理全图",
+    processFullImageDesc: "如果图片没有框选区域，则自动发送整张图片。",
     
     // Preview
     previewTitle: "补丁预览",
@@ -99,12 +110,16 @@ export const translations = {
     // Gallery
     galleryTitle: "Gallery",
     selectToEdit: "Select to edit",
+    deleteImage: "Delete image",
     downloadZip: "Download Zip",
     zipping: "Zipping...",
     
     // Prompt
     promptTitle: "Prompt",
+    promptGlobalLabel: "Global Default Prompt",
+    promptSpecificLabel: "Current Image Prompt",
     promptPlaceholder: "Describe the edit...",
+    promptSpecificPlaceholder: "Append specific details to global prompt...",
     
     // Settings
     settingsTitle: "Connection Settings",
@@ -137,6 +152,8 @@ export const translations = {
     modeConcurrent: "Concurrent",
     modeSerial: "Serial",
     concurrency: "Concurrency Limit",
+    processFullImage: "Process Full Image if Empty",
+    processFullImageDesc: "If no regions are selected, the entire image will be sent to AI.",
     
     // Preview
     previewTitle: "Patch Previews",

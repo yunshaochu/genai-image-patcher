@@ -18,6 +18,8 @@ interface SidebarProps {
   currentImage?: UploadedImage;
   onDownload: () => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
+  onUpdateImagePrompt: (imageId: string, prompt: string) => void;
+  onDeleteImage: (imageId: string) => void;
 }
 
 // Collapsible Section Component
@@ -187,7 +189,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   processingState,
   currentImage,
   onDownload,
-  onManualPatchUpdate
+  onManualPatchUpdate,
+  onUpdateImagePrompt,
+  onDeleteImage
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -280,10 +284,29 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
+  // --- PROCESSING PERMISSION LOGIC ---
   const hasValidKey = config.provider === 'openai' ? !!config.openaiApiKey : !!config.geminiApiKey;
   
-  // Can process checks
-  const canProcessApi = images.length > 0 && hasValidKey && (processAll ? images.some(i => i.regions.length > 0) : currentImage?.regions.length);
+  const targetImageExists = processAll ? images.length > 0 : !!currentImage;
+  
+  const hasRegions = processAll 
+    ? images.some(i => i.regions.length > 0) 
+    : (currentImage?.regions.length || 0) > 0;
+  
+  const canProceedWithEmptyRegions = config.processFullImageIfNoRegions === true;
+
+  const canProcessApi = 
+    targetImageExists && 
+    hasValidKey && 
+    (hasRegions || canProceedWithEmptyRegions);
+    
+  const getDisabledReason = () => {
+      if (!targetImageExists) return "No image selected";
+      if (!hasValidKey) return "Missing API Key (Check Settings)";
+      if (!hasRegions && !canProceedWithEmptyRegions) return "No regions selected";
+      return "";
+  };
+
   const isManualMode = config.processingMode === 'manual';
 
   const statusKey = processingState.toLowerCase() as any;
@@ -358,7 +381,8 @@ const Sidebar: React.FC<SidebarProps> = ({
               >
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-[10px] text-skin-muted">{t(lang, 'selectToEdit')}</span>
-                  {processedImagesCount > 1 && (
+                  {/* CHANGED: Show button if ANY image is processed (>0) */}
+                  {processedImagesCount > 0 && (
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleDownloadAllZip(); }}
                       disabled={isZipping || isProcessing}
@@ -382,6 +406,20 @@ const Sidebar: React.FC<SidebarProps> = ({
                     >
                       <img src={img.previewUrl} alt="thumb" className="w-full h-full object-cover bg-skin-fill" />
                       
+                      {/* Delete Button */}
+                      {!isProcessing && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteImage(img.id);
+                          }}
+                          className="absolute top-0.5 left-0.5 w-5 h-5 bg-black/40 hover:bg-rose-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10 backdrop-blur-[1px]"
+                          title={t(lang, 'deleteImage')}
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                      )}
+
                       <div className="absolute top-0.5 right-0.5 flex gap-0.5">
                         {img.regions.some(r => r.status === 'processing') && (
                            <span className="flex h-2 w-2">
@@ -439,13 +477,48 @@ const Sidebar: React.FC<SidebarProps> = ({
               <>
                 {/* Section: Prompt */}
                 <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
-                  <textarea
-                      value={config.prompt}
-                      onChange={(e) => setConfig({ ...config, prompt: e.target.value })}
-                      className="w-full bg-skin-fill border border-skin-border rounded-lg px-3 py-2 text-sm text-skin-text focus:outline-none focus:border-skin-primary focus:bg-skin-surface focus:ring-1 focus:ring-skin-primary/20 min-h-[80px] resize-y transition-all placeholder:text-skin-muted disabled:opacity-50"
-                      placeholder={t(lang, 'promptPlaceholder')}
-                      disabled={isProcessing}
-                    />
+                  <div className="space-y-3">
+                    {/* Global Prompt */}
+                    <div className="space-y-1">
+                      {currentImage && (
+                        <div className="flex items-center gap-1.5 px-1">
+                          <svg className="w-3 h-3 text-skin-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                          <label className="text-[10px] font-bold text-skin-muted uppercase tracking-wider">{t(lang, 'promptGlobalLabel')}</label>
+                        </div>
+                      )}
+                      <textarea
+                        value={config.prompt}
+                        onChange={(e) => setConfig({ ...config, prompt: e.target.value })}
+                        className="w-full bg-skin-fill border border-skin-border rounded-lg px-3 py-2 text-sm text-skin-text focus:outline-none focus:border-skin-primary focus:bg-skin-surface focus:ring-1 focus:ring-skin-primary/20 min-h-[60px] resize-y transition-all placeholder:text-skin-muted disabled:opacity-50"
+                        placeholder={t(lang, 'promptPlaceholder')}
+                        disabled={isProcessing}
+                      />
+                    </div>
+
+                    {/* Specific Prompt for Current Image */}
+                    {currentImage && (
+                      <div className="space-y-1 pt-2 border-t border-skin-border/50 animate-in fade-in slide-in-from-top-2">
+                        <div className="flex items-center justify-between px-1">
+                          <div className="flex items-center gap-1.5">
+                            <svg className="w-3 h-3 text-skin-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                            <label className="text-[10px] font-bold text-skin-primary uppercase tracking-wider truncate max-w-[150px]" title={currentImage.file.name}>
+                              {currentImage.file.name}
+                            </label>
+                          </div>
+                          {currentImage.customPrompt && (
+                             <button onClick={() => onUpdateImagePrompt(currentImage.id, '')} className="text-[9px] text-skin-muted hover:text-rose-500">Clear</button>
+                          )}
+                        </div>
+                        <textarea
+                          value={currentImage.customPrompt || ''}
+                          onChange={(e) => onUpdateImagePrompt(currentImage.id, e.target.value)}
+                          className="w-full bg-skin-surface/50 border border-skin-border/80 border-dashed focus:border-solid rounded-lg px-3 py-2 text-sm text-skin-text focus:outline-none focus:border-skin-primary focus:bg-skin-surface focus:ring-1 focus:ring-skin-primary/20 min-h-[60px] resize-y transition-all placeholder:text-skin-muted/70 disabled:opacity-50"
+                          placeholder={t(lang, 'promptSpecificPlaceholder')}
+                          disabled={isProcessing}
+                        />
+                      </div>
+                    )}
+                  </div>
                 </Section>
 
                 {/* Section: AI Configuration */}
@@ -569,34 +642,54 @@ const Sidebar: React.FC<SidebarProps> = ({
                 
                 {/* Section: Execution Options */}
                 <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
-                  <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-1">
-                          <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'mode')}</label>
-                          <select
-                            value={config.executionMode}
-                            onChange={(e) => handleConfigChange('executionMode', e.target.value)}
-                            className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
-                            disabled={isProcessing}
-                          >
-                            <option value="concurrent">{t(lang, 'modeConcurrent')}</option>
-                            <option value="serial">{t(lang, 'modeSerial')}</option>
-                          </select>
-                      </div>
-                      {config.executionMode === 'concurrent' && (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
-                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'concurrency')}</label>
-                            <input
-                              type="number"
-                              min="1"
-                              max="50"
-                              value={config.concurrencyLimit}
-                              onChange={(e) => handleConfigChange('concurrencyLimit', parseInt(e.target.value) || 1)}
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'mode')}</label>
+                            <select
+                              value={config.executionMode}
+                              onChange={(e) => handleConfigChange('executionMode', e.target.value)}
                               className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
                               disabled={isProcessing}
-                            />
+                            >
+                              <option value="concurrent">{t(lang, 'modeConcurrent')}</option>
+                              <option value="serial">{t(lang, 'modeSerial')}</option>
+                            </select>
                         </div>
-                      )}
+                        {config.executionMode === 'concurrent' && (
+                          <div className="space-y-1">
+                              <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'concurrency')}</label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="50"
+                                value={config.concurrencyLimit}
+                                onChange={(e) => handleConfigChange('concurrencyLimit', parseInt(e.target.value) || 1)}
+                                className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                disabled={isProcessing}
+                              />
+                          </div>
+                        )}
                     </div>
+                    
+                    {/* Full Image Toggle */}
+                    <div className="flex items-start gap-2 pt-2 border-t border-skin-border/50">
+                      <div className="relative flex items-center pt-1">
+                        <input
+                          type="checkbox"
+                          checked={config.processFullImageIfNoRegions}
+                          onChange={(e) => handleConfigChange('processFullImageIfNoRegions', e.target.checked)}
+                          className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-skin-muted bg-skin-fill checked:border-skin-primary checked:bg-skin-primary focus:outline-none transition-all"
+                          disabled={isProcessing}
+                        />
+                        <svg className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-[20%] w-3 h-3 text-skin-primary-fg opacity-0 peer-checked:opacity-100 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
+                      </div>
+                      <div>
+                        <span className="text-xs font-semibold text-skin-text block">{t(lang, 'processFullImage')}</span>
+                        <p className="text-[10px] text-skin-muted leading-tight">{t(lang, 'processFullImageDesc')}</p>
+                      </div>
+                    </div>
+                  </div>
                 </Section>
               </>
             )}
@@ -684,14 +777,29 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </span>
                   </label>
 
-                  <button
-                    onClick={() => onProcess(processAll)}
-                    disabled={!canProcessApi}
-                    className="w-full py-3 bg-skin-primary hover:opacity-90 disabled:bg-skin-border disabled:text-skin-muted text-skin-primary-fg rounded-xl font-semibold text-sm transition-all shadow-md shadow-skin-primary/30 active:scale-[0.98] flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                    {processAll ? t(lang, 'generateAll') : t(lang, 'generate')}
-                  </button>
+                  {/* Wrapped button for proper tooltip behavior on disabled state */}
+                  <div title={!canProcessApi ? getDisabledReason() : ''} className="w-full">
+                    <button
+                      onClick={() => onProcess(processAll)}
+                      disabled={!canProcessApi}
+                      className="w-full py-3 bg-skin-primary hover:opacity-90 disabled:bg-skin-border disabled:text-skin-muted text-skin-primary-fg rounded-xl font-semibold text-sm transition-all shadow-md shadow-skin-primary/30 active:scale-[0.98] flex items-center justify-center gap-2 pointer-events-auto"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                      {processAll ? t(lang, 'generateAll') : t(lang, 'generate')}
+                    </button>
+                  </div>
+                  
+                  {/* ADDED: Batch Download Button in Footer */}
+                  {processedImagesCount > 1 && (
+                      <button
+                        onClick={handleDownloadAllZip}
+                        disabled={isZipping}
+                        className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold text-sm transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2"
+                      >
+                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        {isZipping ? t(lang, 'zipping') : t(lang, 'downloadZip')} ({processedImagesCount})
+                      </button>
+                   )}
                 </>
               )}
               

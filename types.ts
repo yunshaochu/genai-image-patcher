@@ -18,6 +18,7 @@ export interface UploadedImage {
   originalHeight: number;
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
+  customPrompt?: string; // Optional: Image-specific prompt overrides global prompt
 }
 
 export type AiProvider = 'openai' | 'gemini';
@@ -35,6 +36,9 @@ export interface AppConfig {
   executionMode: 'concurrent' | 'serial'; 
   concurrencyLimit: number;
   
+  // Advanced: If an image has no regions, process the whole image
+  processFullImageIfNoRegions: boolean;
+
   // Workflow Mode
   processingMode: ProcessingMode;
   
