@@ -77,6 +77,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
     );
   };
 
+  const resetRegion = (regionId: string) => {
+    if (disabled) return;
+    const newRegions = image.regions.map((r) => {
+      if (r.id === regionId) {
+        // Reset to pending and clear processed data
+        return { ...r, status: 'pending', processedImageBase64: undefined } as Region;
+      }
+      return r;
+    });
+    onUpdateRegions(image.id, newRegions);
+  };
+
   return (
     <div className="relative w-full h-full flex items-center justify-center p-8 overflow-hidden select-none">
       <div 
@@ -114,22 +126,37 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
               height: `${region.height}%`,
             }}
           >
-            {/* Remove Button */}
+            {/* Remove Button (Top Right) */}
             {!disabled && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   removeRegion(region.id);
                 }}
-                className="absolute -top-3 -right-3 w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-rose-50 z-10"
+                className="absolute -top-3 -right-3 w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-rose-50 z-20"
+                title="Delete Region"
               >
                 ✕
               </button>
             )}
+
+            {/* Reset/Redo Button (Top Left) - Only for Completed/Failed */}
+            {!disabled && (region.status === 'completed' || region.status === 'failed') && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resetRegion(region.id);
+                }}
+                className="absolute -top-3 -left-3 w-6 h-6 bg-skin-surface text-skin-primary border border-skin-border rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-skin-fill z-20"
+                title="Reset / Redo"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              </button>
+            )}
             
-            {/* Status Badge - refined */}
+            {/* Status Badge */}
             {region.status !== 'pending' && (
-              <div className={`absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded backdrop-blur-md shadow-sm border ${
+              <div className={`absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none ${
                  region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
                  region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
                  'bg-rose-100/90 text-rose-700 border-rose-200'

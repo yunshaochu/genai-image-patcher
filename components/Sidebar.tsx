@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
+
+import React, { useState, useEffect } from 'react';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
+import { cropRegion, loadImage } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 
@@ -15,6 +17,7 @@ interface SidebarProps {
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
   onDownload: () => void;
+  onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
 }
 
 // Collapsible Section Component
@@ -49,6 +52,122 @@ const Section: React.FC<{
   );
 };
 
+// Component for a single Manual Patch Row
+const ManualPatchRow: React.FC<{
+  region: Region;
+  image: UploadedImage;
+  onPatchUpdate: (base64: string) => void;
+  lang: 'zh' | 'en';
+}> = ({ region, image, onPatchUpdate, lang }) => {
+  const [sourceCrop, setSourceCrop] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const generateCrop = async () => {
+      try {
+        const imgEl = await loadImage(image.previewUrl);
+        const crop = await cropRegion(imgEl, region);
+        if (active) setSourceCrop(crop);
+      } catch (e) {
+        console.error("Failed to crop for manual view", e);
+      }
+    };
+    generateCrop();
+    return () => { active = false; };
+  }, [image.previewUrl, region]);
+
+  const handleCopy = async () => {
+    if (!sourceCrop) return;
+    try {
+      const response = await fetch(sourceCrop);
+      const blob = await response.blob();
+      await navigator.clipboard.write([
+        new ClipboardItem({ [blob.type]: blob })
+      ]);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      console.error("Copy failed", e);
+      alert("Browser blocked copy. Please right click image to copy.");
+    }
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    // CRITICAL: Stop propagation so App.tsx global listener doesn't trigger file upload
+    e.stopPropagation();
+    e.preventDefault();
+
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+             if (evt.target?.result) {
+                onPatchUpdate(evt.target.result as string);
+             }
+          };
+          reader.readAsDataURL(file);
+          return;
+        }
+      }
+    }
+  };
+
+  return (
+    <div className="flex items-stretch gap-2 bg-skin-fill/30 p-2 rounded-lg border border-skin-border">
+      {/* Source Side */}
+      <div className="flex-1 flex flex-col gap-1 items-center">
+         <span className="text-[9px] text-skin-muted uppercase">{t(lang, 'sourceCrop')}</span>
+         <div className="w-16 h-16 bg-checkerboard rounded border border-skin-border overflow-hidden relative group">
+            {sourceCrop ? (
+              <img src={sourceCrop} className="w-full h-full object-contain" />
+            ) : (
+              <div className="w-full h-full animate-pulse bg-skin-fill"></div>
+            )}
+         </div>
+         <button 
+           onClick={handleCopy}
+           disabled={!sourceCrop}
+           className="text-[9px] px-2 py-0.5 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors w-full text-center"
+         >
+           {copied ? t(lang, 'copied') : t(lang, 'copyCrop')}
+         </button>
+      </div>
+
+      <div className="flex items-center text-skin-muted">
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path></svg>
+      </div>
+
+      {/* Target Side */}
+      <div 
+        className="flex-1 flex flex-col gap-1 items-center"
+      >
+         <span className="text-[9px] text-skin-muted uppercase">{t(lang, 'patchZone')}</span>
+         <div 
+           className={`w-16 h-16 bg-skin-surface rounded border-2 border-dashed flex items-center justify-center overflow-hidden cursor-pointer outline-none transition-all ${
+             region.status === 'completed' ? 'border-emerald-400 bg-emerald-50/50' : 'border-skin-border hover:border-skin-primary focus:border-skin-primary focus:ring-1 focus:ring-skin-primary/50'
+           }`}
+           tabIndex={0}
+           onPaste={handlePaste}
+           title={t(lang, 'pasteHint')}
+         >
+            {region.processedImageBase64 ? (
+              <img src={region.processedImageBase64} className="w-full h-full object-contain" />
+            ) : (
+              <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
+            )}
+         </div>
+         <div className={`text-[9px] font-bold ${region.status === 'completed' ? 'text-emerald-500' : 'text-skin-muted'}`}>
+            {region.status === 'completed' ? t(lang, 'status_completed') : t(lang, 'status_pending')}
+         </div>
+      </div>
+    </div>
+  );
+};
+
 const THEMES: { id: ThemeType; label: string; bg: string; ring: string }[] = [
   { id: 'light', label: 'Light', bg: 'bg-slate-100', ring: 'ring-slate-400' },
   { id: 'dark', label: 'Dark', bg: 'bg-zinc-800', ring: 'ring-zinc-500' },
@@ -67,7 +186,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onProcess,
   processingState,
   currentImage,
-  onDownload
+  onDownload,
+  onManualPatchUpdate
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -78,9 +198,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   // Collapse States
   const [sectionsState, setSectionsState] = useState({
     gallery: true,
+    workflow: true,
     prompt: true,
     settings: false, 
-    execution: false 
+    execution: false,
+    manual: true
   });
 
   const toggleSection = (key: keyof typeof sectionsState) => {
@@ -159,9 +281,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const hasValidKey = config.provider === 'openai' ? !!config.openaiApiKey : !!config.geminiApiKey;
-  const canProcess = images.length > 0 && hasValidKey && (processAll ? images.some(i => i.regions.length > 0) : currentImage?.regions.length);
+  
+  // Can process checks
+  const canProcessApi = images.length > 0 && hasValidKey && (processAll ? images.some(i => i.regions.length > 0) : currentImage?.regions.length);
+  const isManualMode = config.processingMode === 'manual';
 
-  // Status text for the footer
   const statusKey = processingState.toLowerCase() as any;
   const processingText = isProcessing ? t(lang, statusKey) : '';
 
@@ -183,14 +307,15 @@ const Sidebar: React.FC<SidebarProps> = ({
             {/* Language Toggle */}
             <button 
               onClick={() => handleConfigChange('language', config.language === 'zh' ? 'en' : 'zh')}
-              className="text-[10px] font-bold text-skin-muted hover:text-skin-primary border border-skin-border px-2 py-1 rounded hover:bg-skin-fill transition-colors"
+              disabled={isProcessing}
+              className="text-[10px] font-bold text-skin-muted hover:text-skin-primary border border-skin-border px-2 py-1 rounded hover:bg-skin-fill transition-colors disabled:opacity-50"
             >
               {config.language === 'zh' ? 'EN' : '中文'}
             </button>
           </div>
 
           {/* High-End Theme Selector */}
-          <div className="flex items-center justify-between bg-skin-fill px-2 py-1.5 rounded-full border border-skin-border">
+          <div className={`flex items-center justify-between bg-skin-fill px-2 py-1.5 rounded-full border border-skin-border ${isProcessing ? 'pointer-events-none opacity-50' : ''}`}>
               {THEMES.map((theme) => (
                   <button
                       key={theme.id}
@@ -209,15 +334,15 @@ const Sidebar: React.FC<SidebarProps> = ({
         <div className="flex-1 overflow-y-auto custom-scrollbar bg-skin-fill/30">
           <div className="p-4 space-y-6">
             
-            {/* Upload Section - Always visible */}
+            {/* Upload Section */}
             <div className="grid grid-cols-2 gap-3">
-              <label className="flex flex-col items-center justify-center py-4 bg-skin-surface border border-skin-border rounded-xl cursor-pointer hover:border-skin-primary hover:shadow-md transition-all group">
+              <label className={`flex flex-col items-center justify-center py-4 bg-skin-surface border border-skin-border rounded-xl cursor-pointer hover:border-skin-primary hover:shadow-md transition-all group ${isProcessing ? 'pointer-events-none opacity-50' : ''}`}>
                 <svg className="w-6 h-6 text-skin-muted group-hover:text-skin-primary mb-2 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
                 <span className="text-[10px] font-bold text-skin-muted group-hover:text-skin-text">{t(lang, 'uploadFiles')}</span>
                 <input type="file" className="hidden" multiple accept="image/*" onChange={onUpload} disabled={isProcessing} />
               </label>
 
-              <label className="flex flex-col items-center justify-center py-4 bg-skin-surface border border-skin-border rounded-xl cursor-pointer hover:border-skin-primary hover:shadow-md transition-all group">
+              <label className={`flex flex-col items-center justify-center py-4 bg-skin-surface border border-skin-border rounded-xl cursor-pointer hover:border-skin-primary hover:shadow-md transition-all group ${isProcessing ? 'pointer-events-none opacity-50' : ''}`}>
                 <svg className="w-6 h-6 text-skin-muted group-hover:text-skin-primary mb-2 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                 <span className="text-[10px] font-bold text-skin-muted group-hover:text-skin-text">{t(lang, 'uploadFolder')}</span>
                 <input type="file" className="hidden" multiple accept="image/*" {...{ webkitdirectory: "", directory: "" } as any} onChange={onUpload} disabled={isProcessing} />
@@ -236,33 +361,40 @@ const Sidebar: React.FC<SidebarProps> = ({
                   {processedImagesCount > 1 && (
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleDownloadAllZip(); }}
-                      disabled={isZipping}
+                      disabled={isZipping || isProcessing}
                       className="text-[10px] text-skin-primary font-medium hover:underline disabled:opacity-50 flex items-center gap-1 bg-skin-primary-light px-2 py-0.5 rounded-full"
                     >
                         {isZipping ? t(lang, 'zipping') : t(lang, 'downloadZip')}
                     </button>
                   )}
                 </div>
-                <div className="grid grid-cols-4 gap-2 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                {/* BLOCKED INTERACTION DURING PROCESSING */}
+                <div className={`grid grid-cols-4 gap-2 max-h-48 overflow-y-auto custom-scrollbar pr-1 ${isProcessing ? 'pointer-events-none opacity-50' : ''}`}>
                   {images.map((img) => (
                     <div
                       key={img.id}
-                      onClick={() => !isProcessing && onSelectImage(img.id)}
+                      onClick={() => onSelectImage(img.id)}
                       className={`relative group aspect-square rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
                         selectedImageId === img.id 
                           ? 'border-skin-primary ring-2 ring-skin-primary/20 shadow-md' 
                           : 'border-skin-fill hover:border-skin-border'
-                      } ${isProcessing ? 'opacity-50' : ''}`}
+                      }`}
                     >
                       <img src={img.previewUrl} alt="thumb" className="w-full h-full object-cover bg-skin-fill" />
                       
-                      {img.regions.length > 0 && (
-                        <div className="absolute top-0.5 right-0.5">
+                      <div className="absolute top-0.5 right-0.5 flex gap-0.5">
+                        {img.regions.some(r => r.status === 'processing') && (
+                           <span className="flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                            </span>
+                        )}
+                         {!img.regions.some(r => r.status === 'processing') && img.regions.length > 0 && (
                             <span className="flex h-2 w-2">
                               <span className="relative inline-flex rounded-full h-2 w-2 bg-skin-primary border border-skin-surface"></span>
                             </span>
-                        </div>
-                      )}
+                         )}
+                      </div>
                       
                       {img.finalResultUrl && (
                         <div className="absolute inset-x-0 bottom-0 h-1 bg-emerald-500"></div>
@@ -273,163 +405,231 @@ const Sidebar: React.FC<SidebarProps> = ({
               </Section>
             )}
 
-            {/* Section: Prompt */}
-            <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
-              <textarea
-                  value={config.prompt}
-                  onChange={(e) => setConfig({ ...config, prompt: e.target.value })}
-                  className="w-full bg-skin-fill border border-skin-border rounded-lg px-3 py-2 text-sm text-skin-text focus:outline-none focus:border-skin-primary focus:bg-skin-surface focus:ring-1 focus:ring-skin-primary/20 min-h-[80px] resize-y transition-all placeholder:text-skin-muted"
-                  placeholder={t(lang, 'promptPlaceholder')}
+            {/* Workflow Mode Selector */}
+            <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
+              <div className="flex rounded-lg border border-skin-border overflow-hidden bg-skin-fill">
+                <button
+                  onClick={() => handleConfigChange('processingMode', 'api')}
                   disabled={isProcessing}
-                />
-            </Section>
-
-            {/* Section: AI Configuration (Collapsed by default) */}
-            <Section 
-              title={t(lang, 'settingsTitle')} 
-              isOpen={sectionsState.settings} 
-              onToggle={() => toggleSection('settings')}
-            >
-              <div className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'provider')}</label>
-                    <div className="relative">
-                        <select 
-                          value={config.provider}
-                          onChange={(e) => setConfig({ ...config, provider: e.target.value as any })}
-                          className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary transition-colors cursor-pointer"
-                          disabled={isProcessing}
-                        >
-                          <option value="openai">OpenAI Compatible</option>
-                          <option value="gemini">Google Gemini</option>
-                        </select>
-                    </div>
-                  </div>
-
-                  {/* Dynamic Fields based on Provider */}
-                  {config.provider === 'openai' ? (
-                    <>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'baseUrl')}</label>
-                        <input
-                          type="text"
-                          value={config.openaiBaseUrl}
-                          onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
-                          className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary transition-colors"
-                          placeholder="https://api.openai.com/v1"
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'apiKey')}</label>
-                        <input
-                          type="password"
-                          value={config.openaiApiKey}
-                          onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
-                          className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary transition-colors"
-                          placeholder="sk-..."
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between items-center px-1">
-                          <label className="text-[10px] text-skin-muted font-bold uppercase">{t(lang, 'model')}</label>
-                          <button 
-                            onClick={handleFetchOpenAIModels}
-                            disabled={isLoadingModels}
-                            className="text-[9px] text-skin-primary font-medium hover:underline disabled:text-skin-muted transition-colors"
-                          >
-                            {isLoadingModels ? t(lang, 'fetching') : t(lang, 'fetchList')}
-                          </button>
-                        </div>
-                        {modelList.length > 0 ? (
-                            <select
-                            value={config.openaiModel}
-                            onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
-                            className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary"
-                          >
-                            {modelList.map(m => <option key={m} value={m}>{m}</option>)}
-                          </select>
-                        ) : (
-                          <input
-                            type="text"
-                            value={config.openaiModel}
-                            onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
-                            className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary"
-                            placeholder="gpt-4o"
-                          />
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'apiKey')}</label>
-                        <input
-                          type="password"
-                          value={config.geminiApiKey}
-                          onChange={(e) => handleConfigChange('geminiApiKey', e.target.value)}
-                          className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary"
-                          placeholder="AIza..."
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'model')}</label>
-                        <select
-                            value={config.geminiModel}
-                            onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
-                            className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary"
-                          >
-                            <option value="gemini-2.5-flash-image">gemini-2.5-flash-image</option>
-                            <option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview</option>
-                            <option value="custom">{t(lang, 'customModel')}</option>
-                          </select>
-                        {config.geminiModel === 'custom' && (
-                          <input
-                            type="text"
-                            className="w-full mt-2 bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text focus:outline-none focus:border-skin-primary"
-                            placeholder={t(lang, 'modelIdPlaceholder')}
-                            onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
-                          />
-                        )}
-                      </div>
-                    </>
-                  )}
+                  className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                    config.processingMode === 'api' 
+                      ? 'bg-skin-primary text-skin-primary-fg' 
+                      : 'text-skin-muted hover:bg-skin-fill/50'
+                  }`}
+                >
+                  {t(lang, 'modeApi')}
+                </button>
+                <div className="w-px bg-skin-border"></div>
+                <button
+                  onClick={() => handleConfigChange('processingMode', 'manual')}
+                  disabled={isProcessing}
+                  className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                    config.processingMode === 'manual' 
+                      ? 'bg-skin-primary text-skin-primary-fg' 
+                      : 'text-skin-muted hover:bg-skin-fill/50'
+                  }`}
+                >
+                  {t(lang, 'modeManual')}
+                </button>
               </div>
             </Section>
 
-            {/* Section: Execution Options (Collapsed by default) */}
-            <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
-              <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                      <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'mode')}</label>
-                      <select
-                        value={config.executionMode}
-                        onChange={(e) => handleConfigChange('executionMode', e.target.value)}
-                        className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary"
-                        disabled={isProcessing}
-                      >
-                        <option value="concurrent">{t(lang, 'modeConcurrent')}</option>
-                        <option value="serial">{t(lang, 'modeSerial')}</option>
-                      </select>
-                  </div>
-                  {config.executionMode === 'concurrent' && (
-                    <div className="space-y-1">
-                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'concurrency')}</label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="50"
-                          value={config.concurrencyLimit}
-                          onChange={(e) => handleConfigChange('concurrencyLimit', parseInt(e.target.value) || 1)}
-                          className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary"
-                          disabled={isProcessing}
-                        />
-                    </div>
-                  )}
-                </div>
-            </Section>
+            {/* API Workflow Sections */}
+            {!isManualMode && (
+              <>
+                {/* Section: Prompt */}
+                <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
+                  <textarea
+                      value={config.prompt}
+                      onChange={(e) => setConfig({ ...config, prompt: e.target.value })}
+                      className="w-full bg-skin-fill border border-skin-border rounded-lg px-3 py-2 text-sm text-skin-text focus:outline-none focus:border-skin-primary focus:bg-skin-surface focus:ring-1 focus:ring-skin-primary/20 min-h-[80px] resize-y transition-all placeholder:text-skin-muted disabled:opacity-50"
+                      placeholder={t(lang, 'promptPlaceholder')}
+                      disabled={isProcessing}
+                    />
+                </Section>
 
-            {/* Mini Results Preview */}
-            {currentImage && currentImage.regions.some(r => r.processedImageBase64) && (
+                {/* Section: AI Configuration */}
+                <Section 
+                  title={t(lang, 'settingsTitle')} 
+                  isOpen={sectionsState.settings} 
+                  onToggle={() => toggleSection('settings')}
+                >
+                  <div className="space-y-4">
+                      {/* ... Provider & Key Inputs ... */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'provider')}</label>
+                        <div className="relative">
+                            <select 
+                              value={config.provider}
+                              onChange={(e) => setConfig({ ...config, provider: e.target.value as any })}
+                              className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary transition-colors cursor-pointer disabled:opacity-50"
+                              disabled={isProcessing}
+                            >
+                              <option value="openai">OpenAI Compatible</option>
+                              <option value="gemini">Google Gemini</option>
+                            </select>
+                        </div>
+                      </div>
+
+                      {config.provider === 'openai' ? (
+                        <>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'baseUrl')}</label>
+                            <input
+                              type="text"
+                              value={config.openaiBaseUrl}
+                              onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
+                              className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary transition-colors disabled:opacity-50"
+                              placeholder="https://api.openai.com/v1"
+                              disabled={isProcessing}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'apiKey')}</label>
+                            <input
+                              type="password"
+                              value={config.openaiApiKey}
+                              onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
+                              className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary transition-colors disabled:opacity-50"
+                              placeholder="sk-..."
+                              disabled={isProcessing}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <div className="flex justify-between items-center px-1">
+                              <label className="text-[10px] text-skin-muted font-bold uppercase">{t(lang, 'model')}</label>
+                              <button 
+                                onClick={handleFetchOpenAIModels}
+                                disabled={isLoadingModels || isProcessing}
+                                className="text-[9px] text-skin-primary font-medium hover:underline disabled:text-skin-muted transition-colors"
+                              >
+                                {isLoadingModels ? t(lang, 'fetching') : t(lang, 'fetchList')}
+                              </button>
+                            </div>
+                            {modelList.length > 0 ? (
+                                <select
+                                value={config.openaiModel}
+                                onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
+                                className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                disabled={isProcessing}
+                              >
+                                {modelList.map(m => <option key={m} value={m}>{m}</option>)}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={config.openaiModel}
+                                onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
+                                className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                placeholder="gpt-4o"
+                                disabled={isProcessing}
+                              />
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'apiKey')}</label>
+                            <input
+                              type="password"
+                              value={config.geminiApiKey}
+                              onChange={(e) => handleConfigChange('geminiApiKey', e.target.value)}
+                              className="w-full bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text placeholder-skin-muted focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                              placeholder="AIza..."
+                              disabled={isProcessing}
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'model')}</label>
+                            <select
+                                value={config.geminiModel}
+                                onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
+                                className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-3 py-2 appearance-none focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                disabled={isProcessing}
+                              >
+                                <option value="gemini-2.5-flash-image">gemini-2.5-flash-image</option>
+                                <option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview</option>
+                                <option value="custom">{t(lang, 'customModel')}</option>
+                              </select>
+                            {config.geminiModel === 'custom' && (
+                              <input
+                                type="text"
+                                className="w-full mt-2 bg-skin-fill border border-skin-border rounded-md px-3 py-2 text-xs text-skin-text focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                placeholder={t(lang, 'modelIdPlaceholder')}
+                                onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
+                                disabled={isProcessing}
+                              />
+                            )}
+                          </div>
+                        </>
+                      )}
+                  </div>
+                </Section>
+                
+                {/* Section: Execution Options */}
+                <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
+                  <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                          <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'mode')}</label>
+                          <select
+                            value={config.executionMode}
+                            onChange={(e) => handleConfigChange('executionMode', e.target.value)}
+                            className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                            disabled={isProcessing}
+                          >
+                            <option value="concurrent">{t(lang, 'modeConcurrent')}</option>
+                            <option value="serial">{t(lang, 'modeSerial')}</option>
+                          </select>
+                      </div>
+                      {config.executionMode === 'concurrent' && (
+                        <div className="space-y-1">
+                            <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'concurrency')}</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="50"
+                              value={config.concurrencyLimit}
+                              onChange={(e) => handleConfigChange('concurrencyLimit', parseInt(e.target.value) || 1)}
+                              className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                              disabled={isProcessing}
+                            />
+                        </div>
+                      )}
+                    </div>
+                </Section>
+              </>
+            )}
+
+            {/* Manual Workbench Section */}
+            {isManualMode && (
+              <Section 
+                title={t(lang, 'workbenchTitle')} 
+                isOpen={sectionsState.manual} 
+                onToggle={() => toggleSection('manual')}
+              >
+                {!currentImage || currentImage.regions.length === 0 ? (
+                  <div className="text-xs text-skin-muted text-center py-4 italic">
+                    {t(lang, 'noRegions')}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {currentImage.regions.map(r => (
+                      <ManualPatchRow 
+                        key={r.id} 
+                        region={r} 
+                        image={currentImage} 
+                        onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, r.id, base64)}
+                        lang={lang}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Section>
+            )}
+
+            {/* Mini Results Preview (Auto Mode Only) */}
+            {!isManualMode && currentImage && currentImage.regions.some(r => r.processedImageBase64) && (
               <Section title={t(lang, 'previewTitle')} isOpen={true} onToggle={() => {}}>
                 <div className="grid grid-cols-3 gap-2">
                   {currentImage.regions.map(region => (
@@ -467,29 +667,33 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
           ) : (
             <div className="space-y-3 pt-4">
-              <label className="flex items-center gap-2 px-1 cursor-pointer group select-none">
-                <div className="relative flex items-center">
-                  <input 
-                    type="checkbox" 
-                    checked={processAll} 
-                    onChange={(e) => setProcessAll(e.target.checked)}
-                    className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-skin-muted bg-skin-fill checked:border-skin-primary checked:bg-skin-primary focus:outline-none transition-all"
-                  />
-                  <svg className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 text-skin-primary-fg opacity-0 peer-checked:opacity-100 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
-                </div>
-                <span className="text-xs font-medium text-skin-muted group-hover:text-skin-primary transition-colors">
-                  {t(lang, 'applyAll', { count: images.length })}
-                </span>
-              </label>
+              {!isManualMode && (
+                <>
+                  <label className="flex items-center gap-2 px-1 cursor-pointer group select-none">
+                    <div className="relative flex items-center">
+                      <input 
+                        type="checkbox" 
+                        checked={processAll} 
+                        onChange={(e) => setProcessAll(e.target.checked)}
+                        className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-skin-muted bg-skin-fill checked:border-skin-primary checked:bg-skin-primary focus:outline-none transition-all"
+                      />
+                      <svg className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 text-skin-primary-fg opacity-0 peer-checked:opacity-100 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <span className="text-xs font-medium text-skin-muted group-hover:text-skin-primary transition-colors">
+                      {t(lang, 'applyAll', { count: images.length })}
+                    </span>
+                  </label>
 
-              <button
-                onClick={() => onProcess(processAll)}
-                disabled={!canProcess}
-                className="w-full py-3 bg-skin-primary hover:opacity-90 disabled:bg-skin-border disabled:text-skin-muted text-skin-primary-fg rounded-xl font-semibold text-sm transition-all shadow-md shadow-skin-primary/30 active:scale-[0.98] flex items-center justify-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                {processAll ? t(lang, 'generateAll') : t(lang, 'generate')}
-              </button>
+                  <button
+                    onClick={() => onProcess(processAll)}
+                    disabled={!canProcessApi}
+                    className="w-full py-3 bg-skin-primary hover:opacity-90 disabled:bg-skin-border disabled:text-skin-muted text-skin-primary-fg rounded-xl font-semibold text-sm transition-all shadow-md shadow-skin-primary/30 active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                    {processAll ? t(lang, 'generateAll') : t(lang, 'generate')}
+                  </button>
+                </>
+              )}
               
               {currentImage?.finalResultUrl && (
                 <button

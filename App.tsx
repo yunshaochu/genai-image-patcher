@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { AppConfig, UploadedImage, Region, ProcessingStep } from './types';
 import Sidebar from './components/Sidebar';
@@ -7,31 +8,25 @@ import { generateRegionEdit } from './services/aiService';
 import { t } from './services/translations';
 
 const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
-const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3'; // Bump version for new language field
+const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
 
 const DEFAULT_CONFIG: AppConfig = {
   prompt: DEFAULT_PROMPT,
   executionMode: 'concurrent',
   concurrencyLimit: 3,
   theme: 'light',
-  language: 'zh', // Default to Chinese
-  
-  // Default to OpenAI as requested
+  language: 'zh',
   provider: 'openai',
-  
-  // OpenAI Defaults
   openaiBaseUrl: 'https://api.openai.com/v1',
   openaiApiKey: '',
   openaiModel: 'dall-e-3',
-
-  // Gemini Defaults
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
+  processingMode: 'api' // Default to API mode
 };
 
 type ViewMode = 'original' | 'result';
 
-// Helper for concurrency control
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -44,32 +39,25 @@ async function runWithConcurrency<T, R>(
     const p = task(item).then((res) => {
       results.push(res);
     });
-    
     executing.push(p);
-    
-    // Cleanup finished promise
     const cleanP = p.then(() => {
         executing.splice(executing.indexOf(cleanP), 1);
     });
-
     if (executing.length >= limit) {
       await Promise.race(executing);
     }
   }
-  
   await Promise.all(executing);
   return results;
 }
 
 export default function App() {
-  // Initialize config from localStorage if available, otherwise use defaults
   const [config, setConfig] = useState<AppConfig>(() => {
     try {
       const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
       if (saved) {
-        // Merge saved config with default config to handle potential new fields in future updates
         const parsed = JSON.parse(saved);
-        // Ensure language is set if migrating from old config
+        // Merge defaults to handle new fields
         return { ...DEFAULT_CONFIG, ...parsed, language: parsed.language || 'zh' };
       }
     } catch (e) {
@@ -84,23 +72,18 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
 
-  // Persist config to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
   }, [config]);
 
-  // Apply Theme to Document Element
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', config.theme || 'light');
   }, [config.theme]);
 
   const selectedImage = images.find((img) => img.id === selectedImageId);
 
-  // Reusable function to process a list of files
   const processFiles = async (fileList: File[]) => {
     const newImages: UploadedImage[] = [];
-    
-    // Filter for images only
     const imageFiles = fileList.filter(f => f.type.startsWith('image/'));
     
     if (imageFiles.length === 0) return;
@@ -126,32 +109,33 @@ export default function App() {
     if (newImages.length > 0) {
       setImages((prev) => {
         const updated = [...prev, ...newImages];
-        // Ensure natural sort order whenever new images are added
         return updated.sort(naturalSortCompare);
       });
-      
-      // Auto-select if nothing was selected
       if (!selectedImageId && newImages.length > 0) {
          setSelectedImageId(newImages[0].id);
       }
     }
   };
 
-  // Handle file uploads from input
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       await processFiles(Array.from(e.target.files));
     }
-    // Reset input
     e.target.value = '';
   };
 
-  // Handle global paste
+  // Global Paste Listener for File Uploads
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
+        // Safe check: If the event was already handled (stopPropagation called), do nothing
+        // Or if the target is an input/textarea (like prompt or manual drop zone), ignore global file paste
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+           return;
+        }
+
         const items = e.clipboardData?.items;
         if (!items) return;
-
         const files: File[] = [];
         for (let i = 0; i < items.length; i++) {
             if (items[i].type.startsWith('image/')) {
@@ -159,13 +143,11 @@ export default function App() {
                 if (file) files.push(file);
             }
         }
-        
         if (files.length > 0) {
-            e.preventDefault(); // Stop default paste (e.g. into prompt text area if focused)
+            e.preventDefault();
             await processFiles(files);
         }
     };
-
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   }, [selectedImageId]); 
@@ -176,15 +158,58 @@ export default function App() {
     );
   };
 
+  // Manual Mode: Handle patch update
+  const handleManualPatchUpdate = async (imageId: string, regionId: string, base64: string) => {
+      // 1. Update the region in state
+      let updatedImage: UploadedImage | null = null;
+      
+      const newImagesState = images.map(img => {
+          if (img.id !== imageId) return img;
+          
+          const newRegions = img.regions.map(r => 
+              r.id === regionId 
+              ? { ...r, status: 'completed' as const, processedImageBase64: base64 } 
+              : r
+          );
+          updatedImage = { ...img, regions: newRegions };
+          return updatedImage;
+      });
+
+      setImages(newImagesState);
+
+      // 2. Stitch the image immediately (Hot Stitching for Manual Mode)
+      if (updatedImage) {
+          try {
+             // Only stitch if we have completed regions
+             const completedRegions = updatedImage.regions.filter(r => r.status === 'completed' && r.processedImageBase64);
+             if (completedRegions.length > 0) {
+                 const finalUrl = await stitchImage(updatedImage.previewUrl, updatedImage.regions);
+                 setImages(prev => prev.map(img => 
+                    img.id === imageId ? { ...img, finalResultUrl: finalUrl } : img
+                 ));
+                 
+                 // If we are viewing original, switch to result to show the update
+                 if (viewMode === 'original' && selectedImageId === imageId) {
+                     setViewMode('result');
+                 }
+             }
+          } catch (e) {
+              console.error("Manual stitch failed", e);
+              setErrorMsg("Stitching failed");
+          }
+      }
+  };
+
   const handleProcess = async (processAll: boolean) => {
+    if (processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE) return;
     if (!selectedImage && !processAll) return;
 
     setProcessingState(ProcessingStep.CROPPING);
     setErrorMsg(null);
-    if (!processAll) setViewMode('original'); 
+    setViewMode('original'); // Always reset to original view when starting
 
     try {
-      // 1. Collect all pending regions based on scope
+      // 1. Collect all pending regions
       interface Task {
         imageId: string;
         region: Region;
@@ -194,17 +219,10 @@ export default function App() {
       const tasks: Task[] = [];
       const imagesToProcess = processAll ? images : (selectedImage ? [selectedImage] : []);
 
-      // If processing all, images are already sorted via natural sort in setImages state
-      // but let's ensure we are iterating the current state list
-      
       for (const img of imagesToProcess) {
         const pending = img.regions.filter(r => r.status === 'pending' || r.status === 'failed');
         pending.forEach(r => {
-           tasks.push({
-             imageId: img.id,
-             region: r,
-             imageUrl: img.previewUrl
-           });
+           tasks.push({ imageId: img.id, region: r, imageUrl: img.previewUrl });
         });
       }
 
@@ -216,90 +234,75 @@ export default function App() {
 
       setProcessingState(ProcessingStep.API_CALLING);
 
-      // Helper to update specific region status in state
-      const updateRegionStatus = (imgId: string, regId: string, status: Region['status'], resultBase64?: string) => {
-         setImages(prev => prev.map(img => {
-            if (img.id !== imgId) return img;
-            return {
-              ...img,
-              regions: img.regions.map(r => r.id === regId ? { ...r, status, processedImageBase64: resultBase64 } : r)
-            };
-         }));
-      };
-
-      // Mark all as processing first (optional, but good UX)
+      // Mark regions as processing in UI
       setImages(prev => prev.map(img => ({
          ...img,
          regions: img.regions.map(r => tasks.find(t => t.imageId === img.id && t.region.id === r.id) ? { ...r, status: 'processing' } : r)
       })));
 
-      // Task Processor
+      // Process function for concurrency
       const processTask = async (task: Task) => {
         try {
-          // 1. Load Image Element for cropping
-          // Note: In a heavy batch, loading many images might consume memory, 
-          // but browser cache handles repeated loads of the same URL well.
           const imgEl = await loadImage(task.imageUrl);
-          
-          // 2. Crop
           const croppedBase64 = await cropRegion(imgEl, task.region);
-          
-          // 3. API Call
-          const resultBase64 = await generateRegionEdit(
-            croppedBase64,
-            config.prompt,
-            config
-          );
-
-          // 4. Update Status Success
-          updateRegionStatus(task.imageId, task.region.id, 'completed', resultBase64);
-          
-          return { ...task, success: true };
+          const resultBase64 = await generateRegionEdit(croppedBase64, config.prompt, config);
+          return { ...task, success: true, resultBase64 };
         } catch (error) {
           console.error(`Failed region ${task.region.id}`, error);
-          updateRegionStatus(task.imageId, task.region.id, 'failed');
-          return { ...task, success: false };
+          // Fix: Ensure resultBase64 exists as undefined to allow safe property access on union result
+          return { ...task, success: false, resultBase64: undefined };
         }
       };
 
-      // Execute with concurrency limit
+      // Run API Calls
       const limit = config.executionMode === 'concurrent' ? config.concurrencyLimit : 1;
-      await runWithConcurrency(tasks, limit, processTask);
+      const results = await runWithConcurrency(tasks, limit, processTask);
 
-      // 3. Stitching
       setProcessingState(ProcessingStep.STITCHING);
-      
-      // Determine which images need stitching (unique IDs from tasks)
-      const affectedImageIds = Array.from(new Set(tasks.map(t => t.imageId)));
-      
-      // Stitch affected images
-      await new Promise<void>(resolve => {
-        setImages(currentImages => {
-          const runStitch = async () => {
-             const updatedImages = [...currentImages];
-             for (const id of affectedImageIds) {
-                const imgIndex = updatedImages.findIndex(i => i.id === id);
-                if (imgIndex === -1) continue;
-                
-                const img = updatedImages[imgIndex];
-                // Stitch using the regions present in this latest state
-                try {
-                  const finalUrl = await stitchImage(img.previewUrl, img.regions);
-                  updatedImages[imgIndex] = { ...img, finalResultUrl: finalUrl };
-                } catch(e) {
-                  console.error("Stitch failed for", img.file.name, e);
-                }
-             }
-             setImages(updatedImages);
-             resolve();
-          };
-          runStitch();
-          return currentImages; // Return unchanged for now
-        });
-      });
 
+      // 2. Update Image State & Stitch
+      // We process all images to ensure everything is up to date
+      const updatedImages = await Promise.all(images.map(async (img) => {
+        const imgResults = results.filter(r => r.imageId === img.id);
+        
+        // If no results for this image and it wasn't being processed, return as is
+        if (imgResults.length === 0 && !imagesToProcess.find(i => i.id === img.id)) {
+            return img;
+        }
+
+        // Update regions
+        const newRegions = img.regions.map(r => {
+            const res = imgResults.find(res => res.region.id === r.id);
+            if (res) {
+                return { 
+                    ...r, 
+                    status: res.success ? 'completed' : 'failed', 
+                    processedImageBase64: res.resultBase64 
+                } as Region;
+            }
+            return r;
+        });
+
+        // Generate final stitched image if there are completed regions
+        let finalUrl = img.finalResultUrl;
+        if (newRegions.some(r => r.status === 'completed')) {
+             try {
+                finalUrl = await stitchImage(img.previewUrl, newRegions);
+             } catch (e) {
+                 console.error("Stitch failed for image", img.id, e);
+             }
+        }
+
+        return { ...img, regions: newRegions, finalResultUrl: finalUrl };
+      }));
+
+      setImages(updatedImages);
       setProcessingState(ProcessingStep.DONE);
-      if (!processAll) setViewMode('result');
+      
+      // Auto switch to result view if we are on single image mode
+      if (!processAll && selectedImage) {
+          setViewMode('result');
+      }
 
     } catch (err: any) {
       console.error(err);
@@ -319,7 +322,6 @@ export default function App() {
     }
   };
 
-  // Determine what to show in canvas
   const displayImage = selectedImage 
     ? {
         ...selectedImage,
@@ -329,9 +331,9 @@ export default function App() {
       }
     : null;
 
-  // Localized status message
-  const statusKey = processingState.toLowerCase() as keyof typeof import('./services/translations').translations['en'];
-  const statusText = t(config.language, statusKey);
+  const statusKey = processingState.toLowerCase() as any;
+  const processingText = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE ? t(config.language, statusKey) : '';
+  const isCurrentImageProcessing = selectedImage?.regions.some(r => r.status === 'processing');
 
   return (
     <div className="flex h-screen bg-skin-fill text-skin-text font-sans selection:bg-skin-primary-light selection:text-skin-primary transition-colors duration-300">
@@ -346,6 +348,7 @@ export default function App() {
         processingState={processingState}
         currentImage={selectedImage}
         onDownload={handleDownload}
+        onManualPatchUpdate={handleManualPatchUpdate}
       />
 
       <div className="flex-1 flex flex-col relative bg-skin-fill transition-colors duration-300">
@@ -411,7 +414,7 @@ export default function App() {
             <EditorCanvas
               image={displayImage}
               onUpdateRegions={handleUpdateRegions}
-              disabled={viewMode === 'result' || (processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE)}
+              disabled={viewMode === 'result' || (isCurrentImageProcessing === true)}
               language={config.language}
             />
           ) : (

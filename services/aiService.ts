@@ -45,34 +45,59 @@ export const fetchOpenAIModels = async (
 const generateGeminiImage = async (
   imageBase64: string,
   prompt: string,
-  modelName: string,
-  apiKey: string
+  modelName: string
 ): Promise<string> => {
-  const ai = new GoogleGenAI({ apiKey });
+  // Use process.env.API_KEY directly as per guidelines
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   
   const cleanBase64 = imageBase64.includes(',') 
     ? imageBase64.split(',')[1] 
     : imageBase64;
 
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: 'image/png', data: cleanBase64 } },
-        { text: prompt },
-      ],
-    },
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: {
+        parts: [
+          { inlineData: { mimeType: 'image/png', data: cleanBase64 } },
+          { text: prompt },
+        ],
+      },
+    });
 
-  if (response.candidates && response.candidates[0].content.parts) {
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+    if (response.candidates && response.candidates.length > 0) {
+      const candidate = response.candidates[0];
+      if (candidate.content && candidate.content.parts) {
+        // 1. Look for Image in the response
+        for (const part of candidate.content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+             const mimeType = part.inlineData.mimeType || 'image/png';
+             return `data:${mimeType};base64,${part.inlineData.data}`;
+          }
+        }
+        
+        // 2. Look for Text (often contains error messages or refusals)
+        const textParts = candidate.content.parts
+          .filter(p => p.text)
+          .map(p => p.text)
+          .join(' ');
+          
+        if (textParts) {
+           throw new Error(`Gemini response: ${textParts}`);
+        }
       }
     }
+    
+    throw new Error("Gemini returned an empty response (no candidates or parts).");
+
+  } catch (error: any) {
+    // If it's already our custom error, rethrow
+    if (error.message && error.message.startsWith('Gemini')) {
+        throw error;
+    }
+    console.error("Gemini API Error:", error);
+    throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
   }
-  
-  throw new Error("Gemini did not return an image.");
 };
 
 /**
@@ -190,7 +215,8 @@ export const generateRegionEdit = async (
     // Now passing imageBase64 to OpenAI handler as well
     return generateOpenAIImage(imageBase64, prompt, config);
   } else {
-    if (!config.geminiApiKey) throw new Error("Gemini API Key is missing");
-    return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey);
+    // Guidelines strictly state API Key must be from process.env.API_KEY
+    // We assume process.env.API_KEY is available and valid.
+    return generateGeminiImage(imageBase64, prompt, config.geminiModel);
   }
 };

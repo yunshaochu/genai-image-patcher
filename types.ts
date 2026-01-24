@@ -1,3 +1,4 @@
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -25,12 +26,17 @@ export type ThemeType = 'light' | 'dark' | 'ocean' | 'rose' | 'forest';
 
 export type Language = 'zh' | 'en';
 
+export type ProcessingMode = 'api' | 'manual';
+
 export interface AppConfig {
   prompt: string;
   // Execution Mode is now effectively handled by concurrencyLimit
   // 1 = Serial, >1 = Concurrent
   executionMode: 'concurrent' | 'serial'; 
   concurrencyLimit: number;
+  
+  // Workflow Mode
+  processingMode: ProcessingMode;
   
   // Theme & Language
   theme: ThemeType;
