@@ -292,6 +292,14 @@ export default function App() {
             const index = updatedRegions.findIndex(r => r.id === region.id);
             if (index !== -1) {
                 updatedRegions[index] = { ...updatedRegions[index], status: 'failed' };
+            } else if (region.id === 'full-image') {
+                // If the full-image region fails, create a real "failed" region so it appears in the UI (red box)
+                const failedRegion: Region = { 
+                    ...region, 
+                    id: crypto.randomUUID(), 
+                    status: 'failed' 
+                };
+                updatedRegions.push(failedRegion);
             }
         }
     }

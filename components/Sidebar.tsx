@@ -162,8 +162,14 @@ const ManualPatchRow: React.FC<{
               <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
             )}
          </div>
-         <div className={`text-[9px] font-bold ${region.status === 'completed' ? 'text-emerald-500' : 'text-skin-muted'}`}>
-            {region.status === 'completed' ? t(lang, 'status_completed') : t(lang, 'status_pending')}
+         <div className={`text-[9px] font-bold ${
+             region.status === 'completed' ? 'text-emerald-500' : 
+             region.status === 'failed' ? 'text-rose-500' : 
+             'text-skin-muted'
+         }`}>
+            {region.status === 'completed' ? t(lang, 'status_completed') : 
+             region.status === 'failed' ? t(lang, 'status_failed') : 
+             t(lang, 'status_pending')}
          </div>
       </div>
     </div>
