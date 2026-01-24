@@ -52,7 +52,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
     if (!isDrawing || disabled) return;
     setIsDrawing(false);
 
-    if (currentRect && currentRect.width && currentRect.width > 1 && currentRect.height && currentRect.height > 1) {
+    if (currentRect && currentRect.width && currentRect.width > 0.5 && currentRect.height && currentRect.height > 0.5) {
       const newRegion: Region = {
         id: crypto.randomUUID(),
         x: currentRect.x || 0,
@@ -76,10 +76,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
   };
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center bg-slate-900 overflow-hidden select-none">
+    <div className="relative w-full h-full flex items-center justify-center p-8 overflow-hidden select-none">
       <div 
         ref={containerRef}
-        className="relative cursor-crosshair shadow-2xl"
+        className="relative cursor-crosshair shadow-xl"
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -88,7 +88,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         <img
           src={image.previewUrl}
           alt="Workarea"
-          className="max-h-[80vh] max-w-full block object-contain pointer-events-none"
+          className="max-h-[85vh] max-w-full block object-contain pointer-events-none rounded bg-white shadow-sm ring-1 ring-slate-900/5"
           draggable={false}
         />
 
@@ -96,14 +96,14 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         {image.regions.map((region) => (
           <div
             key={region.id}
-            className={`absolute border-2 transition-colors duration-200 group ${
+            className={`absolute transition-all duration-200 group ${
               region.status === 'completed' 
-                ? 'border-green-500 bg-green-500/10' 
+                ? 'border-2 border-emerald-500 bg-emerald-500/10 shadow-[0_0_10px_rgba(16,185,129,0.3)]' 
                 : region.status === 'processing' 
-                  ? 'border-yellow-500 bg-yellow-500/10 animate-pulse' 
+                  ? 'border-2 border-amber-500 bg-amber-500/10 animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.3)]' 
                   : region.status === 'failed'
-                    ? 'border-red-500 bg-red-500/10'
-                    : 'border-blue-400 bg-blue-400/20 hover:bg-blue-400/30'
+                    ? 'border-2 border-red-500 bg-red-500/10'
+                    : 'border-2 border-indigo-500 bg-indigo-500/10 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
             }`}
             style={{
               left: `${region.x}%`,
@@ -119,16 +119,20 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
                   e.stopPropagation();
                   removeRegion(region.id);
                 }}
-                className="absolute -top-3 -right-3 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:scale-110 z-10"
+                className="absolute -top-3 -right-3 w-6 h-6 bg-white text-rose-500 border border-slate-200 rounded-full flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-all shadow-md hover:scale-110 hover:bg-rose-50 z-10"
               >
                 ✕
               </button>
             )}
             
-            {/* Status Badge */}
+            {/* Status Badge - refined */}
             {region.status !== 'pending' && (
-              <div className="absolute top-1 left-1 text-[10px] px-1 py-0.5 rounded bg-black/70 text-white backdrop-blur-sm">
-                {region.status}
+              <div className={`absolute top-1 left-1 text-[9px] font-bold px-1.5 py-0.5 rounded backdrop-blur-md shadow-sm border ${
+                 region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
+                 region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
+                 'bg-rose-100/90 text-rose-700 border-rose-200'
+              }`}>
+                {region.status.toUpperCase()}
               </div>
             )}
           </div>
@@ -137,7 +141,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         {/* Currently Drawing Rect */}
         {isDrawing && currentRect && (
           <div
-            className="absolute border-2 border-dashed border-white bg-white/10 pointer-events-none"
+            className="absolute border-2 border-indigo-500 bg-indigo-500/20 pointer-events-none shadow-[0_0_15px_rgba(99,102,241,0.2)]"
             style={{
               left: `${currentRect.x}%`,
               top: `${currentRect.y}%`,

@@ -110,3 +110,10 @@ export const fetchImageAsBase64 = async (url: string): Promise<string> => {
     return url;
   }
 };
+
+/**
+ * Comparator for Natural Sort Order (e.g., 1.png, 2.png, 10.png)
+ */
+export const naturalSortCompare = (a: UploadedImage, b: UploadedImage) => {
+  return new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare(a.file.name, b.file.name);
+};

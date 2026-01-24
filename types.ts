@@ -23,7 +23,10 @@ export type AiProvider = 'openai' | 'gemini';
 
 export interface AppConfig {
   prompt: string;
-  executionMode: 'concurrent' | 'serial';
+  // Execution Mode is now effectively handled by concurrencyLimit
+  // 1 = Serial, >1 = Concurrent
+  executionMode: 'concurrent' | 'serial'; 
+  concurrencyLimit: number;
   
   // Provider Settings
   provider: AiProvider;

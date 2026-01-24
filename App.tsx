@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { AppConfig, UploadedImage, Region, ProcessingStep } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import { loadImage, cropRegion, stitchImage, readFileAsDataURL } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, readFileAsDataURL, naturalSortCompare } from './services/imageUtils';
 import { generateRegionEdit } from './services/aiService';
 
 const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
@@ -11,6 +11,7 @@ const CONFIG_STORAGE_KEY = 'genai_patcher_config_v1';
 const DEFAULT_CONFIG: AppConfig = {
   prompt: DEFAULT_PROMPT,
   executionMode: 'concurrent',
+  concurrencyLimit: 3,
   
   // Default to OpenAI as requested
   provider: 'openai',
@@ -26,6 +27,36 @@ const DEFAULT_CONFIG: AppConfig = {
 };
 
 type ViewMode = 'original' | 'result';
+
+// Helper for concurrency control
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+  
+  for (const item of items) {
+    const p = task(item).then((res) => {
+      results.push(res);
+    });
+    
+    executing.push(p);
+    
+    // Cleanup finished promise
+    const cleanP = p.then(() => {
+        executing.splice(executing.indexOf(cleanP), 1);
+    });
+
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  
+  await Promise.all(executing);
+  return results;
+}
 
 export default function App() {
   // Initialize config from localStorage if available, otherwise use defaults
@@ -85,7 +116,8 @@ export default function App() {
     if (newImages.length > 0) {
       setImages((prev) => {
         const updated = [...prev, ...newImages];
-        return updated;
+        // Ensure natural sort order whenever new images are added
+        return updated.sort(naturalSortCompare);
       });
       
       // Auto-select if nothing was selected
@@ -126,7 +158,7 @@ export default function App() {
 
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [selectedImageId]); // Re-bind if selected image changes to ensure closure freshness if needed, though processFiles is stable-ish
+  }, [selectedImageId]); 
 
   const handleUpdateRegions = (imageId: string, regions: Region[]) => {
     setImages((prev) =>
@@ -134,120 +166,130 @@ export default function App() {
     );
   };
 
-  const handleProcess = async () => {
-    if (!selectedImage) return;
+  const handleProcess = async (processAll: boolean) => {
+    if (!selectedImage && !processAll) return;
 
     setProcessingState(ProcessingStep.CROPPING);
     setErrorMsg(null);
-    setViewMode('original'); // Switch back to original to show progress
+    if (!processAll) setViewMode('original'); 
 
     try {
-      // 1. Prepare pending regions
-      const pendingRegions = selectedImage.regions.filter(
-        (r) => r.status === 'pending' || r.status === 'failed'
-      );
+      // 1. Collect all pending regions based on scope
+      interface Task {
+        imageId: string;
+        region: Region;
+        imageUrl: string;
+      }
 
-      if (pendingRegions.length === 0) {
-        alert("No new regions to process. Draw a box on the image first.");
+      const tasks: Task[] = [];
+      const imagesToProcess = processAll ? images : (selectedImage ? [selectedImage] : []);
+
+      // If processing all, images are already sorted via natural sort in setImages state
+      // but let's ensure we are iterating the current state list
+      
+      for (const img of imagesToProcess) {
+        const pending = img.regions.filter(r => r.status === 'pending' || r.status === 'failed');
+        pending.forEach(r => {
+           tasks.push({
+             imageId: img.id,
+             region: r,
+             imageUrl: img.previewUrl
+           });
+        });
+      }
+
+      if (tasks.length === 0) {
+        alert("No new regions found to process.");
         setProcessingState(ProcessingStep.IDLE);
         return;
       }
 
-      // 2. Load the base image element for cropping
-      const imgElement = await loadImage(selectedImage.previewUrl);
+      setProcessingState(ProcessingStep.API_CALLING);
 
-      // Helper for processing a single region
-      const processRegion = async (region: Region): Promise<Region> => {
+      // Helper to update specific region status in state
+      const updateRegionStatus = (imgId: string, regId: string, status: Region['status'], resultBase64?: string) => {
+         setImages(prev => prev.map(img => {
+            if (img.id !== imgId) return img;
+            return {
+              ...img,
+              regions: img.regions.map(r => r.id === regId ? { ...r, status, processedImageBase64: resultBase64 } : r)
+            };
+         }));
+      };
+
+      // Mark all as processing first (optional, but good UX)
+      setImages(prev => prev.map(img => ({
+         ...img,
+         regions: img.regions.map(r => tasks.find(t => t.imageId === img.id && t.region.id === r.id) ? { ...r, status: 'processing' } : r)
+      })));
+
+      // Task Processor
+      const processTask = async (task: Task) => {
         try {
-          // Crop
-          const croppedBase64 = await cropRegion(imgElement, region);
+          // 1. Load Image Element for cropping
+          // Note: In a heavy batch, loading many images might consume memory, 
+          // but browser cache handles repeated loads of the same URL well.
+          const imgEl = await loadImage(task.imageUrl);
           
-          // API Call (Generic)
+          // 2. Crop
+          const croppedBase64 = await cropRegion(imgEl, task.region);
+          
+          // 3. API Call
           const resultBase64 = await generateRegionEdit(
             croppedBase64,
             config.prompt,
             config
           );
 
-          return {
-            ...region,
-            status: 'completed',
-            processedImageBase64: resultBase64,
-          };
+          // 4. Update Status Success
+          updateRegionStatus(task.imageId, task.region.id, 'completed', resultBase64);
+          
+          return { ...task, success: true };
         } catch (error) {
-          console.error(`Failed to process region ${region.id}`, error);
-          return { ...region, status: 'failed' };
+          console.error(`Failed region ${task.region.id}`, error);
+          updateRegionStatus(task.imageId, task.region.id, 'failed');
+          return { ...task, success: false };
         }
       };
 
-      // Set status to processing
-      setImages((prev) =>
-        prev.map((img) =>
-          img.id === selectedImage.id
-            ? {
-                ...img,
-                regions: img.regions.map((r) =>
-                  pendingRegions.find((pr) => pr.id === r.id)
-                    ? { ...r, status: 'processing' }
-                    : r
-                ),
-              }
-            : img
-        )
-      );
-
-      setProcessingState(ProcessingStep.API_CALLING);
-
-      let processedRegions: Region[] = [];
-
-      if (config.executionMode === 'concurrent') {
-        processedRegions = await Promise.all(pendingRegions.map(processRegion));
-      } else {
-        // Serial
-        for (const region of pendingRegions) {
-          const result = await processRegion(region);
-          processedRegions.push(result);
-        }
-      }
-
-      // Update state with results
-      setImages((prev) =>
-        prev.map((img) =>
-          img.id === selectedImage.id
-            ? {
-                ...img,
-                regions: img.regions.map((r) => {
-                  const processed = processedRegions.find((pr) => pr.id === r.id);
-                  return processed || r;
-                }),
-              }
-            : img
-        )
-      );
+      // Execute with concurrency limit
+      const limit = config.executionMode === 'concurrent' ? config.concurrencyLimit : 1;
+      await runWithConcurrency(tasks, limit, processTask);
 
       // 3. Stitching
       setProcessingState(ProcessingStep.STITCHING);
       
-      // Get latest state of regions for this image to include any previously completed ones
-      const currentRegions = images
-        .find(i => i.id === selectedImage.id)
-        ?.regions.map(r => {
-             const newlyProcessed = processedRegions.find(pr => pr.id === r.id);
-             return newlyProcessed || r;
-        }) || [];
-
-      const finalResultUrl = await stitchImage(selectedImage.previewUrl, currentRegions);
-
-      setImages((prev) =>
-        prev.map((img) =>
-          img.id === selectedImage.id
-            ? { ...img, finalResultUrl, regions: currentRegions }
-            : img
-        )
-      );
+      // Determine which images need stitching (unique IDs from tasks)
+      const affectedImageIds = Array.from(new Set(tasks.map(t => t.imageId)));
+      
+      // Stitch affected images
+      await new Promise<void>(resolve => {
+        setImages(currentImages => {
+          const runStitch = async () => {
+             const updatedImages = [...currentImages];
+             for (const id of affectedImageIds) {
+                const imgIndex = updatedImages.findIndex(i => i.id === id);
+                if (imgIndex === -1) continue;
+                
+                const img = updatedImages[imgIndex];
+                // Stitch using the regions present in this latest state
+                try {
+                  const finalUrl = await stitchImage(img.previewUrl, img.regions);
+                  updatedImages[imgIndex] = { ...img, finalResultUrl: finalUrl };
+                } catch(e) {
+                  console.error("Stitch failed for", img.file.name, e);
+                }
+             }
+             setImages(updatedImages);
+             resolve();
+          };
+          runStitch();
+          return currentImages; // Return unchanged for now
+        });
+      });
 
       setProcessingState(ProcessingStep.DONE);
-      setViewMode('result'); // Auto switch to result view
+      if (!processAll) setViewMode('result');
 
     } catch (err: any) {
       console.error(err);
@@ -278,7 +320,7 @@ export default function App() {
     : null;
 
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-200 font-sans">
+    <div className="flex h-screen bg-slate-50 text-slate-800 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       <Sidebar
         config={config}
         setConfig={setConfig}
@@ -292,29 +334,45 @@ export default function App() {
         onDownload={handleDownload}
       />
 
-      <div className="flex-1 flex flex-col relative">
+      <div className="flex-1 flex flex-col relative bg-slate-50">
         {/* Header/Status Bar */}
-        <div className="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-6">
-            <div className="flex items-center gap-4">
-              <div className="text-sm font-medium text-slate-300">
-                  {selectedImage ? selectedImage.file.name : 'No image selected'}
+        <div className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-6 shadow-sm z-10">
+            <div className="flex items-center gap-6">
+              <div className="flex flex-col">
+                 <div className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+                    {selectedImage ? (
+                        <>
+                           <span>{selectedImage.file.name}</span>
+                           <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-100 text-slate-500 font-mono border border-slate-200">
+                               {selectedImage.originalWidth}x{selectedImage.originalHeight}
+                           </span>
+                        </>
+                    ) : 'No image selected'}
+                 </div>
+                 <div className="text-xs text-slate-500">
+                    {selectedImage ? `${selectedImage.regions.length} regions defined` : 'Select an image to begin editing'}
+                 </div>
               </div>
               
               {/* View Toggle */}
               {selectedImage?.finalResultUrl && (
-                <div className="flex bg-slate-800 rounded p-1 border border-slate-700">
+                <div className="flex bg-slate-100 rounded-lg p-1 border border-slate-200">
                   <button
                     onClick={() => setViewMode('original')}
-                    className={`px-3 py-1 text-xs rounded transition-colors ${
-                      viewMode === 'original' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'
+                    className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
+                      viewMode === 'original' 
+                        ? 'bg-white text-slate-800 shadow-sm border border-slate-200' 
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
                     }`}
                   >
                     Original
                   </button>
                   <button
                     onClick={() => setViewMode('result')}
-                    className={`px-3 py-1 text-xs rounded transition-colors ${
-                      viewMode === 'result' ? 'bg-green-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                    className={`px-4 py-1.5 text-xs font-medium rounded-md transition-all ${
+                      viewMode === 'result' 
+                        ? 'bg-emerald-50 text-emerald-700 shadow-sm border border-emerald-200' 
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-200/50'
                     }`}
                   >
                     Result
@@ -325,18 +383,16 @@ export default function App() {
 
             <div className="flex items-center gap-4">
               {errorMsg && (
-                  <div className="text-red-400 text-sm bg-red-400/10 px-3 py-1 rounded">
-                      Error: {errorMsg}
+                  <div className="flex items-center gap-2 text-red-600 text-xs bg-red-50 px-3 py-1.5 rounded-full border border-red-200">
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                      {errorMsg}
                   </div>
               )}
-              <div className="text-xs text-slate-500">
-                  {selectedImage?.regions.filter(r => r.status === 'completed').length} / {selectedImage?.regions.length} regions processed
-              </div>
             </div>
         </div>
 
         {/* Main Workspace */}
-        <div className="flex-1 relative bg-grid-pattern">
+        <div className="flex-1 relative bg-checkerboard overflow-hidden">
           {displayImage ? (
             <EditorCanvas
               image={displayImage}
@@ -344,9 +400,12 @@ export default function App() {
               disabled={viewMode === 'result' || (processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE)}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500">
-              <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-              <p>Upload an image to start editing (or paste from clipboard)</p>
+            <div className="flex flex-col items-center justify-center h-full text-slate-400">
+              <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center mb-6 shadow-sm border border-slate-200 rotate-3">
+                 <svg className="w-10 h-10 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+              </div>
+              <p className="text-lg font-medium text-slate-600">Ready to Create</p>
+              <p className="text-sm mt-1">Upload images via the sidebar or paste from clipboard (Ctrl+V)</p>
             </div>
           )}
         </div>
