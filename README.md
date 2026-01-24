@@ -8,6 +8,13 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB.svg)
 ![Tailwind](https://img.shields.io/badge/Tailwind-CSS-38B2AC.svg)
 
+
+**TODO**：添加自动检测文本框的功能。
+
+嗯？你问加这个功能干什么？答案可以在文末找到哦（滑稽）
+
+
+
 ## ✨ 核心功能
 
 *   **🎯 精准局部编辑**：在画布上自由框选（支持多个区域），仅修改选中部分，保持原图其他部分不变。
