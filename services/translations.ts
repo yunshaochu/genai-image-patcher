@@ -1,9 +1,4 @@
 
-
-
-
-
-
 import { Language } from "../types";
 
 export const translations = {
@@ -14,6 +9,7 @@ export const translations = {
     // Upload
     uploadFiles: "上传文件",
     uploadFolder: "上传文件夹",
+    dropToUpload: "松开鼠标即可上传图片",
     
     // Gallery
     galleryTitle: "图库",
@@ -21,6 +17,9 @@ export const translations = {
     deleteImage: "删除图片",
     downloadZip: "下载压缩包",
     zipping: "压缩中...",
+    skipImage: "跳过处理 (包含原图在Zip)",
+    enableImage: "恢复处理",
+    skipped: "已跳过",
     
     // Prompt
     promptTitle: "提示词",
@@ -70,6 +69,8 @@ export const translations = {
     applyAll: "应用到所有 {count} 张图片",
     generate: "开始生成",
     generateAll: "批量生成所有",
+    stop: "停止生成",
+    stopping: "正在停止...",
     downloadResult: "下载最终结果",
     
     // Status
@@ -78,6 +79,7 @@ export const translations = {
     api_calling: "AI 正在思考...",
     stitching: "正在合成图片...",
     done: "完成",
+    stopped_by_user: "已由用户终止",
     
     // Badge Status
     status_pending: "等待中",
@@ -106,6 +108,7 @@ export const translations = {
     // Upload
     uploadFiles: "Files",
     uploadFolder: "Folder",
+    dropToUpload: "Release to upload images",
     
     // Gallery
     galleryTitle: "Gallery",
@@ -113,6 +116,9 @@ export const translations = {
     deleteImage: "Delete image",
     downloadZip: "Download Zip",
     zipping: "Zipping...",
+    skipImage: "Skip processing (Include original in Zip)",
+    enableImage: "Enable processing",
+    skipped: "SKIPPED",
     
     // Prompt
     promptTitle: "Prompt",
@@ -162,6 +168,8 @@ export const translations = {
     applyAll: "Apply to all {count} images",
     generate: "Generate Patches",
     generateAll: "Generate All Patches",
+    stop: "Stop",
+    stopping: "Stopping...",
     downloadResult: "Download Result",
     
     // Status
@@ -170,6 +178,7 @@ export const translations = {
     api_calling: "AI is processing...",
     stitching: "Stitching images...",
     done: "Done",
+    stopped_by_user: "Stopped by user",
     
     // Badge Status
     status_pending: "PENDING",

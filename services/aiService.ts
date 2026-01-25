@@ -1,3 +1,4 @@
+
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
@@ -40,12 +41,43 @@ export const fetchOpenAIModels = async (
 };
 
 /**
+ * Helper to race a promise against an abort signal
+ */
+const raceWithSignal = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+    if (!signal) return promise;
+    
+    if (signal.aborted) {
+        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+    }
+
+    return new Promise<T>((resolve, reject) => {
+        const abortHandler = () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+        };
+
+        signal.addEventListener('abort', abortHandler);
+
+        promise.then(
+            (res) => {
+                signal.removeEventListener('abort', abortHandler);
+                resolve(res);
+            },
+            (err) => {
+                signal.removeEventListener('abort', abortHandler);
+                reject(err);
+            }
+        );
+    });
+};
+
+/**
  * Handles communication with Gemini API (Native Google SDK)
  */
 const generateGeminiImage = async (
   imageBase64: string,
   prompt: string,
-  modelName: string
+  modelName: string,
+  signal?: AbortSignal
 ): Promise<string> => {
   // Use process.env.API_KEY directly as per guidelines
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -54,50 +86,55 @@ const generateGeminiImage = async (
     ? imageBase64.split(',')[1] 
     : imageBase64;
 
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents: {
-        parts: [
-          { inlineData: { mimeType: 'image/png', data: cleanBase64 } },
-          { text: prompt },
-        ],
-      },
-    });
+  const apiCall = async () => {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents: {
+            parts: [
+              { inlineData: { mimeType: 'image/png', data: cleanBase64 } },
+              { text: prompt },
+            ],
+          },
+        });
 
-    if (response.candidates && response.candidates.length > 0) {
-      const candidate = response.candidates[0];
-      if (candidate.content && candidate.content.parts) {
-        // 1. Look for Image in the response
-        for (const part of candidate.content.parts) {
-          if (part.inlineData && part.inlineData.data) {
-             const mimeType = part.inlineData.mimeType || 'image/png';
-             return `data:${mimeType};base64,${part.inlineData.data}`;
+        if (response.candidates && response.candidates.length > 0) {
+          const candidate = response.candidates[0];
+          if (candidate.content && candidate.content.parts) {
+            // 1. Look for Image in the response
+            for (const part of candidate.content.parts) {
+              if (part.inlineData && part.inlineData.data) {
+                 const mimeType = part.inlineData.mimeType || 'image/png';
+                 return `data:${mimeType};base64,${part.inlineData.data}`;
+              }
+            }
+            
+            // 2. Look for Text (often contains error messages or refusals)
+            const textParts = candidate.content.parts
+              .filter(p => p.text)
+              .map(p => p.text)
+              .join(' ');
+              
+            if (textParts) {
+               throw new Error(`Gemini response: ${textParts}`);
+            }
           }
         }
         
-        // 2. Look for Text (often contains error messages or refusals)
-        const textParts = candidate.content.parts
-          .filter(p => p.text)
-          .map(p => p.text)
-          .join(' ');
-          
-        if (textParts) {
-           throw new Error(`Gemini response: ${textParts}`);
-        }
-      }
-    }
-    
-    throw new Error("Gemini returned an empty response (no candidates or parts).");
+        throw new Error("Gemini returned an empty response (no candidates or parts).");
 
-  } catch (error: any) {
-    // If it's already our custom error, rethrow
-    if (error.message && error.message.startsWith('Gemini')) {
-        throw error;
-    }
-    console.error("Gemini API Error:", error);
-    throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
-  }
+      } catch (error: any) {
+        // If it's already our custom error, rethrow
+        if (error.message && error.message.startsWith('Gemini')) {
+            throw error;
+        }
+        console.error("Gemini API Error:", error);
+        throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
+      }
+  };
+
+  // Wrap in race condition to support "cancellation" from UI perspective
+  return raceWithSignal(apiCall(), signal);
 };
 
 /**
@@ -107,7 +144,8 @@ const generateGeminiImage = async (
 const generateOpenAIImage = async (
   imageBase64: string,
   prompt: string,
-  config: AppConfig
+  config: AppConfig,
+  signal?: AbortSignal
 ): Promise<string> => {
   const { openaiBaseUrl, openaiApiKey, openaiModel } = config;
   
@@ -154,7 +192,8 @@ const generateOpenAIImage = async (
         messages: messages,
         stream: false, // Force non-streaming to get the full response at once for easier parsing
         max_tokens: 4096 // Ensure we get a response
-      })
+      }),
+      signal: signal // Pass AbortSignal to fetch
     });
 
     if (!response.ok) {
@@ -197,6 +236,9 @@ const generateOpenAIImage = async (
     throw new Error("The model responded with text but no detectable image URL. Response: " + content.substring(0, 100) + "...");
 
   } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+        throw error; // Re-throw aborts to be caught by the UI
+    }
     console.error("OpenAI Chat Generation Error:", error);
     throw error;
   }
@@ -208,15 +250,16 @@ const generateOpenAIImage = async (
 export const generateRegionEdit = async (
   imageBase64: string,
   prompt: string,
-  config: AppConfig
+  config: AppConfig,
+  signal?: AbortSignal
 ): Promise<string> => {
   if (config.provider === 'openai') {
     if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
     // Now passing imageBase64 to OpenAI handler as well
-    return generateOpenAIImage(imageBase64, prompt, config);
+    return generateOpenAIImage(imageBase64, prompt, config, signal);
   } else {
     // Guidelines strictly state API Key must be from process.env.API_KEY
     // We assume process.env.API_KEY is available and valid.
-    return generateGeminiImage(imageBase64, prompt, config.geminiModel);
+    return generateGeminiImage(imageBase64, prompt, config.geminiModel, signal);
   }
 };

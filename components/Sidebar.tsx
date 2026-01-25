@@ -14,12 +14,14 @@ interface SidebarProps {
   onSelectImage: (id: string) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onProcess: (processAll: boolean) => void;
+  onStop: () => void;
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
   onDownload: () => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
   onUpdateImagePrompt: (imageId: string, prompt: string) => void;
   onDeleteImage: (imageId: string) => void;
+  onToggleSkip: (imageId: string) => void;
 }
 
 // Collapsible Section Component
@@ -192,12 +194,14 @@ const Sidebar: React.FC<SidebarProps> = ({
   onSelectImage,
   onUpload,
   onProcess,
+  onStop,
   processingState,
   currentImage,
   onDownload,
   onManualPatchUpdate,
   onUpdateImagePrompt,
-  onDeleteImage
+  onDeleteImage,
+  onToggleSkip
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -220,7 +224,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
-  const processedImagesCount = images.filter(img => img.finalResultUrl).length;
+  // CHANGED: Processed images now include "Skipped" ones for the zip count
+  const readyForZipCount = images.filter(img => img.finalResultUrl || img.isSkipped).length;
   const lang = config.language;
 
   const handleConfigChange = (key: keyof AppConfig, value: any) => {
@@ -247,25 +252,29 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleDownloadAllZip = async () => {
-    const processedImages = images.filter(img => img.finalResultUrl);
-    if (processedImages.length === 0) return;
+    // CHANGED: Filter logic to include skipped images (using originals)
+    const imagesToZip = images.filter(img => img.finalResultUrl || img.isSkipped);
+    if (imagesToZip.length === 0) return;
 
     setIsZipping(true);
     try {
       const zip = new JSZip();
       const folder = zip.folder("patched_results");
 
-      const promises = processedImages.map(async (img, index) => {
-        if (!img.finalResultUrl) return;
+      const promises = imagesToZip.map(async (img, index) => {
+        // Decide which URL to use: Result OR Original (if skipped)
+        const targetUrl = img.isSkipped ? img.previewUrl : img.finalResultUrl;
+        
+        if (!targetUrl) return;
         
         // Fetch blob from blob URL or Data URL
-        const response = await fetch(img.finalResultUrl);
+        const response = await fetch(targetUrl);
         const blob = await response.blob();
         
         // Create clean filename
         const originalName = img.file.name.substring(0, img.file.name.lastIndexOf('.')) || img.file.name;
         const ext = img.file.name.split('.').pop() || 'png';
-        const filename = `${originalName}_patched.${ext}`;
+        const filename = `${originalName}_${img.isSkipped ? 'original' : 'patched'}.${ext}`;
         
         folder?.file(filename, blob);
       });
@@ -395,8 +404,8 @@ const Sidebar: React.FC<SidebarProps> = ({
               >
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-[10px] text-skin-muted">{t(lang, 'selectToEdit')}</span>
-                  {/* CHANGED: Show button if ANY image is processed (>0) */}
-                  {processedImagesCount > 0 && (
+                  {/* CHANGED: Show button if ANY image is processed OR SKIPPED (>0) */}
+                  {readyForZipCount > 0 && (
                     <button 
                       onClick={(e) => { e.stopPropagation(); handleDownloadAllZip(); }}
                       disabled={isZipping || isProcessing}
@@ -406,51 +415,86 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   )}
                 </div>
-                {/* BLOCKED INTERACTION DURING PROCESSING */}
-                <div className={`grid grid-cols-4 gap-2 max-h-48 overflow-y-auto custom-scrollbar pr-1 ${isProcessing ? 'pointer-events-none opacity-50' : ''}`}>
+                {/* LAYOUT: grid-cols-2 for larger, clearer previews */}
+                {/* UNBLOCKED: Removed 'pointer-events-none' to allow switching while processing */}
+                <div className={`grid grid-cols-2 gap-3 max-h-[400px] overflow-y-auto custom-scrollbar pr-1`}>
                   {images.map((img) => (
                     <div
                       key={img.id}
                       onClick={() => onSelectImage(img.id)}
-                      className={`relative group aspect-square rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
+                      className={`relative group aspect-square rounded-xl overflow-hidden cursor-pointer border-2 transition-all ${
                         selectedImageId === img.id 
-                          ? 'border-skin-primary ring-2 ring-skin-primary/20 shadow-md' 
-                          : 'border-skin-fill hover:border-skin-border'
+                          ? 'border-skin-primary ring-2 ring-skin-primary/20 shadow-lg scale-[0.98]' 
+                          : 'border-skin-fill hover:border-skin-border hover:shadow-md'
                       }`}
+                      style={{ opacity: img.isSkipped ? 0.6 : 1, filter: img.isSkipped ? 'grayscale(100%)' : 'none' }}
                     >
                       <img src={img.previewUrl} alt="thumb" className="w-full h-full object-cover bg-skin-fill" />
                       
-                      {/* Delete Button */}
+                      {/* Skip Toggle Button (TOP LEFT, Accessible) */}
+                      {!isProcessing && (
+                         <button
+                           onClick={(e) => {
+                               e.stopPropagation();
+                               onToggleSkip(img.id);
+                           }}
+                           className={`absolute top-2 left-2 w-8 h-8 rounded-lg flex items-center justify-center transition-all z-20 shadow-md backdrop-blur-md ${img.isSkipped ? 'bg-skin-text/90 text-skin-fill scale-110' : 'bg-black/40 text-white/70 hover:bg-black/60 hover:text-white opacity-0 group-hover:opacity-100'}`}
+                           title={img.isSkipped ? t(lang, 'enableImage') : t(lang, 'skipImage')}
+                         >
+                            {img.isSkipped ? (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+                            ) : (
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                            )}
+                         </button>
+                      )}
+
+                      {/* Delete Button (TOP RIGHT, Standard) */}
                       {!isProcessing && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             onDeleteImage(img.id);
                           }}
-                          className="absolute top-0.5 left-0.5 w-5 h-5 bg-black/40 hover:bg-rose-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-10 backdrop-blur-[1px]"
+                          className="absolute top-2 right-2 w-7 h-7 bg-black/50 hover:bg-rose-600 text-white rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all z-30 backdrop-blur-md shadow-sm"
                           title={t(lang, 'deleteImage')}
                         >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
                       )}
 
-                      <div className="absolute top-0.5 right-0.5 flex gap-0.5">
+                      {/* Status Indicators (BOTTOM LEFT, Non-intrusive) - Kept for backup */}
+                      {/* We rely on the bar at the bottom now, so maybe remove this dot or keep as secondary? */}
+                      {/* Let's keep the dot for "processing" animation but remove the completed dot since we have the bar. */}
+                      <div className="absolute bottom-2 left-2 flex gap-1 z-20 pointer-events-none">
                         {img.regions.some(r => r.status === 'processing') && (
-                           <span className="flex h-2 w-2">
+                           <span className="flex h-3 w-3 relative">
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500 border-2 border-white shadow-sm"></span>
                             </span>
                         )}
-                         {!img.regions.some(r => r.status === 'processing') && img.regions.length > 0 && (
-                            <span className="flex h-2 w-2">
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-skin-primary border border-skin-surface"></span>
-                            </span>
-                         )}
                       </div>
                       
-                      {img.finalResultUrl && (
-                        <div className="absolute inset-x-0 bottom-0 h-1 bg-emerald-500"></div>
-                      )}
+                      {/* Segmented Status Bar (Bottom) */}
+                      <div className="absolute inset-x-0 bottom-0 h-1.5 flex">
+                        {img.regions.length > 0 ? (
+                           img.regions.map(r => (
+                              <div 
+                                key={r.id} 
+                                className={`flex-1 transition-colors duration-300 ${
+                                   r.status === 'completed' ? 'bg-emerald-500 shadow-[0_-2px_4px_rgba(16,185,129,0.3)]' :
+                                   r.status === 'failed' ? 'bg-rose-500 shadow-[0_-2px_4px_rgba(244,63,94,0.3)]' :
+                                   r.status === 'processing' ? 'bg-amber-400 animate-pulse' :
+                                   'bg-skin-fill/20 backdrop-blur-[1px]' // Pending state
+                                }`}
+                                title={`Region: ${t(lang, `status_${r.status}` as any)}`}
+                              />
+                           ))
+                        ) : img.finalResultUrl && (
+                             // Fallback for cases with result but no specific regions tracked
+                             <div className="w-full h-full bg-emerald-500"></div>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -775,12 +819,23 @@ const Sidebar: React.FC<SidebarProps> = ({
            </button>
 
           {isProcessing ? (
-            <div className="flex flex-col items-center justify-center py-2 space-y-3">
-              <div className="relative w-8 h-8">
-                <div className="absolute inset-0 border-2 border-skin-primary-light rounded-full"></div>
-                <div className="absolute inset-0 border-2 border-skin-primary border-t-transparent rounded-full animate-spin"></div>
+            <div className="flex flex-col items-center justify-center space-y-3">
+               <div className="flex items-center gap-2 py-2">
+                  <div className="relative w-6 h-6">
+                    <div className="absolute inset-0 border-2 border-skin-primary-light rounded-full"></div>
+                    <div className="absolute inset-0 border-2 border-skin-primary border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                  <p className="text-xs text-skin-muted font-medium animate-pulse">{processingText}</p>
               </div>
-              <p className="text-xs text-skin-muted font-medium animate-pulse">{processingText}</p>
+              
+              {/* Stop Button */}
+              <button 
+                onClick={onStop}
+                className="w-full py-2 bg-rose-500 hover:bg-rose-600 text-white rounded-lg font-semibold text-xs transition-colors shadow-sm flex items-center justify-center gap-2"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                {t(lang, 'stop')}
+              </button>
             </div>
           ) : (
             <div className="space-y-3 pt-4">
@@ -813,15 +868,15 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   </div>
                   
-                  {/* ADDED: Batch Download Button in Footer */}
-                  {processedImagesCount > 1 && (
+                  {/* Batch Download Button in Footer */}
+                  {readyForZipCount > 1 && (
                       <button
                         onClick={handleDownloadAllZip}
                         disabled={isZipping}
                         className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-semibold text-sm transition-all shadow-md active:scale-[0.98] flex items-center justify-center gap-2"
                       >
                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                        {isZipping ? t(lang, 'zipping') : t(lang, 'downloadZip')} ({processedImagesCount})
+                        {isZipping ? t(lang, 'zipping') : t(lang, 'downloadZip')} ({readyForZipCount})
                       </button>
                    )}
                 </>

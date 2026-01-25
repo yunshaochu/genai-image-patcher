@@ -19,6 +19,7 @@ export interface UploadedImage {
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
   customPrompt?: string; // Optional: Image-specific prompt overrides global prompt
+  isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
 }
 
 export type AiProvider = 'openai' | 'gemini';
