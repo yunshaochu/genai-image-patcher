@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, UploadedImage, Region, ProcessingStep } from './types';
 import Sidebar from './components/Sidebar';
@@ -35,7 +36,10 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionInflationPercent: 10, // 10% expansion
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
-  detectionConfidenceThreshold: 30 // 0.3
+  detectionConfidenceThreshold: 30, // 0.3
+  
+  // Global Features
+  enableSmartAssist: false // Default off
 };
 
 type ViewMode = 'original' | 'result';
@@ -116,6 +120,7 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         const geminiKey = parsed.geminiApiKey || process.env.API_KEY || '';
+        // Ensure new defaults are respected if key missing in old config
         return { 
             ...DEFAULT_CONFIG, 
             ...parsed, 

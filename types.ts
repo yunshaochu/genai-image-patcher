@@ -73,6 +73,9 @@ export interface AppConfig {
   detectionOffsetXPercent: number; // e.g. 0
   detectionOffsetYPercent: number; // e.g. 0
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
+  
+  // Global Features
+  enableSmartAssist: boolean;
 }
 
 export enum ProcessingStep {

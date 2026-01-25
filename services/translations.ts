@@ -131,6 +131,11 @@ export const translations = {
     guideTitle: "使用指南与技巧",
     close: "关闭",
     
+    // Global Settings
+    globalSettings: "全局设置",
+    enableSmartAssist: "启用智能辅助",
+    enableSmartAssistDesc: "在侧边栏显示自动检测功能模块",
+    
     // Guide: Sections
     guide_sec_basics: "核心流程",
     guide_sec_advanced: "高级功能 & 技巧",
@@ -280,6 +285,11 @@ export const translations = {
     // Guide
     guideTitle: "User Guide & Tips",
     close: "Close",
+    
+    // Global Settings
+    globalSettings: "Global Settings",
+    enableSmartAssist: "Enable Smart Assist",
+    enableSmartAssistDesc: "Show auto-detection features in sidebar",
     
     guide_sec_basics: "Core Workflow",
     guide_sec_advanced: "Advanced & Tips",
