@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
 import { cropRegion, loadImage } from '../services/imageUtils';
@@ -34,12 +34,12 @@ const Section: React.FC<{
   onToggle?: () => void 
 }> = ({ title, children, isOpen, onToggle }) => {
   return (
-    <div className="border border-skin-border rounded-lg overflow-hidden bg-skin-surface shadow-sm transition-all hover:shadow-md">
+    <div className="border border-skin-border rounded-xl bg-skin-surface shadow-sm transition-all hover:shadow-md mb-3">
       <button 
         onClick={onToggle}
-        className="w-full flex items-center justify-between px-4 py-3 bg-skin-fill/50 hover:bg-skin-fill transition-colors text-left"
+        className={`w-full flex items-center justify-between px-4 py-3 bg-skin-fill/30 hover:bg-skin-fill transition-colors text-left ${isOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
       >
-        <span className="text-xs font-semibold text-skin-muted uppercase tracking-wide">{title}</span>
+        <span className="text-xs font-bold text-skin-muted uppercase tracking-wider">{title}</span>
         <svg 
           className={`w-4 h-4 text-skin-muted transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
           fill="none" 
@@ -50,7 +50,7 @@ const Section: React.FC<{
         </svg>
       </button>
       {isOpen && (
-        <div className="p-4 border-t border-skin-border space-y-4">
+        <div className="p-4 border-t border-skin-border space-y-4 bg-skin-surface rounded-b-xl">
           {children}
         </div>
       )}
@@ -229,6 +229,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [showHelp, setShowHelp] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
   const [showDetectTuning, setShowDetectTuning] = useState(false);
+  
+  // Model Dropdown State
+  const [showModelDropdown, setShowModelDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [sectionsState, setSectionsState] = useState({
     gallery: true,
@@ -239,6 +243,22 @@ const Sidebar: React.FC<SidebarProps> = ({
     execution: false,
     manual: true
   });
+
+  // Handle click outside for model dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+            setShowModelDropdown(false);
+        }
+    };
+
+    if (showModelDropdown) {
+        document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showModelDropdown]);
 
   const toggleSection = (key: keyof typeof sectionsState) => {
     setSectionsState(prev => ({ ...prev, [key]: !prev[key] }));
@@ -261,6 +281,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     try {
       const models = await fetchOpenAIModels(config.openaiBaseUrl, config.openaiApiKey);
       setModelList(models);
+      setShowModelDropdown(true); // Open list after fetching
       if (models.length > 0 && !models.includes(config.openaiModel)) {
         handleConfigChange('openaiModel', models[0]);
       }
@@ -331,7 +352,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const statusKey = processingState.toLowerCase() as any;
 
   return (
-    <aside className="w-80 h-full bg-skin-surface border-r border-skin-border flex flex-col shadow-xl z-20 relative">
+    <aside className="w-80 h-full bg-skin-surface border-r border-skin-border flex flex-col shadow-2xl z-20 relative">
       <div className="p-5 border-b border-skin-border bg-skin-surface relative flex flex-col gap-4">
         {/* Help Button - Absolute Top Right */}
         <button 
@@ -373,13 +394,13 @@ const Sidebar: React.FC<SidebarProps> = ({
         <Section title={t(lang, 'galleryTitle')} isOpen={sectionsState.gallery} onToggle={() => toggleSection('gallery')}>
            {/* Upload Buttons */}
            <div className="flex gap-2 mb-2">
-               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
                   <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
                   <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
                   <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFiles')}</span>
                </label>
                
-               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
                   {/* @ts-ignore */}
                   <input type="file" multiple webkitdirectory="" directory="" className="hidden" onChange={onUpload} />
                   <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
@@ -394,7 +415,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   {images.map(img => (
                     <div 
                       key={img.id} 
-                      className={`group relative flex flex-col p-2 rounded-md border transition-all cursor-pointer overflow-hidden ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
+                      className={`group relative flex flex-col p-2 rounded-lg border transition-all cursor-pointer overflow-hidden ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
                       onClick={() => onSelectImage(img.id)}
                     >
                         <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
@@ -448,7 +469,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <button 
                     onClick={handleDownloadAllZip}
                     disabled={isZipping}
-                    className="w-full mt-3 py-1.5 text-xs border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2"
+                    className="w-full mt-3 py-1.5 text-xs border border-skin-border rounded-lg text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2"
                   >
                     {isZipping ? (
                       <>
@@ -474,16 +495,16 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Smart Detection */}
         {currentImage && (
             <Section title={t(lang, 'detectTitle')} isOpen={sectionsState.smart} onToggle={() => toggleSection('smart')}>
-               <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded border border-skin-border">
+               <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded-lg border border-skin-border">
                   <button 
                      onClick={() => setDetectScope('current')}
-                     className={`flex-1 py-1.5 text-[10px] rounded transition-all ${detectScope === 'current' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                     className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${detectScope === 'current' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
                   >
                      {t(lang, 'detectScopeCurrent')}
                   </button>
                   <button 
                      onClick={() => setDetectScope('all')}
-                     className={`flex-1 py-1.5 text-[10px] rounded transition-all ${detectScope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                     className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${detectScope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
                   >
                      {t(lang, 'detectScopeAll')}
                   </button>
@@ -515,7 +536,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                </button>
                
                {showDetectTuning && (
-                 <div className="bg-skin-fill/30 p-2 rounded border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-1">
+                 <div className="bg-skin-fill/30 p-2 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-1">
                     <div>
                        <div className="flex justify-between text-[10px] text-skin-muted mb-1">
                           <span>{t(lang, 'detectInflation')}</span>
@@ -579,7 +600,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                      type="text" 
                      value={config.detectionApiUrl}
                      onChange={(e) => handleConfigChange('detectionApiUrl', e.target.value)}
-                     className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface focus:border-skin-primary transition-colors"
+                     className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                      placeholder="http://localhost:5000/detect"
                    />
                </div>
@@ -610,7 +631,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <textarea 
                     value={config.prompt}
                     onChange={(e) => handleConfigChange('prompt', e.target.value)}
-                    className="w-full h-20 p-2 text-xs border border-skin-border rounded-md bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none"
+                    className="w-full h-20 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
                     placeholder={t(lang, 'promptPlaceholder')}
                   />
                </div>
@@ -626,7 +647,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <textarea 
                       value={currentImage.customPrompt || ''}
                       onChange={(e) => onUpdateImagePrompt(currentImage.id, e.target.value)}
-                      className="w-full h-16 p-2 text-xs border border-skin-border rounded-md bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none"
+                      className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
                       placeholder={t(lang, 'promptSpecificPlaceholder')}
                     />
                  </div>
@@ -641,14 +662,19 @@ const Sidebar: React.FC<SidebarProps> = ({
               <div className="space-y-3">
                  <div>
                     <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
-                    <select 
-                      value={config.provider}
-                      onChange={(e) => handleConfigChange('provider', e.target.value)}
-                      className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
-                    >
-                       <option value="openai">OpenAI Compatible (ChatGPT, Claude, etc)</option>
-                       <option value="gemini">Google Gemini</option>
-                    </select>
+                    <div className="relative">
+                        <select 
+                          value={config.provider}
+                          onChange={(e) => handleConfigChange('provider', e.target.value)}
+                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary appearance-none"
+                        >
+                           <option value="openai">OpenAI Compatible (ChatGPT, Claude, etc)</option>
+                           <option value="gemini">Google Gemini</option>
+                        </select>
+                        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-skin-muted">
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                        </div>
+                    </div>
                  </div>
                  
                  {config.provider === 'openai' && (
@@ -659,7 +685,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           type="text" 
                           value={config.openaiBaseUrl}
                           onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
-                          className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
+                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
                         />
                       </div>
                       <div>
@@ -668,31 +694,89 @@ const Sidebar: React.FC<SidebarProps> = ({
                           type="password" 
                           value={config.openaiApiKey}
                           onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
-                          className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
+                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
                         />
                       </div>
-                      <div>
+                      
+                      {/* IMPROVED MODEL SELECTOR */}
+                      <div className="relative" ref={dropdownRef}>
                          <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
+                         
                          <div className="flex gap-2">
-                             <input 
-                               type="text" 
-                               value={config.openaiModel}
-                               onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
-                               className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
-                               placeholder={t(lang, 'modelIdPlaceholder')}
-                               list="openai-models"
-                             />
-                             <datalist id="openai-models">
-                               {modelList.map(m => <option key={m} value={m} />)}
-                             </datalist>
+                             <div className="relative flex-1">
+                                 <input 
+                                   type="text" 
+                                   value={config.openaiModel}
+                                   onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
+                                   className="w-full pl-2 pr-8 py-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary transition-all shadow-sm"
+                                   placeholder={t(lang, 'modelIdPlaceholder')}
+                                   onFocus={() => {
+                                      if (modelList.length > 0) setShowModelDropdown(true);
+                                   }}
+                                 />
+                                 
+                                 {/* Dropdown Toggle Button */}
+                                 <button 
+                                     type="button"
+                                     onClick={() => {
+                                         if (modelList.length === 0) {
+                                             handleFetchOpenAIModels();
+                                         } else {
+                                             setShowModelDropdown(!showModelDropdown);
+                                         }
+                                     }}
+                                     className="absolute right-0 top-0 h-full px-2 text-skin-muted hover:text-skin-primary transition-colors flex items-center justify-center"
+                                 >
+                                     <svg className={`w-4 h-4 transition-transform duration-200 ${showModelDropdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                     </svg>
+                                 </button>
+                             </div>
+                             
                              <button 
                                onClick={handleFetchOpenAIModels}
                                disabled={isLoadingModels}
-                               className="px-2 py-1 bg-skin-fill border border-skin-border rounded text-xs hover:bg-skin-border"
+                               className="px-3 py-1.5 bg-skin-surface border border-skin-border rounded-lg text-xs hover:bg-skin-fill hover:border-skin-primary/50 text-skin-muted hover:text-skin-primary transition-all shadow-sm active:scale-95 flex items-center justify-center min-w-[32px]"
+                               title={t(lang, 'fetchList')}
                              >
-                               {isLoadingModels ? '...' : '↻'}
+                               {isLoadingModels ? (
+                                   <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                               ) : (
+                                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                               )}
                              </button>
                          </div>
+
+                         {/* Dropdown List (Absolute, above input) */}
+                         {showModelDropdown && modelList.length > 0 && (
+                             <div className="absolute bottom-full left-0 right-0 mb-1 z-50 bg-skin-surface border border-skin-border rounded-lg shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 origin-bottom">
+                                 {modelList.map(m => (
+                                     <button
+                                         key={m}
+                                         type="button"
+                                         onClick={() => {
+                                             handleConfigChange('openaiModel', m);
+                                             setShowModelDropdown(false);
+                                         }}
+                                         className={`w-full text-left px-3 py-2 text-xs transition-colors border-l-2 ${
+                                            config.openaiModel === m 
+                                                ? 'bg-skin-primary/5 text-skin-primary font-bold border-skin-primary' 
+                                                : 'text-skin-text border-transparent hover:bg-skin-fill hover:text-skin-primary hover:border-skin-border'
+                                         }`}
+                                     >
+                                         {m}
+                                     </button>
+                                 ))}
+                             </div>
+                         )}
+                         
+                         {/* Empty State / Prompt to Fetch */}
+                         {showModelDropdown && modelList.length === 0 && !isLoadingModels && (
+                             <div className="absolute bottom-full left-0 right-0 mb-1 z-50 bg-skin-surface border border-skin-border rounded-lg shadow-xl p-3 text-center origin-bottom animate-in fade-in zoom-in-95">
+                                 <p className="text-[10px] text-skin-muted mb-2">No models loaded.</p>
+                                 <button onClick={handleFetchOpenAIModels} className="text-xs text-skin-primary underline">Fetch Models</button>
+                             </div>
+                         )}
                       </div>
                     </>
                  )}
@@ -706,7 +790,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                           value={config.geminiApiKey}
                           disabled={true}
                           title="API Key is managed via environment variable"
-                          className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface opacity-60 cursor-not-allowed"
+                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface opacity-60 cursor-not-allowed shadow-sm"
                           placeholder="Using process.env.API_KEY"
                         />
                       </div>
@@ -716,7 +800,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                            type="text" 
                            value={config.geminiModel}
                            onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
-                           className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
+                           className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
                         />
                       </div>
                     </>
@@ -731,7 +815,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               <div className="space-y-3">
                  <div>
                     <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'mode')}</label>
-                    <div className="flex bg-skin-fill p-1 rounded border border-skin-border">
+                    <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
                        <button 
                          onClick={() => handleConfigChange('executionMode', 'concurrent')}
                          className={`flex-1 py-1 text-[10px] rounded transition-all ${config.executionMode === 'concurrent' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted'}`}
@@ -757,7 +841,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                          type="number" min="1" step="1"
                          value={config.concurrencyLimit}
                          onChange={(e) => handleConfigChange('concurrencyLimit', Math.max(1, Number(e.target.value)))}
-                         className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
+                         className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
                        />
                     </div>
                  )}
@@ -768,7 +852,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         <input 
                           type="number" value={config.apiTimeout / 1000}
                           onChange={(e) => handleConfigChange('apiTimeout', Number(e.target.value) * 1000)}
-                          className="w-full p-1 text-xs border border-skin-border rounded bg-skin-surface"
+                          className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
                         />
                      </div>
                      <div className="flex-1">
@@ -776,7 +860,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         <input 
                           type="number" value={config.maxRetries}
                           onChange={(e) => handleConfigChange('maxRetries', Number(e.target.value))}
-                          className="w-full p-1 text-xs border border-skin-border rounded bg-skin-surface"
+                          className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
                         />
                      </div>
                  </div>
@@ -820,7 +904,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
               <button 
                  onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                 className="w-full py-2 mt-2 bg-skin-surface border border-dashed border-skin-primary/50 text-skin-primary rounded text-xs hover:bg-skin-fill transition-colors"
+                 className="w-full py-2 mt-2 bg-skin-surface border border-dashed border-skin-primary/50 text-skin-primary rounded-lg text-xs hover:bg-skin-fill transition-colors"
               >
                   + Edit Full Image
               </button>
