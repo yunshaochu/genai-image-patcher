@@ -1,4 +1,5 @@
 
+
 import React, { useRef, useState, useEffect } from 'react';
 import { UploadedImage, Region, Language } from '../types';
 import { t } from '../services/translations';
@@ -9,6 +10,8 @@ interface EditorCanvasProps {
   disabled?: boolean;
   language: Language;
   onOpenEditor: (regionId: string) => void;
+  selectedRegionId: string | null;
+  onSelectRegion: (regionId: string | null) => void;
 }
 
 type InteractionType = 'idle' | 'drawing' | 'moving' | 'resizing';
@@ -22,12 +25,19 @@ interface InteractionState {
   currentRect?: Partial<Region>; // Visual temporary rect for drawing/moving/resizing
 }
 
-const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, disabled, language, onOpenEditor }) => {
+const EditorCanvas: React.FC<EditorCanvasProps> = ({ 
+    image, 
+    onUpdateRegions, 
+    disabled, 
+    language, 
+    onOpenEditor,
+    selectedRegionId,
+    onSelectRegion
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   
   // Interaction State
   const [interaction, setInteraction] = useState<InteractionState>({ type: 'idle', startPos: { x: 0, y: 0 } });
-  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   
   // Use Refs for event listeners to avoid stale closures without constant re-binding
   const interactionRef = useRef(interaction);
@@ -56,7 +66,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
     const coords = getRelativeCoords(e.clientX, e.clientY);
     
     // Deselect if clicking background
-    setSelectedRegionId(null);
+    onSelectRegion(null);
 
     const initialRect = { x: coords.x, y: coords.y, width: 0, height: 0 };
     
@@ -73,7 +83,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
     e.stopPropagation(); // Prevent background click
     
     // Select this region
-    setSelectedRegionId(region.id);
+    onSelectRegion(region.id);
 
     if (region.status === 'completed') return; // Cannot edit active/done regions easily without reset
 
@@ -198,10 +208,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
                height: height || 0,
                type: 'rect',
                status: 'pending',
-               source: 'manual'
+               source: 'manual',
+               customPrompt: ''
             };
             onUpdateRegions(imageRef.current.id, [...imageRef.current.regions, newRegion]);
-            setSelectedRegionId(newRegion.id); 
+            onSelectRegion(newRegion.id); 
          }
       }
       else if ((state.type === 'moving' || state.type === 'resizing') && state.currentRect && state.regionId) {
@@ -224,7 +235,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
       window.removeEventListener('mousemove', handleWindowMouseMove);
       window.removeEventListener('mouseup', handleWindowMouseUp);
     };
-  }, [disabled, onUpdateRegions]);
+  }, [disabled, onUpdateRegions, onSelectRegion]);
 
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -232,7 +243,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
       image.id,
       image.regions.filter((r) => r.id !== regionId)
     );
-    if (selectedRegionId === regionId) setSelectedRegionId(null);
+    if (selectedRegionId === regionId) onSelectRegion(null);
   };
 
   const resetRegion = (regionId: string) => {

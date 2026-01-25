@@ -12,6 +12,7 @@ interface SidebarProps {
   setConfig: React.Dispatch<React.SetStateAction<AppConfig>>;
   images: UploadedImage[];
   selectedImageId: string | null;
+  selectedRegionId: string | null; // NEW
   onSelectImage: (id: string) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onProcess: (processAll: boolean) => void;
@@ -20,7 +21,7 @@ interface SidebarProps {
   currentImage?: UploadedImage;
   onDownload: () => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
-  onUpdateImagePrompt: (imageId: string, prompt: string) => void;
+  onUpdateRegionPrompt: (imageId: string, regionId: string, prompt: string) => void; // CHANGED from onUpdateImagePrompt
   onDeleteImage: (imageId: string) => void;
   onToggleSkip: (imageId: string) => void;
   onAutoDetect: (scope: 'current' | 'all') => void;
@@ -208,6 +209,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   setConfig,
   images,
   selectedImageId,
+  selectedRegionId,
   onSelectImage,
   onUpload,
   onProcess,
@@ -216,7 +218,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   currentImage,
   onDownload,
   onManualPatchUpdate,
-  onUpdateImagePrompt,
+  onUpdateRegionPrompt,
   onDeleteImage,
   onToggleSkip,
   onAutoDetect,
@@ -245,6 +247,10 @@ const Sidebar: React.FC<SidebarProps> = ({
     execution: false,
     manual: true
   });
+
+  const selectedRegion = currentImage && selectedRegionId 
+    ? currentImage.regions.find(r => r.id === selectedRegionId) 
+    : null;
 
   // Handle click outside for model dropdown
   useEffect(() => {
@@ -650,20 +656,31 @@ const Sidebar: React.FC<SidebarProps> = ({
                   />
                </div>
                
+               {/* REGION SPECIFIC PROMPT */}
                {currentImage && (
-                 <div className="pt-2 border-t border-skin-border border-dashed">
+                 <div className="pt-2 border-t border-skin-border border-dashed transition-all">
                     <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
                        {t(lang, 'promptSpecificLabel')}
-                       <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-text font-normal normal-case truncate max-w-[100px]">
-                          {currentImage.file.name}
-                       </span>
+                       {selectedRegion && (
+                         <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
+                           ID: {selectedRegion.id.slice(0, 4)}
+                         </span>
+                       )}
                     </label>
-                    <textarea 
-                      value={currentImage.customPrompt || ''}
-                      onChange={(e) => onUpdateImagePrompt(currentImage.id, e.target.value)}
-                      className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
-                      placeholder={t(lang, 'promptSpecificPlaceholder')}
-                    />
+                    
+                    {selectedRegion ? (
+                        <textarea 
+                          key={selectedRegion.id} // Re-render when selection changes
+                          value={selectedRegion.customPrompt || ''}
+                          onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
+                          className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
+                          placeholder={t(lang, 'promptSpecificPlaceholder')}
+                        />
+                    ) : (
+                        <div className="w-full h-16 p-2 text-xs border border-dashed border-skin-border rounded-lg bg-skin-fill/20 flex items-center justify-center text-skin-muted text-center italic">
+                           Select a region to customize its prompt
+                        </div>
+                    )}
                  </div>
                )}
              </div>

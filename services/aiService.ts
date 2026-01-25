@@ -1,7 +1,17 @@
 
+
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
+
+/**
+ * Helper to sanitize header values (API Keys) to prevent
+ * "Failed to read the 'headers' property from 'RequestInit': String contains non ISO-8859-1 code point."
+ * This removes non-ISO-8859-1 characters (like Chinese characters, emojis) which cause fetch to crash.
+ */
+const sanitizeHeaderValue = (value: string): string => {
+  return value.replace(/[^\x00-\xFF]/g, '').trim();
+};
 
 /**
  * Fetch available models from OpenAI compatible API
@@ -17,11 +27,13 @@ export const fetchOpenAIModels = async (
     ? `${cleanBaseUrl}/models` 
     : `${cleanBaseUrl}/v1/models`;
 
+  const safeApiKey = sanitizeHeaderValue(apiKey);
+
   try {
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${safeApiKey}`,
       },
     });
 
@@ -176,6 +188,8 @@ const generateOpenAIImage = async (
 ): Promise<string> => {
   const { openaiBaseUrl, openaiApiKey, openaiModel } = config;
   
+  const safeApiKey = sanitizeHeaderValue(openaiApiKey);
+
   // Ensure we hit the chat completions endpoint as per user request
   // Handle case where user might or might not have included /v1 in the base URL
   let cleanBaseUrl = openaiBaseUrl.replace(/\/$/, "");
@@ -212,7 +226,7 @@ const generateOpenAIImage = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openaiApiKey}`,
+        'Authorization': `Bearer ${safeApiKey}`,
       },
       body: JSON.stringify({
         model: openaiModel,

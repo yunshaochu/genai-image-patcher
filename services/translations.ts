@@ -40,9 +40,9 @@ export const translations = {
     // Prompt
     promptTitle: "提示词",
     promptGlobalLabel: "全局默认提示词",
-    promptSpecificLabel: "当前图片专用提示词",
+    promptSpecificLabel: "当前选中选区提示词", // Updated
     promptPlaceholder: "描述你想要修改的内容 (例如: 去除水印, 换成蓝天)...",
-    promptSpecificPlaceholder: "在此追加针对本图的额外细节描述...",
+    promptSpecificPlaceholder: "在此追加针对此区域的额外细节描述...", // Updated
     
     // Settings
     settingsTitle: "连接设置",
@@ -195,9 +195,9 @@ export const translations = {
     // Prompt
     promptTitle: "Prompt",
     promptGlobalLabel: "Global Default Prompt",
-    promptSpecificLabel: "Current Image Prompt",
+    promptSpecificLabel: "Current Region Prompt", // Updated
     promptPlaceholder: "Describe the edit...",
-    promptSpecificPlaceholder: "Append specific details to global prompt...",
+    promptSpecificPlaceholder: "Append specific details for this region...", // Updated
     
     // Settings
     settingsTitle: "Connection Settings",

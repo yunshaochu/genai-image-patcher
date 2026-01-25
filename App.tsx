@@ -23,7 +23,7 @@ const DEFAULT_CONFIG: AppConfig = {
   theme: 'light',
   language: 'zh',
   provider: 'openai',
-  openaiBaseUrl: 'https://api.openai.com/v1',
+  openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
   openaiModel: 'dall-e-3',
   geminiApiKey: process.env.API_KEY || '',
@@ -136,6 +136,7 @@ export default function App() {
 
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null); // Lifted state for region selection
   const [processingState, setProcessingState] = useState<ProcessingStep>(ProcessingStep.IDLE);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
@@ -187,7 +188,6 @@ export default function App() {
           originalWidth: imgEl.naturalWidth,
           originalHeight: imgEl.naturalHeight,
           regions: [],
-          customPrompt: '',
           isSkipped: false
         });
       } catch (e) {
@@ -240,6 +240,7 @@ export default function App() {
 
   const handleSelectImage = (id: string) => {
     setSelectedImageId(id);
+    setSelectedRegionId(null); // Reset region selection on image change
     const target = images.find(img => img.id === id);
     if (target?.finalResultUrl) {
         setViewMode('result');
@@ -264,10 +265,14 @@ export default function App() {
     });
   };
 
-  const handleUpdateImagePrompt = (imageId: string, prompt: string) => {
-    setImages(prev => prev.map(img => 
-      img.id === imageId ? { ...img, customPrompt: prompt } : img
-    ));
+  const handleUpdateRegionPrompt = (imageId: string, regionId: string, prompt: string) => {
+    setImages(prev => prev.map(img => {
+      if (img.id !== imageId) return img;
+      return {
+        ...img,
+        regions: img.regions.map(r => r.id === regionId ? { ...r, customPrompt: prompt } : r)
+      };
+    }));
   };
 
   const handleToggleSkip = (imageId: string) => {
@@ -453,10 +458,6 @@ export default function App() {
     if (signal.aborted) return;
     setProcessingState(ProcessingStep.CROPPING);
 
-    const globalPrompt = config.prompt.trim();
-    const specificPrompt = imageSnapshot.customPrompt ? imageSnapshot.customPrompt.trim() : '';
-    const effectivePrompt = specificPrompt.length > 0 ? `${globalPrompt} ${specificPrompt}` : globalPrompt;
-
     const processRegionTask = async (region: Region) => {
         if (signal.aborted) return;
 
@@ -470,6 +471,12 @@ export default function App() {
             if (signal.aborted) return;
 
             setProcessingState(ProcessingStep.API_CALLING);
+            
+            // CONSTRUCT REGION SPECIFIC PROMPT
+            const globalPrompt = config.prompt.trim();
+            const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
+            const effectivePrompt = regionSpecificPrompt.length > 0 ? `${globalPrompt} ${regionSpecificPrompt}` : globalPrompt;
+
             const processedBase64 = await generateRegionEdit(croppedBase64, effectivePrompt, config, signal);
             
             if (signal.aborted) return;
@@ -639,6 +646,7 @@ export default function App() {
         setConfig={setConfig}
         images={images}
         selectedImageId={selectedImageId}
+        selectedRegionId={selectedRegionId}
         onSelectImage={handleSelectImage}
         onUpload={handleUpload}
         onProcess={handleProcess}
@@ -647,7 +655,7 @@ export default function App() {
         currentImage={selectedImage}
         onDownload={handleDownload}
         onManualPatchUpdate={handleManualPatchUpdate}
-        onUpdateImagePrompt={handleUpdateImagePrompt}
+        onUpdateRegionPrompt={handleUpdateRegionPrompt}
         onDeleteImage={handleDeleteImage}
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
@@ -687,6 +695,8 @@ export default function App() {
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
                     language={config.language}
                     onOpenEditor={(regionId) => handleOpenEditor(selectedImage.id, regionId)}
+                    selectedRegionId={selectedRegionId}
+                    onSelectRegion={setSelectedRegionId}
                 />
              ) : (
                 <div className="w-full h-full flex items-center justify-center p-8">

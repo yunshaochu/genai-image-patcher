@@ -10,6 +10,7 @@ export interface Region {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   processedImageBase64?: string; // The result from API
   source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
+  customPrompt?: string; // Image-specific prompt overrides global prompt
 }
 
 export interface UploadedImage {
@@ -20,7 +21,6 @@ export interface UploadedImage {
   originalHeight: number;
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
-  customPrompt?: string; // Optional: Image-specific prompt overrides global prompt
   isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
 }
 
