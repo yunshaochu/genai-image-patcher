@@ -5,7 +5,6 @@ import { fetchOpenAIModels } from '../services/aiService';
 import { cropRegion, loadImage } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
-import PatchEditor from './PatchEditor';
 
 interface SidebarProps {
   config: AppConfig;
@@ -23,9 +22,11 @@ interface SidebarProps {
   onUpdateImagePrompt: (imageId: string, prompt: string) => void;
   onDeleteImage: (imageId: string) => void;
   onToggleSkip: (imageId: string) => void;
+  onAutoDetect: (scope: 'current' | 'all') => void;
+  isDetecting: boolean;
+  onOpenEditor: (imageId: string, regionId: string) => void;
 }
 
-// Collapsible Section Component
 const Section: React.FC<{ 
   title: string; 
   children: React.ReactNode; 
@@ -57,7 +58,6 @@ const Section: React.FC<{
   );
 };
 
-// Component for a single Manual Patch Row
 const ManualPatchRow: React.FC<{
   region: Region;
   image: UploadedImage;
@@ -100,7 +100,6 @@ const ManualPatchRow: React.FC<{
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    // CRITICAL: Stop propagation so App.tsx global listener doesn't trigger file upload
     e.stopPropagation();
     e.preventDefault();
 
@@ -123,8 +122,7 @@ const ManualPatchRow: React.FC<{
   };
 
   return (
-    <div className="flex items-stretch gap-2 bg-skin-fill/30 p-2 rounded-lg border border-skin-border">
-      {/* Source Side */}
+    <div className={`flex items-stretch gap-2 bg-skin-fill/30 p-2 rounded-lg border ${region.source === 'auto' ? 'border-dashed border-skin-primary/50' : 'border-skin-border'}`}>
       <div className="flex-1 flex flex-col gap-1 items-center">
          <span className="text-[9px] text-skin-muted uppercase">{t(lang, 'sourceCrop')}</span>
          <div className="w-16 h-16 bg-checkerboard rounded border border-skin-border overflow-hidden relative group">
@@ -132,6 +130,11 @@ const ManualPatchRow: React.FC<{
               <img src={sourceCrop} className="w-full h-full object-contain" />
             ) : (
               <div className="w-full h-full animate-pulse bg-skin-fill"></div>
+            )}
+            {region.source === 'auto' && (
+                <div className="absolute top-0 right-0 p-0.5 bg-skin-primary text-white rounded-bl shadow-sm" title="Detected Automatically">
+                   <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                </div>
             )}
          </div>
          <div className="flex gap-1 w-full">
@@ -143,22 +146,13 @@ const ManualPatchRow: React.FC<{
              >
                {copied ? t(lang, 'copied') : t(lang, 'copyCrop')}
              </button>
-             <button 
-                onClick={onOpenEditor}
-                disabled={!sourceCrop}
-                className="flex-1 text-[9px] px-1 py-1 bg-skin-primary text-skin-primary-fg border border-skin-primary rounded hover:bg-opacity-90 transition-colors text-center flex items-center justify-center"
-                title={t(lang, 'editor_title')}
-             >
-                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-             </button>
          </div>
       </div>
 
-      <div className="flex items-center text-skin-muted flex-col gap-1 justify-center">
+      <div className="flex items-center text-skin-muted flex-col justify-center">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path></svg>
       </div>
 
-      {/* Target Side */}
       <div 
         className="flex-1 flex flex-col gap-1 items-center"
       >
@@ -176,24 +170,25 @@ const ManualPatchRow: React.FC<{
             ) : (
               <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
             )}
+            
+            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                 <button 
+                    onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
+                    className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
+                    title={t(lang, 'editor_title')}
+                 >
+                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                 </button>
+            </div>
          </div>
-         {/* Edit Button for Result (if exists) */}
-         {region.processedImageBase64 ? (
-            <button 
-                onClick={() => onOpenEditor()}
-                className="w-full text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center flex items-center justify-center gap-1"
-            >
-                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                 {t(lang, 'editor_title')}
-            </button>
-         ) : (
-             <div className={`text-[9px] font-bold py-1 ${
-                 region.status === 'failed' ? 'text-rose-500' : 
-                 'text-skin-muted'
-             }`}>
-                {region.status === 'failed' ? t(lang, 'status_failed') : t(lang, 'status_pending')}
-             </div>
-         )}
+         
+         <div className={`text-[9px] font-bold py-1 ${
+             region.status === 'completed' ? 'text-emerald-500' : 
+             region.status === 'failed' ? 'text-rose-500' :
+             'text-skin-muted'
+         }`}>
+            {region.status === 'failed' ? t(lang, 'status_failed') : region.status === 'completed' ? 'Done' : 'Empty'}
+         </div>
       </div>
     </div>
   );
@@ -222,20 +217,22 @@ const Sidebar: React.FC<SidebarProps> = ({
   onManualPatchUpdate,
   onUpdateImagePrompt,
   onDeleteImage,
-  onToggleSkip
+  onToggleSkip,
+  onAutoDetect,
+  isDetecting,
+  onOpenEditor
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
   const [processAll, setProcessAll] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  
-  // Editor State
-  const [editingRegion, setEditingRegion] = useState<{ imageId: string, regionId: string, startBase64: string } | null>(null);
+  const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
+  const [showDetectTuning, setShowDetectTuning] = useState(false);
 
-  // Collapse States
   const [sectionsState, setSectionsState] = useState({
     gallery: true,
+    smart: true,
     workflow: true,
     prompt: true,
     settings: false, 
@@ -248,7 +245,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
-  // CHANGED: Processed images now include "Skipped" ones for the zip count
   const readyForZipCount = images.filter(img => img.finalResultUrl || img.isSkipped).length;
   const lang = config.language;
 
@@ -276,7 +272,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const handleDownloadAllZip = async () => {
-    // CHANGED: Filter logic to include skipped images (using originals)
     const imagesToZip = images.filter(img => img.finalResultUrl || img.isSkipped);
     if (imagesToZip.length === 0) return;
 
@@ -286,16 +281,12 @@ const Sidebar: React.FC<SidebarProps> = ({
       const folder = zip.folder("patched_results");
 
       const promises = imagesToZip.map(async (img, index) => {
-        // Decide which URL to use: Result OR Original (if skipped)
         const targetUrl = img.isSkipped ? img.previewUrl : img.finalResultUrl;
-        
         if (!targetUrl) return;
         
-        // Fetch blob from blob URL or Data URL
         const response = await fetch(targetUrl);
         const blob = await response.blob();
         
-        // Create clean filename
         const originalName = img.file.name.substring(0, img.file.name.lastIndexOf('.')) || img.file.name;
         const ext = img.file.name.split('.').pop() || 'png';
         const filename = `${originalName}_${img.isSkipped ? 'original' : 'patched'}.${ext}`;
@@ -307,7 +298,6 @@ const Sidebar: React.FC<SidebarProps> = ({
       
       const content = await zip.generateAsync({ type: "blob" });
       
-      // Trigger download
       const link = document.createElement('a');
       link.href = URL.createObjectURL(content);
       link.download = "results.zip";
@@ -323,46 +313,12 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  // --- EDITOR OPEN HANDLER ---
-  const handleOpenEditor = async (image: UploadedImage, region: Region) => {
-      // Determine what to load: The processed result (if exists) or the original source crop
-      let startBase64 = region.processedImageBase64;
-      
-      if (!startBase64) {
-         // Crop from original
-         const imgEl = await loadImage(image.previewUrl);
-         startBase64 = await cropRegion(imgEl, region);
-      }
-      
-      setEditingRegion({
-          imageId: image.id,
-          regionId: region.id,
-          startBase64
-      });
-  };
-
-  const handleEditorSave = (newBase64: string) => {
-      if (editingRegion) {
-          onManualPatchUpdate(editingRegion.imageId, editingRegion.regionId, newBase64);
-      }
-      setEditingRegion(null);
-  };
-
-  // --- PROCESSING PERMISSION LOGIC ---
   const hasValidKey = config.provider === 'openai' ? !!config.openaiApiKey : !!config.geminiApiKey;
-  
   const targetImageExists = processAll ? images.length > 0 : !!currentImage;
-  
   const hasRegions = processAll 
     ? images.some(i => i.regions.length > 0) 
     : (currentImage?.regions.length || 0) > 0;
-  
   const canProceedWithEmptyRegions = config.processFullImageIfNoRegions === true;
-
-  const canProcessApi = 
-    targetImageExists && 
-    hasValidKey && 
-    (hasRegions || canProceedWithEmptyRegions);
     
   const getDisabledReason = () => {
       if (!targetImageExists) return "No image selected";
@@ -372,7 +328,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isManualMode = config.processingMode === 'manual';
-
   const statusKey = processingState.toLowerCase() as any;
 
   return (
@@ -392,7 +347,7 @@ const Sidebar: React.FC<SidebarProps> = ({
            <p className="text-[10px] text-skin-muted uppercase tracking-wider">{t(lang, 'appSubtitle')}</p>
         </div>
         
-        {/* Theme Toggle - Expanded & Accessible */}
+        {/* Theme Toggle */}
         <div className="flex items-center justify-between bg-skin-fill p-2.5 rounded-xl border border-skin-border/50">
            <span className="text-[10px] font-bold text-skin-muted uppercase tracking-wider">Theme Style</span>
            <div className="flex items-center gap-3">
@@ -414,68 +369,86 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
-        
         {/* Gallery Section */}
         <Section title={t(lang, 'galleryTitle')} isOpen={sectionsState.gallery} onToggle={() => toggleSection('gallery')}>
-           {/* Upload Area */}
-           <label className="block w-full border-2 border-dashed border-skin-border hover:border-skin-primary rounded-lg p-4 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group">
-              <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
-              <svg className="w-6 h-6 mx-auto text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-              <span className="text-xs font-medium text-skin-muted group-hover:text-skin-text">{t(lang, 'uploadFiles')}</span>
-           </label>
+           {/* Upload Buttons */}
+           <div className="flex gap-2 mb-2">
+               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+                  <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
+                  <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                  <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFiles')}</span>
+               </label>
+               
+               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+                  {/* @ts-ignore */}
+                  <input type="file" multiple webkitdirectory="" directory="" className="hidden" onChange={onUpload} />
+                  <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                  <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFolder')}</span>
+               </label>
+           </div>
 
-           {/* Image List */}
+           {/* Image List (Grid 2 per row) */}
            {images.length > 0 ? (
-             <div className="space-y-2">
-                {images.map(img => (
-                   <div 
-                     key={img.id} 
-                     className={`group relative flex items-center gap-2 p-2 rounded-md border transition-all cursor-pointer ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
-                     onClick={() => onSelectImage(img.id)}
-                   >
-                      <div className="w-10 h-10 rounded overflow-hidden bg-checkerboard flex-shrink-0 relative">
-                         <img src={img.previewUrl} className={`w-full h-full object-cover ${img.isSkipped ? 'grayscale opacity-50' : ''}`} />
-                         {img.isSkipped && (
-                           <div className="absolute inset-0 flex items-center justify-center bg-black/20">
-                             <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path></svg>
-                           </div>
-                         )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                         <div className="text-xs font-medium truncate text-skin-text">{img.file.name}</div>
-                         <div className="flex items-center gap-1.5 mt-0.5">
-                            <span className="text-[10px] text-skin-muted">{img.originalWidth}x{img.originalHeight}</span>
-                            {/* Badges */}
-                            {img.finalResultUrl && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="Completed"></span>}
-                            {img.regions.length > 0 && <span className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted">{img.regions.length} regions</span>}
-                         </div>
-                      </div>
-                      
-                      {/* Hover Actions */}
-                      <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity bg-skin-surface/90 rounded shadow-sm px-1 py-0.5">
+             <div className="space-y-0">
+                <div className="grid grid-cols-2 gap-2">
+                  {images.map(img => (
+                    <div 
+                      key={img.id} 
+                      className={`group relative flex flex-col p-2 rounded-md border transition-all cursor-pointer overflow-hidden ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
+                      onClick={() => onSelectImage(img.id)}
+                    >
+                        <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
+                          <img src={img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} />
+                          
+                          {/* Skipped Overlay */}
+                          {img.isSkipped && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 z-0">
+                              <span className="text-[9px] text-white font-bold bg-black/50 px-1 rounded">SKIP</span>
+                            </div>
+                          )}
+                          
+                          {/* --- ACTION BUTTONS (Updated Locations) --- */}
                           <button 
                              onClick={(e) => { e.stopPropagation(); onToggleSkip(img.id); }}
-                             className={`p-1 rounded hover:bg-skin-fill ${img.isSkipped ? 'text-skin-primary' : 'text-skin-muted'}`}
+                             className={`absolute top-1 left-1 p-1 rounded-sm shadow-sm transition-all z-10 ${img.isSkipped ? 'bg-skin-primary text-white' : 'bg-skin-surface/90 text-skin-muted hover:text-skin-primary hover:bg-white'}`}
                              title={img.isSkipped ? t(lang, 'enableImage') : t(lang, 'skipImage')}
                           >
-                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+                             {img.isSkipped ? (
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
+                             ) : (
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+                             )}
                           </button>
+
                           <button 
                              onClick={(e) => { e.stopPropagation(); onDeleteImage(img.id); }}
-                             className="p-1 text-rose-500 hover:bg-rose-50 rounded"
+                             className="absolute top-1 right-1 p-1 rounded-sm bg-skin-surface/90 hover:bg-rose-500 hover:text-white text-rose-500 shadow-sm transition-all z-10"
                              title={t(lang, 'deleteImage')}
                           >
-                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                           </button>
-                      </div>
-                   </div>
-                ))}
-                
+
+                          {img.finalResultUrl && (
+                             <div className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm border border-white z-10" title="Completed"></div>
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0 w-full px-0.5">
+                           <div className="text-[10px] font-medium truncate text-skin-text leading-tight" title={img.file.name}>{img.file.name}</div>
+                           <div className="flex items-center justify-between gap-1 mt-1">
+                              <span className="text-[9px] text-skin-muted truncate">{img.originalWidth}x{img.originalHeight}</span>
+                              {img.regions.length > 0 && <span className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted whitespace-nowrap">{img.regions.length} reg</span>}
+                           </div>
+                        </div>
+                    </div>
+                  ))}
+                </div>
+
                 {readyForZipCount > 0 && (
                   <button 
                     onClick={handleDownloadAllZip}
                     disabled={isZipping}
-                    className="w-full mt-2 py-1.5 text-xs border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2"
+                    className="w-full mt-3 py-1.5 text-xs border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2"
                   >
                     {isZipping ? (
                       <>
@@ -492,9 +465,126 @@ const Sidebar: React.FC<SidebarProps> = ({
                 )}
              </div>
            ) : (
-             <div className="text-center py-4 text-xs text-skin-muted italic">{t(lang, 'dropToUpload')}</div>
+             <div className="text-center py-6 text-xs text-skin-muted italic border-2 border-dashed border-skin-border rounded-lg bg-skin-fill/20">
+                {t(lang, 'dropToUpload')}
+             </div>
            )}
         </Section>
+        
+        {/* Smart Detection */}
+        {currentImage && (
+            <Section title={t(lang, 'detectTitle')} isOpen={sectionsState.smart} onToggle={() => toggleSection('smart')}>
+               <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded border border-skin-border">
+                  <button 
+                     onClick={() => setDetectScope('current')}
+                     className={`flex-1 py-1.5 text-[10px] rounded transition-all ${detectScope === 'current' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                  >
+                     {t(lang, 'detectScopeCurrent')}
+                  </button>
+                  <button 
+                     onClick={() => setDetectScope('all')}
+                     className={`flex-1 py-1.5 text-[10px] rounded transition-all ${detectScope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                  >
+                     {t(lang, 'detectScopeAll')}
+                  </button>
+               </div>
+
+               <button
+                  onClick={() => onAutoDetect(detectScope)}
+                  disabled={isDetecting}
+                  className="w-full py-3 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white font-bold rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 mb-2"
+               >
+                  {isDetecting ? (
+                      <>
+                         <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                         {t(lang, 'detecting')}
+                      </>
+                  ) : (
+                      <>
+                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+                         {t(lang, 'detectBtn')}
+                      </>
+                  )}
+               </button>
+               
+               <button 
+                 onClick={() => setShowDetectTuning(!showDetectTuning)}
+                 className="w-full text-[10px] text-skin-muted flex items-center justify-center gap-1 hover:text-skin-text mb-2"
+               >
+                  {showDetectTuning ? '▼' : '▶'} {t(lang, 'detectAdvanced')}
+               </button>
+               
+               {showDetectTuning && (
+                 <div className="bg-skin-fill/30 p-2 rounded border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-1">
+                    <div>
+                       <div className="flex justify-between text-[10px] text-skin-muted mb-1">
+                          <span>{t(lang, 'detectInflation')}</span>
+                          <span className="font-mono text-skin-primary">{config.detectionInflationPercent > 0 ? '+' : ''}{config.detectionInflationPercent}%</span>
+                       </div>
+                       <input 
+                         type="range" min="-20" max="100" step="5"
+                         value={config.detectionInflationPercent}
+                         onChange={(e) => handleConfigChange('detectionInflationPercent', Number(e.target.value))}
+                         className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                       />
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-2">
+                       <div>
+                           <div className="flex justify-between text-[10px] text-skin-muted mb-1">
+                              <span>Offset X</span>
+                              <span className="font-mono text-skin-primary">{config.detectionOffsetXPercent}%</span>
+                           </div>
+                           <input 
+                             type="range" min="-50" max="50" step="5"
+                             value={config.detectionOffsetXPercent}
+                             onChange={(e) => handleConfigChange('detectionOffsetXPercent', Number(e.target.value))}
+                             className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                           />
+                       </div>
+                       <div>
+                           <div className="flex justify-between text-[10px] text-skin-muted mb-1">
+                              <span>Offset Y</span>
+                              <span className="font-mono text-skin-primary">{config.detectionOffsetYPercent}%</span>
+                           </div>
+                           <input 
+                             type="range" min="-50" max="50" step="5"
+                             value={config.detectionOffsetYPercent}
+                             onChange={(e) => handleConfigChange('detectionOffsetYPercent', Number(e.target.value))}
+                             className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                           />
+                       </div>
+                    </div>
+
+                    <div>
+                       <div className="flex justify-between text-[10px] text-skin-muted mb-1">
+                          <span>{t(lang, 'detectConfidence')}</span>
+                          <span className="font-mono text-skin-primary">{config.detectionConfidenceThreshold / 100}</span>
+                       </div>
+                       <input 
+                         type="range" min="10" max="90" step="5"
+                         value={config.detectionConfidenceThreshold}
+                         onChange={(e) => handleConfigChange('detectionConfidenceThreshold', Number(e.target.value))}
+                         className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                       />
+                    </div>
+                 </div>
+               )}
+
+               <p className="text-[10px] text-skin-muted text-center mt-1 mb-2">{t(lang, 'detectTip')}</p>
+               
+               <div className="pt-2 border-t border-skin-border/50">
+                   <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'detectApiLabel')}</label>
+                   <input 
+                     type="text" 
+                     value={config.detectionApiUrl}
+                     onChange={(e) => handleConfigChange('detectionApiUrl', e.target.value)}
+                     className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface focus:border-skin-primary transition-colors"
+                     placeholder="http://localhost:5000/detect"
+                   />
+               </div>
+            </Section>
+        )}
 
         {/* Workflow Mode */}
         <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
@@ -511,7 +601,7 @@ const Sidebar: React.FC<SidebarProps> = ({
            </div>
         </Section>
 
-        {/* Prompt Section (Only for API Mode) */}
+        {/* Prompt Section */}
         {!isManualMode && (
           <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
              <div className="space-y-3">
@@ -545,7 +635,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {/* Settings (Only for API Mode) */}
+        {/* Settings */}
         {!isManualMode && (
           <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
               <div className="space-y-3">
@@ -635,7 +725,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
         
-        {/* Execution Settings (Only for API Mode) */}
+        {/* Execution Settings */}
         {!isManualMode && (
           <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
               <div className="space-y-3">
@@ -664,10 +754,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                          <span className="text-[10px] font-mono">{config.concurrencyLimit}</span>
                        </div>
                        <input 
-                         type="range" min="1" max="5" step="1"
+                         type="number" min="1" step="1"
                          value={config.concurrencyLimit}
-                         onChange={(e) => handleConfigChange('concurrencyLimit', Number(e.target.value))}
-                         className="w-full accent-skin-primary mt-1"
+                         onChange={(e) => handleConfigChange('concurrencyLimit', Math.max(1, Number(e.target.value)))}
+                         className="w-full p-1.5 text-xs border border-skin-border rounded bg-skin-surface"
                        />
                     </div>
                  )}
@@ -709,15 +799,13 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {/* Manual Patch Workbench (Only for Manual Mode) */}
+        {/* Manual Patch Workbench */}
         {isManualMode && currentImage && (
            <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
               {currentImage.regions.length === 0 ? (
                  <div className="text-center py-4 text-xs text-skin-muted">{t(lang, 'noRegions')}</div>
               ) : (
                  <div className="space-y-3">
-                     {/* Full Image Manual Override Option (Special Region) */}
-                     {/* For simplicity we only iterate defined regions, but we could add a "Whole Image" manual patch block here if needed */}
                      {currentImage.regions.map(region => (
                         <ManualPatchRow 
                            key={region.id}
@@ -725,24 +813,13 @@ const Sidebar: React.FC<SidebarProps> = ({
                            image={currentImage}
                            onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
                            lang={lang}
-                           onOpenEditor={() => handleOpenEditor(currentImage, region)}
+                           onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}
                         />
                      ))}
                  </div>
               )}
-              {/* Add "Edit Full Image" quick action for Manual Mode */}
               <button 
-                 onClick={() => {
-                     // Virtual region for full image
-                     const fullRegion: Region = {
-                         id: 'manual-full-image',
-                         x: 0, y: 0, width: 100, height: 100,
-                         type: 'rect',
-                         status: 'pending',
-                         processedImageBase64: currentImage.finalResultUrl
-                     };
-                     handleOpenEditor(currentImage, fullRegion);
-                 }}
+                 onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
                  className="w-full py-2 mt-2 bg-skin-surface border border-dashed border-skin-primary/50 text-skin-primary rounded text-xs hover:bg-skin-fill transition-colors"
               >
                   + Edit Full Image
@@ -751,9 +828,8 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
-      {/* Footer / Actions */}
+      {/* Footer */}
       <div className="p-4 bg-skin-surface border-t border-skin-border z-10">
-         {/* Status Bar */}
          {processingState !== ProcessingStep.IDLE && (
             <div className="mb-3">
                <div className="flex justify-between text-[10px] text-skin-muted uppercase font-bold mb-1">
@@ -849,16 +925,6 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
            </div>
         </div>
-      )}
-      
-      {/* Editor Modal */}
-      {editingRegion && (
-         <PatchEditor 
-            imageBase64={editingRegion.startBase64}
-            onSave={handleEditorSave}
-            onCancel={() => setEditingRegion(null)}
-            language={lang}
-         />
       )}
     </aside>
   );

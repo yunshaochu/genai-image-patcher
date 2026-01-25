@@ -3,8 +3,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, UploadedImage, Region, ProcessingStep } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
+import PatchEditor from './components/PatchEditor'; // Import PatchEditor
 import { loadImage, cropRegion, stitchImage, readFileAsDataURL, naturalSortCompare } from './services/imageUtils';
 import { generateRegionEdit } from './services/aiService';
+import { detectBubbles } from './services/detectionService';
 import { t } from './services/translations';
 
 const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
@@ -25,7 +27,15 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiModel: 'dall-e-3',
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
-  processingMode: 'api' 
+  processingMode: 'api',
+  // Updated to the specific backend URL provided
+  detectionApiUrl: 'https://03da4393f7bc48419b6993c5162cb609--5000.ap-shanghai2.cloudstudio.club/detect',
+  
+  // Detection Tuning Defaults
+  detectionInflationPercent: 10, // 10% expansion
+  detectionOffsetXPercent: 0,
+  detectionOffsetYPercent: 0,
+  detectionConfidenceThreshold: 30 // 0.3
 };
 
 type ViewMode = 'original' | 'result';
@@ -61,8 +71,6 @@ class AsyncSemaphore {
 }
 
 // Improved concurrency runner
-// Removed the heavy stagger logic because Semaphore now handles the throttling.
-// We only use a minimal yield to ensure the UI doesn't freeze during the dispatch loop.
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -76,9 +84,6 @@ async function runWithConcurrency<T, R>(
   for (const item of items) {
     if (signal.aborted) break;
     
-    // Yield to main thread (Event Loop) effectively.
-    // This allows React to render the "Processing" state updates immediately 
-    // instead of waiting until the entire loop finishes.
     await new Promise(resolve => setTimeout(resolve, staggerMs > 0 ? staggerMs : 0));
     
     if (signal.aborted) break;
@@ -93,8 +98,6 @@ async function runWithConcurrency<T, R>(
         executing.delete(p);
     });
     
-    // We strictly respect the limit for promises in flight to manage memory,
-    // although the Semaphore is the real gatekeeper for network/cpu.
     if (executing.size >= limit) {
       await Promise.race(executing);
     }
@@ -132,6 +135,10 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [isDragging, setIsDragging] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
+  
+  // Editor State Lifted Up
+  const [editingRegion, setEditingRegion] = useState<{ imageId: string, regionId: string, startBase64: string } | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
   const prevResultUrlRef = useRef<string | undefined>(undefined);
@@ -290,7 +297,8 @@ export default function App() {
                    x: 0, y: 0, width: 100, height: 100,
                    type: 'rect',
                    status: 'completed',
-                   processedImageBase64: base64
+                   processedImageBase64: base64,
+                   source: 'manual'
                };
                updatedRegions = [...img.regions, fullRegion];
             } else {
@@ -311,22 +319,109 @@ export default function App() {
     });
   };
 
+  // --- EDITOR HANDLERS (Lifted Up) ---
+  const handleOpenEditor = async (imageId: string, regionId: string) => {
+      const img = images.find(i => i.id === imageId);
+      if (!img) return;
+
+      if (regionId === 'manual-full-image') {
+          // Special case for full image editing (Manual Mode feature)
+          setEditingRegion({
+              imageId,
+              regionId,
+              startBase64: img.finalResultUrl || img.previewUrl
+          });
+          return;
+      }
+
+      const region = img.regions.find(r => r.id === regionId);
+      if (!region) return;
+
+      let startBase64 = region.processedImageBase64;
+      if (!startBase64) {
+         // If no processed result, crop from original
+         const imgEl = await loadImage(img.previewUrl);
+         startBase64 = await cropRegion(imgEl, region);
+      }
+      setEditingRegion({
+          imageId,
+          regionId,
+          startBase64
+      });
+  };
+
+  const handleEditorSave = (newBase64: string) => {
+      if (editingRegion) {
+          handleManualPatchUpdate(editingRegion.imageId, editingRegion.regionId, newBase64);
+      }
+      setEditingRegion(null);
+  };
+
+  // --- AUTO DETECTION HANDLER ---
+  const handleAutoDetect = async (scope: 'current' | 'all') => {
+     setIsDetecting(true);
+     setErrorMsg(null);
+     
+     const controller = new AbortController();
+     abortControllerRef.current = controller;
+
+     try {
+         const targets = scope === 'current' 
+            ? (selectedImage ? [selectedImage] : [])
+            : images.filter(img => !img.isSkipped);
+        
+         if (targets.length === 0) {
+            setIsDetecting(false);
+            return;
+         }
+
+         const detectTask = async (img: UploadedImage) => {
+            try {
+                const newRegions = await detectBubbles(img.previewUrl, config);
+                if (newRegions.length > 0) {
+                    setImages(prev => prev.map(currentImg => 
+                        currentImg.id === img.id 
+                           ? { ...currentImg, regions: [...currentImg.regions, ...newRegions] }
+                           : currentImg
+                    ));
+                }
+            } catch (e: any) {
+                console.error(`Detection failed for ${img.file.name}:`, e);
+            }
+         };
+
+         await runWithConcurrency(
+             targets,
+             config.concurrencyLimit,
+             detectTask,
+             controller.signal,
+             0
+         );
+
+     } catch (e: any) {
+         console.error(e);
+         setErrorMsg("Detection Error: " + e.message);
+     } finally {
+         setIsDetecting(false);
+         abortControllerRef.current = null;
+     }
+  };
+
   const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal, globalSemaphore: AsyncSemaphore) => {
     if (signal.aborted) return;
     if (imageSnapshot.isSkipped) return;
 
-    // 1. Initialize Local State Map
     const regionsMap = new Map<string, Region>();
     imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
 
-    // 2. Handle "Full Image" Mode
     let initialRegions = [...imageSnapshot.regions];
     if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
         const fullRegion: Region = {
             id: crypto.randomUUID(),
             x: 0, y: 0, width: 100, height: 100,
             type: 'rect',
-            status: 'pending'
+            status: 'pending',
+            source: 'manual'
         };
         initialRegions = [fullRegion];
         regionsMap.set(fullRegion.id, fullRegion);
@@ -341,8 +436,6 @@ export default function App() {
 
     const imgElement = await loadImage(imageSnapshot.previewUrl);
 
-    // 4. Update Status to PROCESSING in UI (Batch update)
-    // All items update to processing IMMEDIATELY before entering the semaphore queue.
     regionsToProcess.forEach(r => {
         regionsMap.set(r.id, { ...r, status: 'processing' });
     });
@@ -359,41 +452,32 @@ export default function App() {
     const specificPrompt = imageSnapshot.customPrompt ? imageSnapshot.customPrompt.trim() : '';
     const effectivePrompt = specificPrompt.length > 0 ? `${globalPrompt} ${specificPrompt}` : globalPrompt;
 
-    // 5. Task Logic
     const processRegionTask = async (region: Region) => {
         if (signal.aborted) return;
 
-        // --- CRITICAL: ACQUIRE GLOBAL SEMAPHORE ---
         await globalSemaphore.acquire();
         
         try {
             if (signal.aborted) return;
-
-            // A. Crop (CPU Bound)
             await new Promise(r => setTimeout(r, 0));
             const croppedBase64 = await cropRegion(imgElement, region);
             
             if (signal.aborted) return;
 
             setProcessingState(ProcessingStep.API_CALLING);
-            
-            // B. Generate (Network Bound)
             const processedBase64 = await generateRegionEdit(croppedBase64, effectivePrompt, config, signal);
             
             if (signal.aborted) return;
 
-            // C. Update Local Map
             const completedRegion = { ...region, processedImageBase64: processedBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);
 
-            // D. STITCH
             setProcessingState(ProcessingStep.STITCHING);
             await new Promise(r => setTimeout(r, 0));
             
             const currentAllRegions = Array.from(regionsMap.values());
             const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
 
-            // E. Update UI
             setImages(prev => prev.map(img => {
                 if (img.id !== imageSnapshot.id) return img;
                 return {
@@ -415,13 +499,10 @@ export default function App() {
                 return { ...img, regions: Array.from(regionsMap.values()) };
             }));
         } finally {
-            // --- RELEASE SEMAPHORE ---
             globalSemaphore.release();
         }
     };
 
-    // 6. Execute Concurrently (Region Level)
-    // Stagger set to 0 to prevent artificial delay.
     await runWithConcurrency(
         regionsToProcess, 
         config.concurrencyLimit, 
@@ -468,7 +549,6 @@ export default function App() {
         return;
     }
 
-    // --- CREATE SHARED SEMAPHORE ---
     const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
     const globalSemaphore = new AsyncSemaphore(actualLimit);
 
@@ -479,7 +559,7 @@ export default function App() {
                 config.concurrencyLimit, 
                 (img) => processSingleImage(img, controller.signal, globalSemaphore),
                 controller.signal,
-                0 // Removed staggering for Images (was 200ms or 500ms)
+                0 
             );
         } else {
             for (const img of targets) {
@@ -565,6 +645,9 @@ export default function App() {
         onUpdateImagePrompt={handleUpdateImagePrompt}
         onDeleteImage={handleDeleteImage}
         onToggleSkip={handleToggleSkip}
+        onAutoDetect={handleAutoDetect}
+        isDetecting={isDetecting}
+        onOpenEditor={(imageId, regionId) => handleOpenEditor(imageId, regionId)} 
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">
@@ -598,6 +681,7 @@ export default function App() {
                     onUpdateRegions={handleUpdateRegions}
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
                     language={config.language}
+                    onOpenEditor={(regionId) => handleOpenEditor(selectedImage.id, regionId)}
                 />
              ) : (
                 <div className="w-full h-full flex items-center justify-center p-8">
@@ -627,6 +711,16 @@ export default function App() {
             </div>
         )}
       </main>
+      
+      {/* GLOBAL PATCH EDITOR MODAL */}
+      {editingRegion && (
+         <PatchEditor 
+            imageBase64={editingRegion.startBase64}
+            onSave={handleEditorSave}
+            onCancel={() => setEditingRegion(null)}
+            language={config.language}
+         />
+      )}
       
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-skin-fill/80 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200 pointer-events-none">

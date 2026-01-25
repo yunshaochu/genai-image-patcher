@@ -1,4 +1,5 @@
 
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -8,6 +9,7 @@ export interface Region {
   type: 'rect'; // Extensible for future shapes
   status: 'pending' | 'processing' | 'completed' | 'failed';
   processedImageBase64?: string; // The result from API
+  source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
 }
 
 export interface UploadedImage {
@@ -62,6 +64,15 @@ export interface AppConfig {
   // Gemini Specifics
   geminiApiKey: string;
   geminiModel: string;
+
+  // Backend Detection Settings (Python)
+  detectionApiUrl: string; // e.g. http://localhost:8000/detect
+  
+  // Detection Tuning
+  detectionInflationPercent: number; // e.g. 10 for 10% expansion
+  detectionOffsetXPercent: number; // e.g. 0
+  detectionOffsetYPercent: number; // e.g. 0
+  detectionConfidenceThreshold: number; // e.g. 30 for 0.3
 }
 
 export enum ProcessingStep {

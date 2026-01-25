@@ -1,4 +1,5 @@
 
+
 import { Language } from "../types";
 
 export const translations = {
@@ -20,6 +21,21 @@ export const translations = {
     skipImage: "跳过处理 (包含原图在Zip)",
     enableImage: "恢复处理",
     skipped: "已跳过",
+    
+    // Detection (New)
+    detectTitle: "智能辅助",
+    detectBtn: "✨ 自动检测气泡",
+    detecting: "检测中...",
+    detectTip: "将调用后端 Python 接口检测文本气泡",
+    detectApiLabel: "检测接口 (Python Backend)",
+    noBubblesFound: "未检测到气泡",
+    bubblesFound: "检测到 {count} 个区域",
+    detectScopeCurrent: "当前图片",
+    detectScopeAll: "所有图片",
+    detectAdvanced: "高级参数调整",
+    detectInflation: "气泡膨胀率",
+    detectOffset: "位置偏移 (X / Y)",
+    detectConfidence: "置信度阈值",
     
     // Prompt
     promptTitle: "提示词",
@@ -155,6 +171,21 @@ export const translations = {
     skipImage: "Skip processing (Include original in Zip)",
     enableImage: "Enable processing",
     skipped: "SKIPPED",
+    
+    // Detection
+    detectTitle: "Smart Assist",
+    detectBtn: "✨ Auto Detect Bubbles",
+    detecting: "Detecting...",
+    detectTip: "Uses Python backend to detect text bubbles",
+    detectApiLabel: "Detection API (Python Backend)",
+    noBubblesFound: "No bubbles found",
+    bubblesFound: "Found {count} regions",
+    detectScopeCurrent: "Current Image",
+    detectScopeAll: "All Images",
+    detectAdvanced: "Tuning Parameters",
+    detectInflation: "Inflation Rate",
+    detectOffset: "Position Offset (X / Y)",
+    detectConfidence: "Confidence Threshold",
     
     // Prompt
     promptTitle: "Prompt",
