@@ -53,6 +53,24 @@ export const translations = {
     pasteHint: "在此处粘贴处理后的图片",
     noRegions: "请先在图片上框选区域",
     
+    // Patch Editor
+    editor_title: "修补编辑器",
+    editor_tool_brush: "画笔 (涂抹)",
+    editor_tool_text: "文字 (嵌字)",
+    editor_brush_size: "画笔大小",
+    editor_brush_color: "画笔颜色",
+    editor_text_content: "文本内容",
+    editor_text_size: "字号",
+    editor_text_color: "颜色",
+    editor_text_outline: "描边颜色",
+    editor_text_outline_width: "描边宽度",
+    editor_text_bg: "背景填充",
+    editor_text_vertical: "竖排文字",
+    editor_text_bold: "加粗",
+    editor_btn_save: "保存修补",
+    editor_btn_cancel: "取消",
+    editor_tip_drag: "拖拽移动文字",
+    
     // Execution
     executionTitle: "处理选项",
     mode: "执行模式",
@@ -102,13 +120,13 @@ export const translations = {
     guide_sec_advanced: "高级功能 & 技巧",
     
     // Guide: Steps
-    guide_step_upload: "1. 上传与管理",
+    guide_step_upload: "上传与管理",
     guide_step_upload_desc: "上传文件或文件夹。你可以对不需要处理的图片点击左上角【跳过】。",
-    guide_step_region: "2. 框选区域",
+    guide_step_region: "框选区域",
     guide_step_region_desc: "在画布上框选想修改的区域。支持多选区。",
-    guide_step_config: "3. 配置 AI",
+    guide_step_config: "配置 AI",
     guide_step_config_desc: "填写 Key。Gemini 适合快速处理，OpenAI 适合精细化修补。",
-    guide_step_run: "4. 批量执行",
+    guide_step_run: "批量执行",
     guide_step_run_desc: "勾选底部的【应用到所有】，一键处理整个列表。",
     
     // Guide: Tips
@@ -116,8 +134,8 @@ export const translations = {
     guide_tip_batch_desc: "如果你有一组构图相似的图片（如视频帧），只需在第一张图画好选区和提示词，勾选【应用到所有】即可复用。",
     guide_tip_timeout_title: "🐢 网络超时问题",
     guide_tip_timeout_desc: "如果遇到 'Timeout' 错误，请在【处理选项】中增加超时时间（默认150秒）或减少并发数量。",
-    guide_tip_manual_title: "🎨 手动修补模式",
-    guide_tip_manual_desc: "切换到【手动模式】，你可以复制原始切片到 Photoshop 处理，然后直接 Ctrl+V 粘贴回网页回填区，自动合成。",
+    guide_tip_manual_title: "🎨 手动修补模式 & 内置编辑器",
+    guide_tip_manual_desc: "切换到【手动模式】。你可以复制切片到PS处理，或者直接点击图片上的【编辑】按钮（悬停显示），使用内置的画笔和文字嵌字工具。",
   },
   en: {
     appTitle: "Patcher Pro",
@@ -170,6 +188,24 @@ export const translations = {
     pasteHint: "Paste processed image here",
     noRegions: "Draw regions on canvas first",
     
+    // Patch Editor
+    editor_title: "Patch Editor",
+    editor_tool_brush: "Brush (Erase)",
+    editor_tool_text: "Text (Typeset)",
+    editor_brush_size: "Size",
+    editor_brush_color: "Color",
+    editor_text_content: "Content",
+    editor_text_size: "Size",
+    editor_text_color: "Color",
+    editor_text_outline: "Outline Color",
+    editor_text_outline_width: "Outline Width",
+    editor_text_bg: "Background",
+    editor_text_vertical: "Vertical Text",
+    editor_text_bold: "Bold",
+    editor_btn_save: "Save Patch",
+    editor_btn_cancel: "Cancel",
+    editor_tip_drag: "Drag text to move",
+    
     // Execution
     executionTitle: "Processing Options",
     mode: "Mode",
@@ -217,21 +253,21 @@ export const translations = {
     guide_sec_basics: "Core Workflow",
     guide_sec_advanced: "Advanced & Tips",
     
-    guide_step_upload: "1. Upload & Manage",
+    guide_step_upload: "Upload & Manage",
     guide_step_upload_desc: "Upload files or folders. Use the 'Skip' button on thumbnails to exclude images.",
-    guide_step_region: "2. Draw Regions",
+    guide_step_region: "Draw Regions",
     guide_step_region_desc: "Draw boxes over areas to edit. Multiple regions supported.",
-    guide_step_config: "3. Configure AI",
+    guide_step_config: "Configure AI",
     guide_step_config_desc: "Set your API Key. Gemini is fast; OpenAI is precise.",
-    guide_step_run: "4. Batch Execute",
+    guide_step_run: "Batch Execute",
     guide_step_run_desc: "Check 'Apply to all' at the bottom to process the entire list at once.",
     
     guide_tip_batch_title: "⚡ Batch Processing",
     guide_tip_batch_desc: "For similar images (e.g., video frames), set regions/prompts on the first image and use 'Apply to all' to replicate settings.",
     guide_tip_timeout_title: "🐢 Timeout Issues",
     guide_tip_timeout_desc: "If you see 'Timeout' errors, increase the Timeout setting (default 150s) or lower concurrency in Options.",
-    guide_tip_manual_title: "🎨 Manual Mode",
-    guide_tip_manual_desc: "Switch to Manual Mode to copy source crops, edit them in Photoshop, and paste them back to auto-stitch.",
+    guide_tip_manual_title: "🎨 Manual Mode & Built-in Editor",
+    guide_tip_manual_desc: "Switch to Manual Mode. You can copy crops to external tools, or use the built-in **Edit Button** (appears on hover) for brush and text tools.",
   }
 };
 
