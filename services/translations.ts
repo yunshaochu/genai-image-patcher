@@ -59,6 +59,8 @@ export const translations = {
     modeConcurrent: "并发执行 (快)",
     modeSerial: "串行执行 (稳)",
     concurrency: "并发数量",
+    timeoutLabel: "超时时间 (秒)",
+    retriesLabel: "失败重试次数",
     processFullImage: "无选区时处理全图",
     processFullImageDesc: "如果图片没有框选区域，则自动发送整张图片。",
     
@@ -91,15 +93,31 @@ export const translations = {
     readyToCreate: "准备开始",
     uploadHint: "通过左侧上传图片，或直接粘贴 (Ctrl+V)",
     
-    // Guide
-    guideTitle: "使用指南",
-    guideStep1: "1. 上传图片：支持单张或文件夹批量上传。",
-    guideStep2: "2. 框选区域：在中间画布上框选你想修改的地方。",
-    guideStep3: "3. 选择模式：使用【AI 自动生成】或【手动修补工坊】。",
-    guideStep4: "4. 执行：AI 模式配置 Key 后点击生成；手动模式复制切片，处理后粘贴回填。",
-    guideStep5: "5. 下载：生成完成后下载最终结果。",
-    guideTips: "提示：手动模式下，Ctrl+V 粘贴在回填区只会更新切片，不会上传新图。",
-    close: "关闭"
+    // Guide (Structured)
+    guideTitle: "使用指南与技巧",
+    close: "关闭",
+    
+    // Guide: Sections
+    guide_sec_basics: "核心流程",
+    guide_sec_advanced: "高级功能 & 技巧",
+    
+    // Guide: Steps
+    guide_step_upload: "1. 上传与管理",
+    guide_step_upload_desc: "上传文件或文件夹。你可以对不需要处理的图片点击左上角【跳过】。",
+    guide_step_region: "2. 框选区域",
+    guide_step_region_desc: "在画布上框选想修改的区域。支持多选区。",
+    guide_step_config: "3. 配置 AI",
+    guide_step_config_desc: "填写 Key。Gemini 适合快速处理，OpenAI 适合精细化修补。",
+    guide_step_run: "4. 批量执行",
+    guide_step_run_desc: "勾选底部的【应用到所有】，一键处理整个列表。",
+    
+    // Guide: Tips
+    guide_tip_batch_title: "⚡ 批量处理技巧",
+    guide_tip_batch_desc: "如果你有一组构图相似的图片（如视频帧），只需在第一张图画好选区和提示词，勾选【应用到所有】即可复用。",
+    guide_tip_timeout_title: "🐢 网络超时问题",
+    guide_tip_timeout_desc: "如果遇到 'Timeout' 错误，请在【处理选项】中增加超时时间（默认150秒）或减少并发数量。",
+    guide_tip_manual_title: "🎨 手动修补模式",
+    guide_tip_manual_desc: "切换到【手动模式】，你可以复制原始切片到 Photoshop 处理，然后直接 Ctrl+V 粘贴回网页回填区，自动合成。",
   },
   en: {
     appTitle: "Patcher Pro",
@@ -158,6 +176,8 @@ export const translations = {
     modeConcurrent: "Concurrent",
     modeSerial: "Serial",
     concurrency: "Concurrency Limit",
+    timeoutLabel: "Timeout (Seconds)",
+    retriesLabel: "Max Retries",
     processFullImage: "Process Full Image if Empty",
     processFullImageDesc: "If no regions are selected, the entire image will be sent to AI.",
     
@@ -191,14 +211,27 @@ export const translations = {
     uploadHint: "Upload via sidebar or paste from clipboard (Ctrl+V)",
     
     // Guide
-    guideTitle: "User Guide",
-    guideStep1: "1. Upload: Select files or folders via the sidebar.",
-    guideStep2: "2. Select: Draw rectangles on the canvas over areas to edit.",
-    guideStep3: "3. Mode: Choose 'AI Generation' or 'Patch Workbench'.",
-    guideStep4: "4. Execute: Configure Key for AI; or Copy/Paste patches for Manual.",
-    guideStep5: "5. Download: Save the final stitched result.",
-    guideTips: "Tip: In Manual Mode, pasting into the Drop Zone only updates the patch.",
-    close: "Close"
+    guideTitle: "User Guide & Tips",
+    close: "Close",
+    
+    guide_sec_basics: "Core Workflow",
+    guide_sec_advanced: "Advanced & Tips",
+    
+    guide_step_upload: "1. Upload & Manage",
+    guide_step_upload_desc: "Upload files or folders. Use the 'Skip' button on thumbnails to exclude images.",
+    guide_step_region: "2. Draw Regions",
+    guide_step_region_desc: "Draw boxes over areas to edit. Multiple regions supported.",
+    guide_step_config: "3. Configure AI",
+    guide_step_config_desc: "Set your API Key. Gemini is fast; OpenAI is precise.",
+    guide_step_run: "4. Batch Execute",
+    guide_step_run_desc: "Check 'Apply to all' at the bottom to process the entire list at once.",
+    
+    guide_tip_batch_title: "⚡ Batch Processing",
+    guide_tip_batch_desc: "For similar images (e.g., video frames), set regions/prompts on the first image and use 'Apply to all' to replicate settings.",
+    guide_tip_timeout_title: "🐢 Timeout Issues",
+    guide_tip_timeout_desc: "If you see 'Timeout' errors, increase the Timeout setting (default 150s) or lower concurrency in Options.",
+    guide_tip_manual_title: "🎨 Manual Mode",
+    guide_tip_manual_desc: "Switch to Manual Mode to copy source crops, edit them in Photoshop, and paste them back to auto-stitch.",
   }
 };
 

@@ -15,6 +15,8 @@ const DEFAULT_CONFIG: AppConfig = {
   executionMode: 'concurrent',
   concurrencyLimit: 3,
   processFullImageIfNoRegions: false, 
+  apiTimeout: 150000, // 150 seconds default to prevent timeouts on slow gens
+  maxRetries: 1,     // 1 retry
   theme: 'light',
   language: 'zh',
   provider: 'openai',
@@ -28,12 +30,45 @@ const DEFAULT_CONFIG: AppConfig = {
 
 type ViewMode = 'original' | 'result';
 
-// Improved concurrency runner using Set to avoid array splice race conditions
+// --- AsyncSemaphore Class ---
+// Strictly controls the global number of active heavy tasks (Crop + API)
+class AsyncSemaphore {
+  private permits: number;
+  private queue: (() => void)[] = [];
+
+  constructor(permits: number) {
+    this.permits = permits;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      const resolve = this.queue.shift();
+      if (resolve) resolve();
+    } else {
+      this.permits++;
+    }
+  }
+}
+
+// Improved concurrency runner
+// Removed the heavy stagger logic because Semaphore now handles the throttling.
+// We only use a minimal yield to ensure the UI doesn't freeze during the dispatch loop.
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
   task: (item: T) => Promise<R>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  staggerMs: number = 0 
 ): Promise<R[]> {
   const results: R[] = [];
   const executing = new Set<Promise<void>>();
@@ -41,24 +76,30 @@ async function runWithConcurrency<T, R>(
   for (const item of items) {
     if (signal.aborted) break;
     
-    // Wrap the task to track execution and collect results
+    // Yield to main thread (Event Loop) effectively.
+    // This allows React to render the "Processing" state updates immediately 
+    // instead of waiting until the entire loop finishes.
+    await new Promise(resolve => setTimeout(resolve, staggerMs > 0 ? staggerMs : 0));
+    
+    if (signal.aborted) break;
+
     const p = task(item).then((res) => {
       if (!signal.aborted) results.push(res);
     });
     
     executing.add(p);
     
-    // Cleanup promise from executing set when done
     const cleanP = p.catch(() => {}).then(() => {
         executing.delete(p);
     });
     
+    // We strictly respect the limit for promises in flight to manage memory,
+    // although the Semaphore is the real gatekeeper for network/cpu.
     if (executing.size >= limit) {
       await Promise.race(executing);
     }
   }
   
-  // Wait for remaining
   if (!signal.aborted) {
       await Promise.all(executing);
   }
@@ -92,10 +133,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [isDragging, setIsDragging] = useState(false);
   
-  // Use AbortController for true cancellation
   const abortControllerRef = useRef<AbortController | null>(null);
-  
-  // Ref to track previous result state for smart-switching
   const prevResultUrlRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
@@ -108,22 +146,14 @@ export default function App() {
 
   const selectedImage = images.find((img) => img.id === selectedImageId);
 
-  // 1. Safety check: Reset to original view if result is deleted
-  // 2. Smart Switch: If a result APPEARS (transition from null to url), auto-switch to result
   useEffect(() => {
     const currentResultUrl = selectedImage?.finalResultUrl;
-    
-    // Case A: Result was deleted/cleared -> Force Original
     if (!currentResultUrl && viewMode === 'result') {
       setViewMode('original');
     }
-
-    // Case B: Result just appeared (e.g. finished processing) -> Auto Switch to Result
-    // We check if we previously had NO result, and now we HAVE a result.
     if (!prevResultUrlRef.current && currentResultUrl) {
         setViewMode('result');
     }
-
     prevResultUrlRef.current = currentResultUrl;
   }, [selectedImage?.finalResultUrl, viewMode, selectedImageId]);
 
@@ -158,7 +188,6 @@ export default function App() {
         const updated = [...prev, ...newImages];
         return updated.sort(naturalSortCompare);
       });
-      // Select first image if none selected
       if (!selectedImageId && newImages.length > 0) {
          handleSelectImage(newImages[0].id);
       }
@@ -197,13 +226,9 @@ export default function App() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [selectedImageId]); 
 
-  // Improved Selection Handler: Auto-switch view based on content
   const handleSelectImage = (id: string) => {
     setSelectedImageId(id);
-    // Need to look up in the current 'images' state
-    // Since this runs in the render cycle, 'images' is fresh enough for the click event
     const target = images.find(img => img.id === id);
-    
     if (target?.finalResultUrl) {
         setViewMode('result');
     } else {
@@ -217,14 +242,12 @@ export default function App() {
           img.id === imageId ? { ...img, regions } : img
         );
 
-        // Auto-stitch logic
         const targetImg = nextState.find(i => i.id === imageId);
         if (targetImg && targetImg.finalResultUrl) {
             stitchImage(targetImg.previewUrl, targetImg.regions).then(stitched => {
                 setImages(current => current.map(i => i.id === imageId ? { ...i, finalResultUrl: stitched } : i));
             });
         }
-        
         return nextState;
     });
   };
@@ -244,11 +267,8 @@ export default function App() {
   const handleDeleteImage = (imageId: string) => {
     setImages(prev => {
       const newImages = prev.filter(img => img.id !== imageId);
-      
       if (selectedImageId === imageId) {
         if (newImages.length > 0) {
-          // We can't use handleSelectImage inside setState, so we just set ID
-          // The useEffect hook will handle the viewMode consistency
           setSelectedImageId(newImages[0].id);
         } else {
           setSelectedImageId(null);
@@ -264,7 +284,6 @@ export default function App() {
             if (img.id !== imageId) return img;
             
             let updatedRegions: Region[];
-            
             if (regionId === 'manual-full-image') {
                const fullRegion: Region = {
                    id: crypto.randomUUID(),
@@ -279,7 +298,6 @@ export default function App() {
                  r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
                );
             }
-
             return { ...img, regions: updatedRegions };
         });
         
@@ -289,52 +307,49 @@ export default function App() {
                 setImages(current => current.map(i => i.id === imageId ? { ...i, finalResultUrl: stitched } : i));
             });
         }
-        
         return nextState;
     });
   };
 
-  const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal) => {
+  const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal, globalSemaphore: AsyncSemaphore) => {
     if (signal.aborted) return;
     if (imageSnapshot.isSkipped) return;
 
-    // 1. Initialize Local State Tracker (Must match image regions)
-    let currentRegions = [...imageSnapshot.regions];
+    // 1. Initialize Local State Map
+    const regionsMap = new Map<string, Region>();
+    imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
 
-    // 2. Handle "Full Image" Mode (Create region if needed)
-    if (currentRegions.length === 0 && config.processFullImageIfNoRegions) {
+    // 2. Handle "Full Image" Mode
+    let initialRegions = [...imageSnapshot.regions];
+    if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
         const fullRegion: Region = {
             id: crypto.randomUUID(),
             x: 0, y: 0, width: 100, height: 100,
             type: 'rect',
             status: 'pending'
         };
-        currentRegions = [fullRegion];
+        initialRegions = [fullRegion];
+        regionsMap.set(fullRegion.id, fullRegion);
         
-        // Update UI state synchronously-ish
         setImages(prev => prev.map(img => 
-            img.id === imageSnapshot.id ? { ...img, regions: currentRegions } : img
+            img.id === imageSnapshot.id ? { ...img, regions: initialRegions } : img
         ));
     }
 
-    // 3. Identify what needs processing from LOCAL state
-    const regionsToProcess = currentRegions.filter(r => r.status === 'pending' || r.status === 'failed');
-
+    const regionsToProcess = Array.from(regionsMap.values()).filter(r => r.status === 'pending' || r.status === 'failed');
     if (regionsToProcess.length === 0) return;
 
     const imgElement = await loadImage(imageSnapshot.previewUrl);
 
-    // 4. Update Status to PROCESSING in UI
+    // 4. Update Status to PROCESSING in UI (Batch update)
+    // All items update to processing IMMEDIATELY before entering the semaphore queue.
+    regionsToProcess.forEach(r => {
+        regionsMap.set(r.id, { ...r, status: 'processing' });
+    });
+    
     setImages(prev => prev.map(img => {
       if (img.id !== imageSnapshot.id) return img;
-      return {
-        ...img,
-        regions: img.regions.map(r => 
-            regionsToProcess.some(rp => rp.id === r.id) 
-            ? { ...r, status: 'processing' } 
-            : r
-        )
-      };
+      return { ...img, regions: Array.from(regionsMap.values()) };
     }));
 
     if (signal.aborted) return;
@@ -344,68 +359,76 @@ export default function App() {
     const specificPrompt = imageSnapshot.customPrompt ? imageSnapshot.customPrompt.trim() : '';
     const effectivePrompt = specificPrompt.length > 0 ? `${globalPrompt} ${specificPrompt}` : globalPrompt;
 
-    // 5. Processing Loop
-    for (const region of regionsToProcess) {
-        if (signal.aborted) break;
+    // 5. Task Logic
+    const processRegionTask = async (region: Region) => {
+        if (signal.aborted) return;
 
+        // --- CRITICAL: ACQUIRE GLOBAL SEMAPHORE ---
+        await globalSemaphore.acquire();
+        
         try {
-            // A. Crop
+            if (signal.aborted) return;
+
+            // A. Crop (CPU Bound)
+            await new Promise(r => setTimeout(r, 0));
             const croppedBase64 = await cropRegion(imgElement, region);
-            if (signal.aborted) break;
+            
+            if (signal.aborted) return;
 
             setProcessingState(ProcessingStep.API_CALLING);
             
-            // B. Generate
+            // B. Generate (Network Bound)
             const processedBase64 = await generateRegionEdit(croppedBase64, effectivePrompt, config, signal);
-            if (signal.aborted) break;
+            
+            if (signal.aborted) return;
 
-            // C. Update Local State (Mark as completed)
-            currentRegions = currentRegions.map(r => 
-                r.id === region.id 
-                ? { ...r, processedImageBase64: processedBase64, status: 'completed' as const } 
-                : r
-            );
+            // C. Update Local Map
+            const completedRegion = { ...region, processedImageBase64: processedBase64, status: 'completed' as const };
+            regionsMap.set(region.id, completedRegion);
 
-            // D. STITCH IMMEDIATELY (Key Fix)
+            // D. STITCH
             setProcessingState(ProcessingStep.STITCHING);
-            const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentRegions);
+            await new Promise(r => setTimeout(r, 0));
+            
+            const currentAllRegions = Array.from(regionsMap.values());
+            const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
 
-            // E. Update UI State (Region Status + FINAL RESULT)
+            // E. Update UI
             setImages(prev => prev.map(img => {
                 if (img.id !== imageSnapshot.id) return img;
                 return {
                     ...img,
-                    finalResultUrl: stitchedUrl, // <--- RESULT SAVED IMMEDIATELY
-                    regions: img.regions.map(r => 
-                        r.id === region.id 
-                        ? { ...r, processedImageBase64: processedBase64, status: 'completed' } 
-                        : r
-                    )
+                    finalResultUrl: stitchedUrl,
+                    regions: currentAllRegions 
                 };
             }));
 
         } catch (err: any) {
-            if (err.name === 'AbortError') break;
+            if (err.name === 'AbortError') return;
             
             console.error(`Region ${region.id} failed`, err);
-            
-            // Update Local State (Failed)
-            currentRegions = currentRegions.map(r => 
-                r.id === region.id ? { ...r, status: 'failed' as const } : r
-            );
+            const failedRegion = { ...region, status: 'failed' as const };
+            regionsMap.set(region.id, failedRegion);
 
-            // Update UI
             setImages(prev => prev.map(img => {
                 if (img.id !== imageSnapshot.id) return img;
-                return {
-                    ...img,
-                    regions: img.regions.map(r => 
-                        r.id === region.id ? { ...r, status: 'failed' } : r
-                    )
-                };
+                return { ...img, regions: Array.from(regionsMap.values()) };
             }));
+        } finally {
+            // --- RELEASE SEMAPHORE ---
+            globalSemaphore.release();
         }
-    }
+    };
+
+    // 6. Execute Concurrently (Region Level)
+    // Stagger set to 0 to prevent artificial delay.
+    await runWithConcurrency(
+        regionsToProcess, 
+        config.concurrencyLimit, 
+        processRegionTask, 
+        signal,
+        0 
+    );
   };
 
   const handleStop = () => {
@@ -414,9 +437,6 @@ export default function App() {
           abortControllerRef.current = null;
       }
       
-      // RESET LOGIC: 
-      // If user stops, any region that was stuck in 'processing' should revert to 'pending'
-      // so the user can easily try again without reloading.
       setImages(prev => prev.map(img => ({
           ...img,
           regions: img.regions.map(r => 
@@ -448,24 +468,27 @@ export default function App() {
         return;
     }
 
+    // --- CREATE SHARED SEMAPHORE ---
+    const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
+    const globalSemaphore = new AsyncSemaphore(actualLimit);
+
     try {
         if (config.executionMode === 'concurrent') {
             await runWithConcurrency<UploadedImage, void>(
                 targets, 
                 config.concurrencyLimit, 
-                (img) => processSingleImage(img, controller.signal),
-                controller.signal
+                (img) => processSingleImage(img, controller.signal, globalSemaphore),
+                controller.signal,
+                0 // Removed staggering for Images (was 200ms or 500ms)
             );
         } else {
             for (const img of targets) {
                 if (controller.signal.aborted) break;
-                await processSingleImage(img, controller.signal);
+                await processSingleImage(img, controller.signal, globalSemaphore);
             }
         }
         
         if (controller.signal.aborted) {
-             // handleStop is usually called by button, but if loop exits via check
-             // we ensure state is clean here too if not manually triggered
              setErrorMsg(t(config.language, 'stopped_by_user'));
         }
         setProcessingState(ProcessingStep.DONE);
@@ -490,7 +513,6 @@ export default function App() {
       document.body.removeChild(link);
   };
 
-  // --- Drag and Drop Handlers ---
   const onDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -532,7 +554,7 @@ export default function App() {
         setConfig={setConfig}
         images={images}
         selectedImageId={selectedImageId}
-        onSelectImage={handleSelectImage} // Use the smart handler
+        onSelectImage={handleSelectImage}
         onUpload={handleUpload}
         onProcess={handleProcess}
         onStop={handleStop}
@@ -574,7 +596,6 @@ export default function App() {
                 <EditorCanvas
                     image={selectedImage}
                     onUpdateRegions={handleUpdateRegions}
-                    // Only disable canvas interaction if processing AND not stopped
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
                     language={config.language}
                 />
@@ -607,7 +628,6 @@ export default function App() {
         )}
       </main>
       
-      {/* Drag & Drop Overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-skin-fill/80 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200 pointer-events-none">
            <div className="w-[80%] h-[80%] border-4 border-dashed border-skin-primary rounded-3xl flex flex-col items-center justify-center text-skin-primary">

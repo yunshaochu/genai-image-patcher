@@ -1,4 +1,5 @@
-import React, { useRef, useState, useEffect, MouseEvent } from 'react';
+
+import React, { useRef, useState, useEffect } from 'react';
 import { UploadedImage, Region, Language } from '../types';
 import { t } from '../services/translations';
 
@@ -14,60 +15,89 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [currentRect, setCurrentRect] = useState<Partial<Region> | null>(null);
+  
+  // Use a ref to track the current rectangle during the window event lifecycle
+  // to avoid re-binding event listeners on every mouse move (performance optimization).
+  const currentRectRef = useRef<Partial<Region> | null>(null);
 
-  // Calculate relative coordinates (0-100%) from mouse event
-  const getRelativeCoords = (e: MouseEvent) => {
+  // Calculate relative coordinates (0-100%) from clientX/clientY
+  const getRelativeCoords = (clientX: number, clientY: number) => {
     if (!containerRef.current) return { x: 0, y: 0 };
     const rect = containerRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    // Clamp values between 0 and 100 to ensure selection stays within image
     return { x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y)) };
   };
 
-  const handleMouseDown = (e: MouseEvent) => {
+  const handleMouseDown = (e: React.MouseEvent) => {
     if (disabled) return;
-    e.preventDefault();
+    e.preventDefault(); // Prevent default drag behavior
+    e.stopPropagation();
+
     setIsDrawing(true);
-    const coords = getRelativeCoords(e);
+    const coords = getRelativeCoords(e.clientX, e.clientY);
     setStartPos(coords);
-    setCurrentRect({
+    
+    const initialRect = {
       x: coords.x,
       y: coords.y,
       width: 0,
       height: 0,
-    });
+    };
+    setCurrentRect(initialRect);
+    currentRectRef.current = initialRect;
   };
 
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isDrawing || disabled) return;
-    const coords = getRelativeCoords(e);
-    
-    const x = Math.min(coords.x, startPos.x);
-    const y = Math.min(coords.y, startPos.y);
-    const width = Math.abs(coords.x - startPos.x);
-    const height = Math.abs(coords.y - startPos.y);
+  // Global event listeners for smooth dragging outside bounds
+  useEffect(() => {
+    if (!isDrawing) return;
 
-    setCurrentRect({ x, y, width, height });
-  };
+    const handleWindowMouseMove = (e: MouseEvent) => {
+      if (disabled) return;
+      
+      const coords = getRelativeCoords(e.clientX, e.clientY);
+      
+      const x = Math.min(coords.x, startPos.x);
+      const y = Math.min(coords.y, startPos.y);
+      const width = Math.abs(coords.x - startPos.x);
+      const height = Math.abs(coords.y - startPos.y);
 
-  const handleMouseUp = () => {
-    if (!isDrawing || disabled) return;
-    setIsDrawing(false);
+      const newRect = { x, y, width, height };
+      setCurrentRect(newRect);
+      currentRectRef.current = newRect;
+    };
 
-    if (currentRect && currentRect.width && currentRect.width > 0.5 && currentRect.height && currentRect.height > 0.5) {
-      const newRegion: Region = {
-        id: crypto.randomUUID(),
-        x: currentRect.x || 0,
-        y: currentRect.y || 0,
-        width: currentRect.width || 0,
-        height: currentRect.height || 0,
-        type: 'rect',
-        status: 'pending',
-      };
-      onUpdateRegions(image.id, [...image.regions, newRegion]);
-    }
-    setCurrentRect(null);
-  };
+    const handleWindowMouseUp = () => {
+      setIsDrawing(false);
+      
+      const rect = currentRectRef.current;
+
+      if (rect && rect.width && rect.width > 0.5 && rect.height && rect.height > 0.5) {
+        const newRegion: Region = {
+          id: crypto.randomUUID(),
+          x: rect.x || 0,
+          y: rect.y || 0,
+          width: rect.width || 0,
+          height: rect.height || 0,
+          type: 'rect',
+          status: 'pending',
+        };
+        onUpdateRegions(image.id, [...image.regions, newRegion]);
+      }
+      
+      setCurrentRect(null);
+      currentRectRef.current = null;
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  }, [isDrawing, startPos, disabled, image.id, image.regions, onUpdateRegions]);
 
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -95,9 +125,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({ image, onUpdateRegions, dis
         ref={containerRef}
         className="relative cursor-crosshair shadow-xl"
         onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={() => isDrawing && setIsDrawing(false)}
       >
         <img
           src={image.previewUrl}

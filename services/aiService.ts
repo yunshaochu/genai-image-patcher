@@ -41,34 +41,62 @@ export const fetchOpenAIModels = async (
 };
 
 /**
- * Helper to race a promise against an abort signal
+ * Wrapper function to handle retries and timeouts
  */
-const raceWithSignal = <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
-    if (!signal) return promise;
-    
-    if (signal.aborted) {
-        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+async function executeWithRetry<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number = 60000,
+  maxRetries: number = 0,
+  signal?: AbortSignal
+): Promise<T> {
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
     }
 
-    return new Promise<T>((resolve, reject) => {
-        const abortHandler = () => {
-            reject(new DOMException('Aborted', 'AbortError'));
-        };
+    try {
+      // Race the operation against a timeout
+      // Note: We cannot easily cancel the underlying operation (like a fetch) just with a promise race,
+      // but we can reject the wrapper promise to let the UI proceed/fail.
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        const id = setTimeout(() => {
+          clearTimeout(id);
+          reject(new Error(`Operation timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        
+        // If signal aborts while waiting for timeout
+        signal?.addEventListener('abort', () => {
+             clearTimeout(id);
+             reject(new DOMException('Aborted', 'AbortError'));
+        });
+      });
 
-        signal.addEventListener('abort', abortHandler);
+      return await Promise.race([
+        operation(),
+        timeoutPromise
+      ]);
+    } catch (error: any) {
+       lastError = error;
+       
+       // Don't retry if aborted
+       if (signal?.aborted || error.name === 'AbortError') {
+           throw error;
+       }
 
-        promise.then(
-            (res) => {
-                signal.removeEventListener('abort', abortHandler);
-                resolve(res);
-            },
-            (err) => {
-                signal.removeEventListener('abort', abortHandler);
-                reject(err);
-            }
-        );
-    });
-};
+       const isTimeout = error.message && error.message.includes('timed out');
+       console.warn(`Attempt ${attempt + 1} failed (Timeout: ${isTimeout}):`, error);
+
+       if (attempt < maxRetries) {
+         // Wait a bit before retrying (1s)
+         await new Promise(r => setTimeout(r, 1000));
+       }
+    }
+  }
+
+  throw lastError;
+}
 
 /**
  * Handles communication with Gemini API (Native Google SDK)
@@ -132,9 +160,8 @@ const generateGeminiImage = async (
         throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
       }
   };
-
-  // Wrap in race condition to support "cancellation" from UI perspective
-  return raceWithSignal(apiCall(), signal);
+  
+  return apiCall();
 };
 
 /**
@@ -253,13 +280,21 @@ export const generateRegionEdit = async (
   config: AppConfig,
   signal?: AbortSignal
 ): Promise<string> => {
-  if (config.provider === 'openai') {
-    if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
-    // Now passing imageBase64 to OpenAI handler as well
-    return generateOpenAIImage(imageBase64, prompt, config, signal);
-  } else {
-    // Guidelines strictly state API Key must be from process.env.API_KEY
-    // We assume process.env.API_KEY is available and valid.
-    return generateGeminiImage(imageBase64, prompt, config.geminiModel, signal);
-  }
+  
+  const worker = async () => {
+    if (config.provider === 'openai') {
+      if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
+      return generateOpenAIImage(imageBase64, prompt, config, signal);
+    } else {
+      // Guidelines strictly state API Key must be from process.env.API_KEY
+      return generateGeminiImage(imageBase64, prompt, config.geminiModel, signal);
+    }
+  };
+
+  // Wrap the worker in the retry/timeout logic
+  // Default to 60s timeout and 0 retries if not configured (backwards compat)
+  const timeout = config.apiTimeout || 60000;
+  const retries = config.maxRetries ?? 0;
+
+  return executeWithRetry(worker, timeout, retries, signal);
 };

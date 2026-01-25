@@ -462,18 +462,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
                         </button>
                       )}
-
-                      {/* Status Indicators (BOTTOM LEFT, Non-intrusive) - Kept for backup */}
-                      {/* We rely on the bar at the bottom now, so maybe remove this dot or keep as secondary? */}
-                      {/* Let's keep the dot for "processing" animation but remove the completed dot since we have the bar. */}
-                      <div className="absolute bottom-2 left-2 flex gap-1 z-20 pointer-events-none">
-                        {img.regions.some(r => r.status === 'processing') && (
-                           <span className="flex h-3 w-3 relative">
-                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500 border-2 border-white shadow-sm"></span>
-                            </span>
-                        )}
-                      </div>
                       
                       {/* Segmented Status Bar (Bottom) */}
                       <div className="absolute inset-x-0 bottom-0 h-1.5 flex">
@@ -729,6 +717,35 @@ const Sidebar: React.FC<SidebarProps> = ({
                           </div>
                         )}
                     </div>
+
+                    {/* Timeout & Retry Settings */}
+                    <div className="grid grid-cols-2 gap-4 pt-2 border-t border-skin-border/50">
+                        <div className="space-y-1">
+                              <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'timeoutLabel')}</label>
+                              <input
+                                type="number"
+                                min="1"
+                                max="300"
+                                // Display in Seconds, Store in MS
+                                value={(config.apiTimeout || 60000) / 1000}
+                                onChange={(e) => handleConfigChange('apiTimeout', (parseInt(e.target.value) || 60) * 1000)}
+                                className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                disabled={isProcessing}
+                              />
+                        </div>
+                        <div className="space-y-1">
+                              <label className="text-[10px] text-skin-muted font-bold ml-1 uppercase">{t(lang, 'retriesLabel')}</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="10"
+                                value={config.maxRetries ?? 1}
+                                onChange={(e) => handleConfigChange('maxRetries', parseInt(e.target.value) || 0)}
+                                className="w-full bg-skin-fill text-xs text-skin-text border border-skin-border rounded-md px-2 py-2 focus:outline-none focus:border-skin-primary disabled:opacity-50"
+                                disabled={isProcessing}
+                              />
+                        </div>
+                    </div>
                     
                     {/* Full Image Toggle */}
                     <div className="flex items-start gap-2 pt-2 border-t border-skin-border/50">
@@ -896,42 +913,107 @@ const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
       
-      {/* Help Modal */}
+      {/* Help Modal - Refactored for better aesthetics and structure */}
       {showHelp && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-           <div className="bg-skin-surface border border-skin-border rounded-2xl shadow-2xl max-w-md w-full p-6 relative">
-              <button 
-                onClick={() => setShowHelp(false)}
-                className="absolute top-4 right-4 text-skin-muted hover:text-skin-text"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-              </button>
+           <div className="bg-skin-surface border border-skin-border rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col relative">
               
-              <h2 className="text-xl font-bold text-skin-text mb-4 flex items-center gap-2">
-                 <div className="w-8 h-8 rounded-lg bg-skin-primary flex items-center justify-center shadow-md">
-                    <svg className="w-5 h-5 text-skin-primary-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+              {/* Modal Header */}
+              <div className="p-6 border-b border-skin-border flex items-center justify-between bg-skin-fill/50">
+                  <div className="flex items-center gap-3">
+                     <div className="w-10 h-10 rounded-xl bg-skin-primary flex items-center justify-center shadow-lg shadow-skin-primary/20">
+                        <svg className="w-6 h-6 text-skin-primary-fg" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path></svg>
+                     </div>
+                     <div>
+                        <h2 className="text-xl font-bold text-skin-text">{t(lang, 'guideTitle')}</h2>
+                        <p className="text-xs text-skin-muted font-medium">{t(lang, 'appSubtitle')}</p>
+                     </div>
+                  </div>
+                  <button 
+                    onClick={() => setShowHelp(false)}
+                    className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-skin-border/50 text-skin-muted hover:text-skin-text transition-colors"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                  </button>
+              </div>
+
+              {/* Modal Content - 2 Column Grid */}
+              <div className="flex-1 overflow-y-auto p-6 bg-skin-surface">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    
+                    {/* Left Column: Core Workflow */}
+                    <div className="space-y-6">
+                       <h3 className="text-sm font-bold text-skin-primary uppercase tracking-wider border-b border-skin-border pb-2 mb-4">
+                          {t(lang, 'guide_sec_basics')}
+                       </h3>
+                       
+                       <div className="flex gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-skin-fill border border-skin-border flex items-center justify-center font-bold text-skin-muted">1</div>
+                          <div>
+                             <h4 className="font-bold text-skin-text text-sm">{t(lang, 'guide_step_upload')}</h4>
+                             <p className="text-xs text-skin-muted mt-1 leading-relaxed">{t(lang, 'guide_step_upload_desc')}</p>
+                          </div>
+                       </div>
+                       
+                       <div className="flex gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-skin-fill border border-skin-border flex items-center justify-center font-bold text-skin-muted">2</div>
+                          <div>
+                             <h4 className="font-bold text-skin-text text-sm">{t(lang, 'guide_step_region')}</h4>
+                             <p className="text-xs text-skin-muted mt-1 leading-relaxed">{t(lang, 'guide_step_region_desc')}</p>
+                          </div>
+                       </div>
+
+                       <div className="flex gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-skin-fill border border-skin-border flex items-center justify-center font-bold text-skin-muted">3</div>
+                          <div>
+                             <h4 className="font-bold text-skin-text text-sm">{t(lang, 'guide_step_config')}</h4>
+                             <p className="text-xs text-skin-muted mt-1 leading-relaxed">{t(lang, 'guide_step_config_desc')}</p>
+                          </div>
+                       </div>
+
+                       <div className="flex gap-4">
+                          <div className="flex-shrink-0 w-8 h-8 rounded-full bg-skin-fill border border-skin-border flex items-center justify-center font-bold text-skin-muted">4</div>
+                          <div>
+                             <h4 className="font-bold text-skin-text text-sm">{t(lang, 'guide_step_run')}</h4>
+                             <p className="text-xs text-skin-muted mt-1 leading-relaxed">{t(lang, 'guide_step_run_desc')}</p>
+                          </div>
+                       </div>
+                    </div>
+
+                    {/* Right Column: Advanced & Tips */}
+                    <div className="space-y-4">
+                        <h3 className="text-sm font-bold text-skin-primary uppercase tracking-wider border-b border-skin-border pb-2 mb-4">
+                          {t(lang, 'guide_sec_advanced')}
+                       </h3>
+
+                       <div className="bg-skin-fill/50 rounded-xl p-4 border border-skin-border">
+                          <h4 className="font-bold text-skin-text text-sm mb-2">{t(lang, 'guide_tip_batch_title')}</h4>
+                          <p className="text-xs text-skin-muted leading-relaxed">{t(lang, 'guide_tip_batch_desc')}</p>
+                       </div>
+
+                       <div className="bg-amber-50/50 dark:bg-amber-900/10 rounded-xl p-4 border border-amber-200/50 dark:border-amber-800/30">
+                          <h4 className="font-bold text-amber-700 dark:text-amber-400 text-sm mb-2">{t(lang, 'guide_tip_timeout_title')}</h4>
+                          <p className="text-xs text-amber-600/80 dark:text-amber-300/60 leading-relaxed">{t(lang, 'guide_tip_timeout_desc')}</p>
+                       </div>
+
+                       <div className="bg-skin-fill/50 rounded-xl p-4 border border-skin-border">
+                          <h4 className="font-bold text-skin-text text-sm mb-2">{t(lang, 'guide_tip_manual_title')}</h4>
+                          <p className="text-xs text-skin-muted leading-relaxed">{t(lang, 'guide_tip_manual_desc')}</p>
+                       </div>
+                    </div>
+
                  </div>
-                 {t(lang, 'guideTitle')}
-              </h2>
-              
-              <div className="space-y-3 text-sm text-skin-text">
-                 <p className="flex gap-3"><span className="text-skin-primary font-bold">1.</span> {t(lang, 'guideStep1')}</p>
-                 <p className="flex gap-3"><span className="text-skin-primary font-bold">2.</span> {t(lang, 'guideStep2')}</p>
-                 <p className="flex gap-3"><span className="text-skin-primary font-bold">3.</span> {t(lang, 'guideStep3')}</p>
-                 <p className="flex gap-3"><span className="text-skin-primary font-bold">4.</span> {t(lang, 'guideStep4')}</p>
-                 <p className="flex gap-3"><span className="text-skin-primary font-bold">5.</span> {t(lang, 'guideStep5')}</p>
               </div>
               
-              <div className="mt-6 pt-4 border-t border-skin-border">
-                 <p className="text-xs text-skin-muted italic">{t(lang, 'guideTips')}</p>
+              {/* Modal Footer */}
+              <div className="p-4 border-t border-skin-border bg-skin-fill/30 flex justify-end">
+                  <button 
+                    onClick={() => setShowHelp(false)}
+                    className="px-6 py-2 bg-skin-primary hover:bg-opacity-90 text-skin-primary-fg rounded-lg font-medium transition-colors text-sm shadow-sm"
+                  >
+                    {t(lang, 'close')}
+                  </button>
               </div>
-              
-              <button 
-                onClick={() => setShowHelp(false)}
-                className="mt-6 w-full py-2 bg-skin-fill hover:bg-skin-border text-skin-text rounded-lg font-medium transition-colors text-sm"
-              >
-                {t(lang, 'close')}
-              </button>
            </div>
         </div>
       )}

@@ -39,6 +39,10 @@ export interface AppConfig {
   
   // Advanced: If an image has no regions, process the whole image
   processFullImageIfNoRegions: boolean;
+  
+  // Retry & Timeout Settings
+  apiTimeout: number; // in milliseconds
+  maxRetries: number; // count
 
   // Workflow Mode
   processingMode: ProcessingMode;
