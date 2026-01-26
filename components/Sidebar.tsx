@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
@@ -218,7 +220,7 @@ const ManualPatchRow: React.FC<{
               {region.isOcrLoading ? (
                    <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
               ) : (
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
               )}
               OCR
            </button>
@@ -878,7 +880,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       <div className="relative" ref={dropdownRef}>
                          <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
                          
-                         <div className="flex gap-2">
+                         <div className="flex gap-2 mb-2">
                              <div className="relative flex-1">
                                  <input 
                                    type="text" 
@@ -953,6 +955,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                                  <button onClick={handleFetchOpenAIModels} className="text-xs text-skin-primary underline">Fetch Models</button>
                              </div>
                          )}
+
+                         {/* Streaming Toggle */}
+                         <label className="flex items-center gap-2 cursor-pointer mt-2">
+                             <input 
+                                 type="checkbox"
+                                 checked={config.openaiStream}
+                                 onChange={(e) => handleConfigChange('openaiStream', e.target.checked)}
+                                 className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
+                             />
+                             <span className="text-[10px] font-bold text-skin-muted uppercase">Enable Streaming</span>
+                         </label>
                       </div>
                     </>
                  )}

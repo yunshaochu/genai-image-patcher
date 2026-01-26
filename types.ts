@@ -74,6 +74,7 @@ export interface AppConfig {
   openaiBaseUrl: string;
   openaiApiKey: string;
   openaiModel: string;
+  openaiStream: boolean; // New: Stream Toggle
   
   // Gemini Specifics
   geminiApiKey: string;
@@ -94,6 +95,7 @@ export interface AppConfig {
   enableBubbleDetection: boolean;  // Sub switch: Auto-detect regions
   enableOCR: boolean;              // Sub switch: Text recognition
   enableManualEditor: boolean;     // Sub switch: Brush/Text editor
+  enableVerticalTextDefault: boolean; // Sub switch: Default text orientation
 }
 
 export enum ProcessingStep {

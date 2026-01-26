@@ -1,3 +1,4 @@
+
 import { Language } from "../types";
 
 export const translations = {
@@ -83,6 +84,7 @@ export const translations = {
     editor_tool_text: "文字 (嵌字)",
     editor_brush_size: "画笔大小",
     editor_brush_color: "画笔颜色",
+    editor_brush_fill: "填充整块 (清空气泡)",
     editor_text_content: "文本内容",
     editor_text_size: "字号",
     editor_text_color: "颜色",
@@ -157,6 +159,8 @@ export const translations = {
     enableOCRDesc: "在选区上显示 OCR 文本识别按钮",
     enableManualEditor: "启用修补编辑器",
     enableManualEditorDesc: "启用画笔涂抹和文字嵌字工具",
+    enableVerticalTextDefault: "默认竖排文字",
+    enableVerticalTextDefaultDesc: "新建文本框时默认开启【竖排】选项",
     
     // Guide: Sections
     guide_sec_basics: "核心流程",
@@ -267,6 +271,7 @@ export const translations = {
     editor_tool_text: "Text (Typeset)",
     editor_brush_size: "Size",
     editor_brush_color: "Color",
+    editor_brush_fill: "Fill All (Clean Bubble)",
     editor_text_content: "Content",
     editor_text_size: "Size",
     editor_text_color: "Color",
@@ -341,6 +346,8 @@ export const translations = {
     enableOCRDesc: "Show text recognition buttons on regions",
     enableManualEditor: "Enable Patch Editor",
     enableManualEditorDesc: "Enable brush and typesetting tools",
+    enableVerticalTextDefault: "Default Vertical Text",
+    enableVerticalTextDefaultDesc: "New text boxes default to Vertical orientation",
     
     guide_sec_basics: "Core Workflow",
     guide_sec_advanced: "Advanced Tips",

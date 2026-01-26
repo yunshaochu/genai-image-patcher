@@ -1,3 +1,5 @@
+
+
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
@@ -555,6 +557,7 @@ export default function App() {
             onCancel={() => setEditingRegion(null)}
             language={config.language}
             initialTextObjects={editingRegion.initialTextObjects}
+            defaultVertical={config.enableVerticalTextDefault}
          />
       )}
 
@@ -638,6 +641,26 @@ export default function App() {
                                 <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
                             </label>
                          </div>
+
+                         {/* Vertical Text Default */}
+                         {config.enableManualEditor && (
+                             <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableVerticalTextDefault')}</div>
+                                    <div className="text-[10px] text-skin-muted">{t(config.language, 'enableVerticalTextDefaultDesc')}</div>
+                                </div>
+                                <label className="relative inline-flex items-center cursor-pointer">
+                                    <input 
+                                        type="checkbox" 
+                                        className="sr-only peer"
+                                        checked={config.enableVerticalTextDefault}
+                                        onChange={(e) => updateConfig('enableVerticalTextDefault', e.target.checked)}
+                                    />
+                                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                                </label>
+                             </div>
+                         )}
+
                      </div>
                   )}
                   

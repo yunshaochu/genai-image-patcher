@@ -177,6 +177,35 @@ const generateGeminiImage = async (
 };
 
 /**
+ * Helper to process the final content string (whether from full response or accumulated stream)
+ */
+const processContentToImage = async (content: string): Promise<string> => {
+    // 1. Try Markdown Image Regex
+    const markdownRegex = /!\[.*?\]\((.*?)\)/;
+    const mdMatch = content.match(markdownRegex);
+    if (mdMatch && mdMatch[1]) {
+      return await fetchImageAsBase64(mdMatch[1]);
+    }
+
+    // 2. Try Raw URL Regex (simple http/s extraction)
+    const urlRegex = /(https?:\/\/[^\s)]+)/;
+    const urlMatch = content.match(urlRegex);
+    if (urlMatch && urlMatch[1]) {
+      // Remove potential trailing punctuation often returned by LLMs (e.g. "https://site.com/img.png.")
+      let cleanUrl = urlMatch[1].replace(/[.,;>]+$/, "");
+      return await fetchImageAsBase64(cleanUrl);
+    }
+    
+    // 3. Last resort: check if content IS the base64 string
+    if (content.startsWith('data:image') || (content.length > 1000 && !content.includes(' '))) {
+         return content.startsWith('data:') ? content : `data:image/png;base64,${content}`;
+    }
+
+    console.warn("Could not find image URL in response:", content);
+    throw new Error("The model responded with text but no detectable image URL. Response: " + content.substring(0, 100) + "...");
+}
+
+/**
  * Handles communication with OpenAI Compatible API via Chat Completions
  * This supports Multimodal inputs (Text + Image) for models like Gemini Pro Vision / GPT-4o
  */
@@ -186,7 +215,7 @@ const generateOpenAIImage = async (
   config: AppConfig,
   signal?: AbortSignal
 ): Promise<string> => {
-  const { openaiBaseUrl, openaiApiKey, openaiModel } = config;
+  const { openaiBaseUrl, openaiApiKey, openaiModel, openaiStream } = config;
   
   const safeApiKey = sanitizeHeaderValue(openaiApiKey);
 
@@ -222,6 +251,8 @@ const generateOpenAIImage = async (
   ];
 
   try {
+    const isStream = openaiStream === true;
+
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -231,10 +262,10 @@ const generateOpenAIImage = async (
       body: JSON.stringify({
         model: openaiModel,
         messages: messages,
-        stream: false, // Force non-streaming to get the full response at once for easier parsing
-        max_tokens: 4096 // Ensure we get a response
+        stream: isStream, 
+        max_tokens: 4096 
       }),
-      signal: signal // Pass AbortSignal to fetch
+      signal: signal 
     });
 
     if (!response.ok) {
@@ -242,39 +273,50 @@ const generateOpenAIImage = async (
       throw new Error(`OpenAI API Error: ${err.error?.message || response.statusText}`);
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
+    let content = '';
+
+    if (isStream && response.body) {
+        // Handle Streaming Response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let done = false;
+
+        while (!done) {
+            const { value, done: readerDone } = await reader.read();
+            done = readerDone;
+            
+            if (value) {
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n');
+                
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('data: ')) {
+                        const dataStr = trimmed.slice(6);
+                        if (dataStr === '[DONE]') continue;
+                        
+                        try {
+                            const json = JSON.parse(dataStr);
+                            const deltaContent = json.choices?.[0]?.delta?.content || '';
+                            content += deltaContent;
+                        } catch (e) {
+                            console.warn("Stream parsing error", e);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Handle Normal Response
+        const data = await response.json();
+        content = data.choices?.[0]?.message?.content || '';
+    }
 
     if (!content) {
       throw new Error("OpenAI returned no content.");
     }
 
-    // Attempt to extract Image URL from the content
-    // Models often return: "Here is the image: ![Alt](https://...)" or just "https://..."
-    
-    // 1. Try Markdown Image Regex
-    const markdownRegex = /!\[.*?\]\((.*?)\)/;
-    const mdMatch = content.match(markdownRegex);
-    if (mdMatch && mdMatch[1]) {
-      return await fetchImageAsBase64(mdMatch[1]);
-    }
-
-    // 2. Try Raw URL Regex (simple http/s extraction)
-    const urlRegex = /(https?:\/\/[^\s)]+)/;
-    const urlMatch = content.match(urlRegex);
-    if (urlMatch && urlMatch[1]) {
-      // Remove potential trailing punctuation often returned by LLMs (e.g. "https://site.com/img.png.")
-      let cleanUrl = urlMatch[1].replace(/[.,;>]+$/, "");
-      return await fetchImageAsBase64(cleanUrl);
-    }
-    
-    // 3. Last resort: check if content IS the base64 string (rare but possible for some proxies)
-    if (content.startsWith('data:image') || (content.length > 1000 && !content.includes(' '))) {
-         return content.startsWith('data:') ? content : `data:image/png;base64,${content}`;
-    }
-
-    console.warn("Could not find image URL in response:", content);
-    throw new Error("The model responded with text but no detectable image URL. Response: " + content.substring(0, 100) + "...");
+    return await processContentToImage(content);
 
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
