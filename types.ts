@@ -11,6 +11,16 @@ export interface Region {
   processedImageBase64?: string; // The result from API
   source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
   customPrompt?: string; // Image-specific prompt overrides global prompt
+  ocrText?: string; // Detected text from OCR
+  isOcrLoading?: boolean; // Loading state for OCR
+}
+
+export interface ImageHistoryState {
+  previewUrl: string;
+  regions: Region[];
+  finalResultUrl?: string;
+  width: number;
+  height: number;
 }
 
 export interface UploadedImage {
@@ -22,6 +32,10 @@ export interface UploadedImage {
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
   isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
+  
+  // History for Undo/Redo of "Apply as Original"
+  history: ImageHistoryState[];
+  historyIndex: number;
 }
 
 export type AiProvider = 'openai' | 'gemini';
@@ -67,6 +81,7 @@ export interface AppConfig {
 
   // Backend Detection Settings (Python)
   detectionApiUrl: string; // e.g. http://localhost:8000/detect
+  ocrApiUrl: string; // e.g. http://localhost:8000/ocr
   
   // Detection Tuning
   detectionInflationPercent: number; // e.g. 10 for 10% expansion
@@ -74,8 +89,11 @@ export interface AppConfig {
   detectionOffsetYPercent: number; // e.g. 0
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
   
-  // Global Features
-  enableSmartAssist: boolean;
+  // Manga Module Settings (New Structure)
+  enableMangaMode: boolean;        // Master switch
+  enableBubbleDetection: boolean;  // Sub switch: Auto-detect regions
+  enableOCR: boolean;              // Sub switch: Text recognition
+  enableManualEditor: boolean;     // Sub switch: Brush/Text editor
 }
 
 export enum ProcessingStep {

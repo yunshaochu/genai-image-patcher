@@ -1,214 +1,58 @@
-
-
-import React, { useState, useEffect, useRef } from 'react';
-import { AppConfig, UploadedImage, Region, ProcessingStep } from './types';
+import React, { useState, useRef, useEffect } from 'react';
+import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import PatchEditor from './components/PatchEditor'; // Import PatchEditor
-import { loadImage, cropRegion, stitchImage, readFileAsDataURL, naturalSortCompare } from './services/imageUtils';
+import PatchEditor from './components/PatchEditor';
+import { loadImage, cropRegion, stitchImage } from './services/imageUtils';
 import { generateRegionEdit } from './services/aiService';
-import { detectBubbles } from './services/detectionService';
+import { detectBubbles, recognizeText } from './services/detectionService';
 import { t } from './services/translations';
-
-const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
-const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
-
-const DEFAULT_CONFIG: AppConfig = {
-  prompt: DEFAULT_PROMPT,
-  executionMode: 'concurrent',
-  concurrencyLimit: 3,
-  processFullImageIfNoRegions: false, 
-  apiTimeout: 150000, // 150 seconds default to prevent timeouts on slow gens
-  maxRetries: 1,     // 1 retry
-  theme: 'light',
-  language: 'zh',
-  provider: 'openai',
-  openaiBaseUrl: 'http://localhost:7860/v1',
-  openaiApiKey: '',
-  openaiModel: 'dall-e-3',
-  geminiApiKey: process.env.API_KEY || '',
-  geminiModel: 'gemini-2.5-flash-image', 
-  processingMode: 'api',
-  // Updated to the specific backend URL provided
-  detectionApiUrl: 'https://03da4393f7bc48419b6993c5162cb609--5000.ap-shanghai2.cloudstudio.club/detect',
-  
-  // Detection Tuning Defaults
-  detectionInflationPercent: 10, // 10% expansion
-  detectionOffsetXPercent: 0,
-  detectionOffsetYPercent: 0,
-  detectionConfidenceThreshold: 30, // 0.3
-  
-  // Global Features
-  enableSmartAssist: false // Default off
-};
-
-type ViewMode = 'original' | 'result';
-
-// --- AsyncSemaphore Class ---
-// Strictly controls the global number of active heavy tasks (Crop + API)
-class AsyncSemaphore {
-  private permits: number;
-  private queue: (() => void)[] = [];
-
-  constructor(permits: number) {
-    this.permits = permits;
-  }
-
-  async acquire(): Promise<void> {
-    if (this.permits > 0) {
-      this.permits--;
-      return;
-    }
-    return new Promise<void>((resolve) => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release(): void {
-    if (this.queue.length > 0) {
-      const resolve = this.queue.shift();
-      if (resolve) resolve();
-    } else {
-      this.permits++;
-    }
-  }
-}
-
-// Improved concurrency runner
-async function runWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  task: (item: T) => Promise<R>,
-  signal: AbortSignal,
-  staggerMs: number = 0 
-): Promise<R[]> {
-  const results: R[] = [];
-  const executing = new Set<Promise<void>>();
-  
-  for (const item of items) {
-    if (signal.aborted) break;
-    
-    await new Promise(resolve => setTimeout(resolve, staggerMs > 0 ? staggerMs : 0));
-    
-    if (signal.aborted) break;
-
-    const p = task(item).then((res) => {
-      if (!signal.aborted) results.push(res);
-    });
-    
-    executing.add(p);
-    
-    const cleanP = p.catch(() => {}).then(() => {
-        executing.delete(p);
-    });
-    
-    if (executing.size >= limit) {
-      await Promise.race(executing);
-    }
-  }
-  
-  if (!signal.aborted) {
-      await Promise.all(executing);
-  }
-  return results;
-}
+import { AsyncSemaphore, runWithConcurrency } from './services/concurrencyUtils';
+import { useConfig } from './hooks/useConfig';
+import { useImageManager } from './hooks/useImageManager';
 
 export default function App() {
-  const [config, setConfig] = useState<AppConfig>(() => {
-    try {
-      const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const geminiKey = parsed.geminiApiKey || process.env.API_KEY || '';
-        // Ensure new defaults are respected if key missing in old config
-        return { 
-            ...DEFAULT_CONFIG, 
-            ...parsed, 
-            geminiApiKey: geminiKey,
-            language: parsed.language || 'zh' 
-        };
-      }
-    } catch (e) {
-      console.error("Failed to load config from localStorage", e);
-    }
-    return DEFAULT_CONFIG;
-  });
+  const { config, setConfig } = useConfig();
+  
+  const {
+    images,
+    setImages,
+    selectedImage,
+    selectedImageId,
+    selectedRegionId,
+    setSelectedRegionId,
+    viewMode,
+    setViewMode,
+    addImageFiles,
+    handleSelectImage,
+    handleUpdateRegions,
+    handleUpdateRegionPrompt,
+    handleToggleSkip,
+    handleDeleteImage,
+    handleClearAllImages, // Added
+    handleManualPatchUpdate,
+    // History Actions
+    handleApplyResultAsOriginal,
+    handleUndoImage,
+    handleRedoImage
+  } = useImageManager();
 
-  const [images, setImages] = useState<UploadedImage[]>([]);
-  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
-  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null); // Lifted state for region selection
   const [processingState, setProcessingState] = useState<ProcessingStep>(ProcessingStep.IDLE);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [isDragging, setIsDragging] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
+  const [showGlobalSettings, setShowGlobalSettings] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   
-  // Editor State Lifted Up
+  // Editor State
   const [editingRegion, setEditingRegion] = useState<{ imageId: string, regionId: string, startBase64: string } | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
-  const prevResultUrlRef = useRef<string | undefined>(undefined);
 
-  useEffect(() => {
-    localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
-  }, [config]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', config.theme || 'light');
-  }, [config.theme]);
-
-  const selectedImage = images.find((img) => img.id === selectedImageId);
-
-  useEffect(() => {
-    const currentResultUrl = selectedImage?.finalResultUrl;
-    if (!currentResultUrl && viewMode === 'result') {
-      setViewMode('original');
-    }
-    if (!prevResultUrlRef.current && currentResultUrl) {
-        setViewMode('result');
-    }
-    prevResultUrlRef.current = currentResultUrl;
-  }, [selectedImage?.finalResultUrl, viewMode, selectedImageId]);
-
-  const processFiles = async (fileList: File[]) => {
-    const newImages: UploadedImage[] = [];
-    const imageFiles = fileList.filter(f => f.type.startsWith('image/'));
-    
-    if (imageFiles.length === 0) return;
-
-    for (const file of imageFiles) {
-      try {
-        const previewUrl = await readFileAsDataURL(file);
-        const imgEl = await loadImage(previewUrl);
-
-        newImages.push({
-          id: crypto.randomUUID(),
-          file,
-          previewUrl,
-          originalWidth: imgEl.naturalWidth,
-          originalHeight: imgEl.naturalHeight,
-          regions: [],
-          isSkipped: false
-        });
-      } catch (e) {
-        console.error("Failed to load image", file.name, e);
-      }
-    }
-
-    if (newImages.length > 0) {
-      setImages((prev) => {
-        const updated = [...prev, ...newImages];
-        return updated.sort(naturalSortCompare);
-      });
-      if (!selectedImageId && newImages.length > 0) {
-         handleSelectImage(newImages[0].id);
-      }
-    }
-  };
-
+  // --- File Upload Handlers ---
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      await processFiles(Array.from(e.target.files));
+      await addImageFiles(Array.from(e.target.files));
     }
     e.target.value = '';
   };
@@ -219,7 +63,6 @@ export default function App() {
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
            return;
         }
-
         const items = e.clipboardData?.items;
         if (!items) return;
         const files: File[] = [];
@@ -231,111 +74,19 @@ export default function App() {
         }
         if (files.length > 0) {
             e.preventDefault();
-            await processFiles(files);
+            await addImageFiles(files);
         }
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
-  }, [selectedImageId]); 
+  }, [addImageFiles]); 
 
-  const handleSelectImage = (id: string) => {
-    setSelectedImageId(id);
-    setSelectedRegionId(null); // Reset region selection on image change
-    const target = images.find(img => img.id === id);
-    if (target?.finalResultUrl) {
-        setViewMode('result');
-    } else {
-        setViewMode('original');
-    }
-  };
-
-  const handleUpdateRegions = (imageId: string, regions: Region[]) => {
-    setImages(prev => {
-        const nextState = prev.map(img => 
-          img.id === imageId ? { ...img, regions } : img
-        );
-
-        const targetImg = nextState.find(i => i.id === imageId);
-        if (targetImg && targetImg.finalResultUrl) {
-            stitchImage(targetImg.previewUrl, targetImg.regions).then(stitched => {
-                setImages(current => current.map(i => i.id === imageId ? { ...i, finalResultUrl: stitched } : i));
-            });
-        }
-        return nextState;
-    });
-  };
-
-  const handleUpdateRegionPrompt = (imageId: string, regionId: string, prompt: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id !== imageId) return img;
-      return {
-        ...img,
-        regions: img.regions.map(r => r.id === regionId ? { ...r, customPrompt: prompt } : r)
-      };
-    }));
-  };
-
-  const handleToggleSkip = (imageId: string) => {
-    setImages(prev => prev.map(img => 
-        img.id === imageId ? { ...img, isSkipped: !img.isSkipped } : img
-    ));
-  };
-
-  const handleDeleteImage = (imageId: string) => {
-    setImages(prev => {
-      const newImages = prev.filter(img => img.id !== imageId);
-      if (selectedImageId === imageId) {
-        if (newImages.length > 0) {
-          setSelectedImageId(newImages[0].id);
-        } else {
-          setSelectedImageId(null);
-        }
-      }
-      return newImages;
-    });
-  };
-
-  const handleManualPatchUpdate = (imageId: string, regionId: string, base64: string) => {
-    setImages(prev => {
-        const nextState = prev.map(img => {
-            if (img.id !== imageId) return img;
-            
-            let updatedRegions: Region[];
-            if (regionId === 'manual-full-image') {
-               const fullRegion: Region = {
-                   id: crypto.randomUUID(),
-                   x: 0, y: 0, width: 100, height: 100,
-                   type: 'rect',
-                   status: 'completed',
-                   processedImageBase64: base64,
-                   source: 'manual'
-               };
-               updatedRegions = [...img.regions, fullRegion];
-            } else {
-               updatedRegions = img.regions.map(r => 
-                 r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
-               );
-            }
-            return { ...img, regions: updatedRegions };
-        });
-        
-        const targetImg = nextState.find(i => i.id === imageId);
-        if (targetImg) {
-            stitchImage(targetImg.previewUrl, targetImg.regions).then(stitched => {
-                setImages(current => current.map(i => i.id === imageId ? { ...i, finalResultUrl: stitched } : i));
-            });
-        }
-        return nextState;
-    });
-  };
-
-  // --- EDITOR HANDLERS (Lifted Up) ---
+  // --- EDITOR HANDLERS ---
   const handleOpenEditor = async (imageId: string, regionId: string) => {
       const img = images.find(i => i.id === imageId);
       if (!img) return;
 
       if (regionId === 'manual-full-image') {
-          // Special case for full image editing (Manual Mode feature)
           setEditingRegion({
               imageId,
               regionId,
@@ -349,15 +100,10 @@ export default function App() {
 
       let startBase64 = region.processedImageBase64;
       if (!startBase64) {
-         // If no processed result, crop from original
          const imgEl = await loadImage(img.previewUrl);
          startBase64 = await cropRegion(imgEl, region);
       }
-      setEditingRegion({
-          imageId,
-          regionId,
-          startBase64
-      });
+      setEditingRegion({ imageId, regionId, startBase64 });
   };
 
   const handleEditorSave = (newBase64: string) => {
@@ -365,6 +111,52 @@ export default function App() {
           handleManualPatchUpdate(editingRegion.imageId, editingRegion.regionId, newBase64);
       }
       setEditingRegion(null);
+  };
+
+  // --- OCR HANDLER ---
+  const handleOcrRegion = async (imageId: string, regionId: string) => {
+     const img = images.find(i => i.id === imageId);
+     const region = img?.regions.find(r => r.id === regionId);
+     if (!img || !region) return;
+
+     // Set Loading
+     setImages(prev => prev.map(currentImg => 
+         currentImg.id === imageId 
+           ? {
+               ...currentImg,
+               regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: true } : r)
+             }
+           : currentImg
+     ));
+
+     try {
+         const imgEl = await loadImage(img.previewUrl);
+         const crop = await cropRegion(imgEl, region);
+         const text = await recognizeText(crop, config);
+         
+         // Update with Text
+         setImages(prev => prev.map(currentImg => 
+            currentImg.id === imageId 
+              ? {
+                  ...currentImg,
+                  regions: currentImg.regions.map(r => r.id === regionId ? { ...r, ocrText: text, isOcrLoading: false } : r)
+                }
+              : currentImg
+         ));
+     } catch (e: any) {
+         console.error("OCR Failed", e);
+         setErrorMsg("OCR Error: " + e.message);
+         
+         // Reset Loading
+         setImages(prev => prev.map(currentImg => 
+            currentImg.id === imageId 
+              ? {
+                  ...currentImg,
+                  regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: false } : r)
+                }
+              : currentImg
+         ));
+     }
   };
 
   // --- AUTO DETECTION HANDLER ---
@@ -400,13 +192,7 @@ export default function App() {
             }
          };
 
-         await runWithConcurrency(
-             targets,
-             config.concurrencyLimit,
-             detectTask,
-             controller.signal,
-             0
-         );
+         await runWithConcurrency(targets, config.concurrencyLimit, detectTask, controller.signal, 0);
 
      } catch (e: any) {
          console.error(e);
@@ -417,6 +203,7 @@ export default function App() {
      }
   };
 
+  // --- CORE PROCESSING LOGIC ---
   const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal, globalSemaphore: AsyncSemaphore) => {
     if (signal.aborted) return;
     if (imageSnapshot.isSkipped) return;
@@ -424,6 +211,7 @@ export default function App() {
     const regionsMap = new Map<string, Region>();
     imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
 
+    // Handle "Process Full Image" option
     let initialRegions = [...imageSnapshot.regions];
     if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
         const fullRegion: Region = {
@@ -446,82 +234,55 @@ export default function App() {
 
     const imgElement = await loadImage(imageSnapshot.previewUrl);
 
-    regionsToProcess.forEach(r => {
-        regionsMap.set(r.id, { ...r, status: 'processing' });
-    });
-    
-    setImages(prev => prev.map(img => {
-      if (img.id !== imageSnapshot.id) return img;
-      return { ...img, regions: Array.from(regionsMap.values()) };
-    }));
+    // Set status to processing
+    regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
+    setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
 
     if (signal.aborted) return;
     setProcessingState(ProcessingStep.CROPPING);
 
     const processRegionTask = async (region: Region) => {
         if (signal.aborted) return;
-
         await globalSemaphore.acquire();
         
         try {
             if (signal.aborted) return;
-            await new Promise(r => setTimeout(r, 0));
             const croppedBase64 = await cropRegion(imgElement, region);
-            
             if (signal.aborted) return;
 
             setProcessingState(ProcessingStep.API_CALLING);
             
-            // CONSTRUCT REGION SPECIFIC PROMPT
             const globalPrompt = config.prompt.trim();
             const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
             const effectivePrompt = regionSpecificPrompt.length > 0 ? `${globalPrompt} ${regionSpecificPrompt}` : globalPrompt;
 
             const processedBase64 = await generateRegionEdit(croppedBase64, effectivePrompt, config, signal);
-            
             if (signal.aborted) return;
 
             const completedRegion = { ...region, processedImageBase64: processedBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);
 
             setProcessingState(ProcessingStep.STITCHING);
-            await new Promise(r => setTimeout(r, 0));
-            
             const currentAllRegions = Array.from(regionsMap.values());
             const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
 
             setImages(prev => prev.map(img => {
                 if (img.id !== imageSnapshot.id) return img;
-                return {
-                    ...img,
-                    finalResultUrl: stitchedUrl,
-                    regions: currentAllRegions 
-                };
+                return { ...img, finalResultUrl: stitchedUrl, regions: currentAllRegions };
             }));
 
         } catch (err: any) {
             if (err.name === 'AbortError') return;
-            
             console.error(`Region ${region.id} failed`, err);
             const failedRegion = { ...region, status: 'failed' as const };
             regionsMap.set(region.id, failedRegion);
-
-            setImages(prev => prev.map(img => {
-                if (img.id !== imageSnapshot.id) return img;
-                return { ...img, regions: Array.from(regionsMap.values()) };
-            }));
+            setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
         } finally {
             globalSemaphore.release();
         }
     };
 
-    await runWithConcurrency(
-        regionsToProcess, 
-        config.concurrencyLimit, 
-        processRegionTask, 
-        signal,
-        0 
-    );
+    await runWithConcurrency(regionsToProcess, config.concurrencyLimit, processRegionTask, signal, 0);
   };
 
   const handleStop = () => {
@@ -529,22 +290,16 @@ export default function App() {
           abortControllerRef.current.abort();
           abortControllerRef.current = null;
       }
-      
       setImages(prev => prev.map(img => ({
           ...img,
-          regions: img.regions.map(r => 
-              r.status === 'processing' ? { ...r, status: 'pending' } : r
-          )
+          regions: img.regions.map(r => r.status === 'processing' ? { ...r, status: 'pending' } : r)
       })));
-
       setProcessingState(ProcessingStep.IDLE);
       setErrorMsg(t(config.language, 'stopped_by_user'));
   };
 
   const handleProcess = async (processAll: boolean) => {
-    if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-    }
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -570,8 +325,7 @@ export default function App() {
                 targets, 
                 config.concurrencyLimit, 
                 (img) => processSingleImage(img, controller.signal, globalSemaphore),
-                controller.signal,
-                0 
+                controller.signal, 0 
             );
         } else {
             for (const img of targets) {
@@ -580,14 +334,10 @@ export default function App() {
             }
         }
         
-        if (controller.signal.aborted) {
-             setErrorMsg(t(config.language, 'stopped_by_user'));
-        }
+        if (controller.signal.aborted) setErrorMsg(t(config.language, 'stopped_by_user'));
         setProcessingState(ProcessingStep.DONE);
     } catch (e: any) {
-        if (e.name === 'AbortError') {
-             setErrorMsg(t(config.language, 'stopped_by_user'));
-        } else {
+        if (e.name !== 'AbortError') {
              console.error("Global processing error", e);
              setErrorMsg(e.message || "Unknown error occurred");
         }
@@ -605,33 +355,27 @@ export default function App() {
       document.body.removeChild(link);
   };
 
-  const onDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
+  // --- DRAG & DROP UI EVENTS ---
+  const onDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
   const onDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     if (e.currentTarget.contains(e.relatedTarget as Node)) return;
     setIsDragging(false);
   };
-
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
+  const onDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
   const onDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    
+    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-       await processFiles(Array.from(e.dataTransfer.files));
+       await addImageFiles(Array.from(e.dataTransfer.files));
     }
   };
+
+  const updateConfig = (key: keyof AppConfig, value: any) => {
+      setConfig(prev => ({ ...prev, [key]: value }));
+  };
+
+  // Check if Editor tools should be visible
+  const showEditor = config.enableMangaMode && config.enableManualEditor;
 
   return (
     <div 
@@ -657,10 +401,16 @@ export default function App() {
         onManualPatchUpdate={handleManualPatchUpdate}
         onUpdateRegionPrompt={handleUpdateRegionPrompt}
         onDeleteImage={handleDeleteImage}
+        onClearAllImages={handleClearAllImages} // Passed
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
         onOpenEditor={(imageId, regionId) => handleOpenEditor(imageId, regionId)} 
+        onOcrRegion={(imageId, regionId) => handleOcrRegion(imageId, regionId)}
+        onOpenGlobalSettings={() => setShowGlobalSettings(true)}
+        onOpenHelp={() => setShowHelp(true)}
+        showEditor={showEditor} // Pass to Sidebar
+        onApplyAsOriginal={() => selectedImage && handleApplyResultAsOriginal(selectedImage.id)} // Pass handler
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">
@@ -686,6 +436,26 @@ export default function App() {
                         {t(config.language, 'skipped')}
                      </span>
                  )}
+
+                 {/* Undo/Redo Controls for Image History */}
+                 <div className="flex gap-1 ml-2 border-l border-white/20 pl-2">
+                    <button
+                        onClick={() => handleUndoImage(selectedImage.id)}
+                        disabled={selectedImage.historyIndex <= 0}
+                        className="px-2 py-1.5 rounded-full bg-skin-surface/80 hover:bg-white text-skin-text disabled:opacity-40 disabled:hover:bg-skin-surface/80 border border-skin-border backdrop-blur-md shadow-sm transition-all"
+                        title={t(config.language, 'undoImage')}
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+                    </button>
+                    <button
+                        onClick={() => handleRedoImage(selectedImage.id)}
+                        disabled={selectedImage.historyIndex >= selectedImage.history.length - 1}
+                        className="px-2 py-1.5 rounded-full bg-skin-surface/80 hover:bg-white text-skin-text disabled:opacity-40 disabled:hover:bg-skin-surface/80 border border-skin-border backdrop-blur-md shadow-sm transition-all"
+                        title={t(config.language, 'redoImage')}
+                    >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6"></path></svg>
+                    </button>
+                 </div>
              </div>
 
              {viewMode === 'original' ? (
@@ -697,14 +467,13 @@ export default function App() {
                     onOpenEditor={(regionId) => handleOpenEditor(selectedImage.id, regionId)}
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={setSelectedRegionId}
+                    onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
+                    showOcrButton={config.enableMangaMode && config.enableOCR}
+                    showEditorButton={showEditor} // Pass to Canvas
                 />
              ) : (
                 <div className="w-full h-full flex items-center justify-center p-8">
-                    <img 
-                      src={selectedImage.finalResultUrl} 
-                      className="max-h-[85vh] max-w-full object-contain shadow-2xl rounded-lg ring-1 ring-skin-border" 
-                      alt="Result" 
-                    />
+                    <img src={selectedImage.finalResultUrl} className="max-h-[85vh] max-w-full object-contain shadow-2xl rounded-lg ring-1 ring-skin-border" alt="Result" />
                 </div>
              )}
            </>
@@ -727,7 +496,6 @@ export default function App() {
         )}
       </main>
       
-      {/* GLOBAL PATCH EDITOR MODAL */}
       {editingRegion && (
          <PatchEditor 
             imageBase64={editingRegion.startBase64}
@@ -735,6 +503,144 @@ export default function App() {
             onCancel={() => setEditingRegion(null)}
             language={config.language}
          />
+      )}
+
+      {/* GLOBAL SETTINGS MODAL - Rendered here to be top level z-index */}
+      {showGlobalSettings && (
+        <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+           <div className="bg-skin-surface max-w-sm w-full rounded-xl shadow-2xl flex flex-col border border-skin-border animate-in fade-in zoom-in-95">
+              <div className="p-4 border-b border-skin-border flex justify-between items-center">
+                 <h3 className="font-bold text-lg">{t(config.language, 'globalSettings')}</h3>
+                 <button onClick={() => setShowGlobalSettings(false)} className="p-1 hover:bg-skin-fill rounded">✕</button>
+              </div>
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                  
+                  {/* Master Switch: Manga Module */}
+                  <div className="flex items-center justify-between">
+                      <div>
+                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</div>
+                          <div className="text-xs text-skin-muted">{t(config.language, 'enableMangaModeDesc')}</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={config.enableMangaMode}
+                            onChange={(e) => updateConfig('enableMangaMode', e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
+                      </label>
+                  </div>
+
+                  {/* Sub-Switch: Bubble Detection */}
+                  {config.enableMangaMode && (
+                     <div className="pl-4 border-l-2 border-skin-border space-y-4">
+                         {/* Bubble Detection */}
+                         <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableBubbleDetection')}</div>
+                                <div className="text-[10px] text-skin-muted">{t(config.language, 'enableBubbleDetectionDesc')}</div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="sr-only peer"
+                                    checked={config.enableBubbleDetection}
+                                    onChange={(e) => updateConfig('enableBubbleDetection', e.target.checked)}
+                                />
+                                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                            </label>
+                         </div>
+
+                         {/* OCR */}
+                         <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableOCR')}</div>
+                                <div className="text-[10px] text-skin-muted">{t(config.language, 'enableOCRDesc')}</div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="sr-only peer"
+                                    checked={config.enableOCR}
+                                    onChange={(e) => updateConfig('enableOCR', e.target.checked)}
+                                />
+                                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                            </label>
+                         </div>
+
+                         {/* Manual Editor */}
+                         <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableManualEditor')}</div>
+                                <div className="text-[10px] text-skin-muted">{t(config.language, 'enableManualEditorDesc')}</div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="sr-only peer"
+                                    checked={config.enableManualEditor}
+                                    onChange={(e) => updateConfig('enableManualEditor', e.target.checked)}
+                                />
+                                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                            </label>
+                         </div>
+                     </div>
+                  )}
+                  
+              </div>
+              <div className="p-4 border-t border-skin-border bg-skin-fill/30">
+                  <button onClick={() => setShowGlobalSettings(false)} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">
+                     {t(config.language, 'close')}
+                  </button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* Help Modal - Hoisted to Root Level */}
+      {showHelp && (
+        <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+           <div className="bg-skin-surface max-w-lg w-full max-h-[80vh] rounded-xl shadow-2xl flex flex-col border border-skin-border animate-in fade-in zoom-in-95">
+              <div className="p-4 border-b border-skin-border flex justify-between items-center">
+                 <h3 className="font-bold text-lg">{t(config.language, 'guideTitle')}</h3>
+                 <button onClick={() => setShowHelp(false)} className="p-1 hover:bg-skin-fill rounded">✕</button>
+              </div>
+              <div className="p-6 overflow-y-auto space-y-6 text-sm text-skin-text">
+                  <section>
+                      <h4 className="font-bold text-skin-primary mb-2 border-b border-skin-border/50 pb-1">{t(config.language, 'guide_sec_basics')}</h4>
+                      <ol className="list-decimal list-inside space-y-2 text-skin-muted">
+                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_upload')}</strong>: {t(config.language, 'guide_step_upload_desc')}</li>
+                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_region')}</strong>: {t(config.language, 'guide_step_region_desc')}</li>
+                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_config')}</strong>: {t(config.language, 'guide_step_config_desc')}</li>
+                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_run')}</strong>: {t(config.language, 'guide_step_run_desc')}</li>
+                      </ol>
+                  </section>
+                  <section>
+                      <h4 className="font-bold text-skin-primary mb-2 border-b border-skin-border/50 pb-1">{t(config.language, 'guide_sec_advanced')}</h4>
+                      <div className="space-y-3">
+                         <div className="bg-skin-fill/50 p-3 rounded-lg">
+                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_batch_title')}</h5>
+                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_batch_desc')}</p>
+                         </div>
+                         <div className="bg-skin-fill/50 p-3 rounded-lg">
+                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_manual_title')}</h5>
+                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_manual_desc')}</p>
+                         </div>
+                         <div className="bg-skin-fill/50 p-3 rounded-lg">
+                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_timeout_title')}</h5>
+                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_timeout_desc')}</p>
+                         </div>
+                      </div>
+                  </section>
+              </div>
+              <div className="p-4 border-t border-skin-border bg-skin-fill/30">
+                  <button onClick={() => setShowHelp(false)} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">
+                     {t(config.language, 'close')}
+                  </button>
+              </div>
+           </div>
+        </div>
       )}
       
       {isDragging && (

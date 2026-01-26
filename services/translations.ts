@@ -1,5 +1,3 @@
-
-
 import { Language } from "../types";
 
 export const translations = {
@@ -21,13 +19,16 @@ export const translations = {
     skipImage: "跳过处理 (包含原图在Zip)",
     enableImage: "恢复处理",
     skipped: "已跳过",
+    clearGallery: "清空图库",
+    clearGalleryConfirm: "确定要清空所有图片吗？此操作无法撤销。",
     
-    // Detection (New)
-    detectTitle: "智能辅助",
+    // Manga Toolkit
+    mangaTitle: "漫画工具箱",
     detectBtn: "✨ 自动检测气泡",
     detecting: "检测中...",
     detectTip: "将调用后端 Python 接口检测文本气泡",
     detectApiLabel: "检测接口 (Python Backend)",
+    ocrApiLabel: "OCR 接口 (Python Backend)",
     noBubblesFound: "未检测到气泡",
     bubblesFound: "检测到 {count} 个区域",
     detectScopeCurrent: "当前图片",
@@ -37,12 +38,19 @@ export const translations = {
     detectOffset: "位置偏移 (X / Y)",
     detectConfidence: "置信度阈值",
     
+    // OCR
+    ocrBtn: "OCR 识别",
+    ocrLoading: "识别中...",
+    ocrSuccess: "识别结果",
+    ocrFailed: "识别失败",
+    ocrPlaceholder: "暂无文字",
+    
     // Prompt
     promptTitle: "提示词",
     promptGlobalLabel: "全局默认提示词",
-    promptSpecificLabel: "当前选中选区提示词", // Updated
+    promptSpecificLabel: "当前选中选区提示词", 
     promptPlaceholder: "描述你想要修改的内容 (例如: 去除水印, 换成蓝天)...",
-    promptSpecificPlaceholder: "在此追加针对此区域的额外细节描述...", // Updated
+    promptSpecificPlaceholder: "在此追加针对此区域的额外细节描述...", 
     
     // Settings
     settingsTitle: "连接设置",
@@ -85,7 +93,12 @@ export const translations = {
     editor_text_bold: "加粗",
     editor_btn_save: "保存修补",
     editor_btn_cancel: "取消",
+    editor_btn_undo: "撤销",
+    editor_btn_redo: "重做",
     editor_tip_drag: "拖拽移动文字",
+    editor_zoom_in: "放大",
+    editor_zoom_out: "缩小",
+    editor_zoom_reset: "重置缩放",
     
     // Execution
     executionTitle: "处理选项",
@@ -108,6 +121,9 @@ export const translations = {
     stop: "停止生成",
     stopping: "正在停止...",
     downloadResult: "下载最终结果",
+    applyAsOriginal: "应用为原图 (覆盖)",
+    undoImage: "撤销图片变更",
+    redoImage: "重做图片变更",
     
     // Status
     idle: "空闲",
@@ -133,30 +149,41 @@ export const translations = {
     
     // Global Settings
     globalSettings: "全局设置",
-    enableSmartAssist: "启用智能辅助",
-    enableSmartAssistDesc: "在侧边栏显示自动检测功能模块",
+    enableMangaMode: "启用漫画模块",
+    enableMangaModeDesc: "启用气泡检测、OCR 识别、手动涂抹嵌字等漫画汉化辅助功能",
+    enableBubbleDetection: "启用气泡检测",
+    enableBubbleDetectionDesc: "在侧边栏显示自动检测工具",
+    enableOCR: "启用 OCR 识别",
+    enableOCRDesc: "在选区上显示 OCR 文本识别按钮",
+    enableManualEditor: "启用修补编辑器",
+    enableManualEditorDesc: "启用画笔涂抹和文字嵌字工具",
     
     // Guide: Sections
     guide_sec_basics: "核心流程",
-    guide_sec_advanced: "高级功能 & 技巧",
+    guide_sec_advanced: "高级使用技巧",
+    guide_sec_manga: "漫画模块与衍生功能",
     
     // Guide: Steps
-    guide_step_upload: "上传与管理",
-    guide_step_upload_desc: "上传文件或文件夹。你可以对不需要处理的图片点击左上角【跳过】。",
+    guide_step_upload: "上传图片",
+    guide_step_upload_desc: "从侧边栏上传或 Ctrl+V 粘贴。支持文件夹批量载入。",
     guide_step_region: "框选区域",
-    guide_step_region_desc: "在画布上框选想修改的区域。支持多选区。",
-    guide_step_config: "配置 AI",
-    guide_step_config_desc: "填写 Key。Gemini 适合快速处理，OpenAI 适合精细化修补。",
-    guide_step_run: "批量执行",
-    guide_step_run_desc: "勾选底部的【应用到所有】，一键处理整个列表。",
+    guide_step_region_desc: "在画布拖动鼠标创建选区。每个选区可以有独立的 AI 提示词。",
+    guide_step_config: "模式切换",
+    guide_step_config_desc: "使用【AI 生成】模式自动处理，或切换到【手动模式】进行精细修补。",
+    guide_step_run: "执行处理",
+    guide_step_run_desc: "点击开始生成。勾选【应用到所有】可一键批量处理图库。",
     
     // Guide: Tips
-    guide_tip_batch_title: "⚡ 批量处理技巧",
-    guide_tip_batch_desc: "如果你有一组构图相似的图片（如视频帧），只需在第一张图画好选区和提示词，勾选【应用到所有】即可复用。",
-    guide_tip_timeout_title: "🐢 网络超时问题",
-    guide_tip_timeout_desc: "如果遇到 'Timeout' 错误，请在【处理选项】中增加超时时间（默认150秒）或减少并发数量。",
-    guide_tip_manual_title: "🎨 手动修补模式 & 内置编辑器",
-    guide_tip_manual_desc: "切换到【手动模式】。你可以复制切片到PS处理，或者直接点击图片上的【编辑】按钮（悬停显示），使用内置的画笔和文字嵌字工具。",
+    guide_tip_manga_title: "📖 什么是漫画模块？",
+    guide_tip_manga_desc: "这是为漫画汉化和修图衍生的增强功能。开启后，你可以利用后端 Python 接口自动识别气泡、进行 OCR 识别，并使用内置的画笔涂抹和文字嵌字工具。",
+    guide_tip_editor_title: "🎨 修补编辑器 (手动功能)",
+    guide_tip_editor_desc: "在【手动修补工坊】中，悬停图片区域会出现【编辑】按钮。你可以直接在这里涂抹掉原始内容，并添加新的文本（支持横排、竖排和描边）。",
+    guide_tip_batch_title: "⚡ 批量气泡检测",
+    guide_tip_batch_desc: "如果你有一百张漫画，只需开启【漫画模块】->【气泡检测】，选择【所有图片】并点击自动检测，即可一键完成全选区的建立。",
+    guide_tip_manual_title: "🎨 手动处理",
+    guide_tip_manual_desc: "在【补丁工坊】中，你可以对每个选区进行手动编辑。支持直接粘贴图片或使用内置编辑器进行涂抹和嵌字。",
+    guide_tip_timeout_title: "⏳ 超时与重试",
+    guide_tip_timeout_desc: "如果 AI 响应缓慢导致超时，可以尝试增加侧边栏【执行选项】中的超时时间，或者增加重试次数以应对不稳定的网络。",
   },
   en: {
     appTitle: "Patcher Pro",
@@ -176,13 +203,16 @@ export const translations = {
     skipImage: "Skip processing (Include original in Zip)",
     enableImage: "Enable processing",
     skipped: "SKIPPED",
+    clearGallery: "Clear Gallery",
+    clearGalleryConfirm: "Are you sure you want to clear all images? This cannot be undone.",
     
-    // Detection
-    detectTitle: "Smart Assist",
+    // Manga Toolkit
+    mangaTitle: "Manga Toolkit",
     detectBtn: "✨ Auto Detect Bubbles",
     detecting: "Detecting...",
     detectTip: "Uses Python backend to detect text bubbles",
     detectApiLabel: "Detection API (Python Backend)",
+    ocrApiLabel: "OCR API (Python Backend)",
     noBubblesFound: "No bubbles found",
     bubblesFound: "Found {count} regions",
     detectScopeCurrent: "Current Image",
@@ -192,12 +222,19 @@ export const translations = {
     detectOffset: "Position Offset (X / Y)",
     detectConfidence: "Confidence Threshold",
     
+    // OCR
+    ocrBtn: "OCR",
+    ocrLoading: "OCR...",
+    ocrSuccess: "OCR Result",
+    ocrFailed: "OCR Failed",
+    ocrPlaceholder: "No text",
+    
     // Prompt
     promptTitle: "Prompt",
     promptGlobalLabel: "Global Default Prompt",
-    promptSpecificLabel: "Current Region Prompt", // Updated
+    promptSpecificLabel: "Current Region Prompt", 
     promptPlaceholder: "Describe the edit...",
-    promptSpecificPlaceholder: "Append specific details for this region...", // Updated
+    promptSpecificPlaceholder: "Append specific details for this region...", 
     
     // Settings
     settingsTitle: "Connection Settings",
@@ -240,7 +277,12 @@ export const translations = {
     editor_text_bold: "Bold",
     editor_btn_save: "Save Patch",
     editor_btn_cancel: "Cancel",
+    editor_btn_undo: "Undo",
+    editor_btn_redo: "Redo",
     editor_tip_drag: "Drag text to move",
+    editor_zoom_in: "Zoom In",
+    editor_zoom_out: "Zoom Out",
+    editor_zoom_reset: "Reset Zoom",
     
     // Execution
     executionTitle: "Processing Options",
@@ -263,6 +305,9 @@ export const translations = {
     stop: "Stop",
     stopping: "Stopping...",
     downloadResult: "Download Result",
+    applyAsOriginal: "Apply as Original",
+    undoImage: "Undo Image Change",
+    redoImage: "Redo Image Change",
     
     // Status
     idle: "Idle",
@@ -288,27 +333,38 @@ export const translations = {
     
     // Global Settings
     globalSettings: "Global Settings",
-    enableSmartAssist: "Enable Smart Assist",
-    enableSmartAssistDesc: "Show auto-detection features in sidebar",
+    enableMangaMode: "Enable Manga Module",
+    enableMangaModeDesc: "Enables bubble detection, OCR, editor, and other manga tools",
+    enableBubbleDetection: "Enable Bubble Detection",
+    enableBubbleDetectionDesc: "Show auto-detection tools in sidebar",
+    enableOCR: "Enable OCR",
+    enableOCRDesc: "Show text recognition buttons on regions",
+    enableManualEditor: "Enable Patch Editor",
+    enableManualEditorDesc: "Enable brush and typesetting tools",
     
     guide_sec_basics: "Core Workflow",
-    guide_sec_advanced: "Advanced & Tips",
+    guide_sec_advanced: "Advanced Tips",
+    guide_sec_manga: "Manga Module Extensions",
     
-    guide_step_upload: "Upload & Manage",
-    guide_step_upload_desc: "Upload files or folders. Use the 'Skip' button on thumbnails to exclude images.",
+    guide_step_upload: "Upload",
+    guide_step_upload_desc: "Upload via sidebar or paste image. Batch folder loading supported.",
     guide_step_region: "Draw Regions",
-    guide_step_region_desc: "Draw boxes over areas to edit. Multiple regions supported.",
-    guide_step_config: "Configure AI",
-    guide_step_config_desc: "Set your API Key. Gemini is fast; OpenAI is precise.",
-    guide_step_run: "Batch Execute",
-    guide_step_run_desc: "Check 'Apply to all' at the bottom to process the entire list at once.",
+    guide_step_region_desc: "Click and drag on canvas to create regions. Each can have its own prompt.",
+    guide_step_config: "Pick Workflow",
+    guide_step_config_desc: "Use AI mode for automation, or Manual mode for precision patching.",
+    guide_step_run: "Generate",
+    guide_step_run_desc: "Start processing. Toggle 'Apply to all' for bulk tasks.",
     
-    guide_tip_batch_title: "⚡ Batch Processing",
-    guide_tip_batch_desc: "For similar images (e.g., video frames), set regions/prompts on the first image and use 'Apply to all' to replicate settings.",
-    guide_tip_timeout_title: "🐢 Timeout Issues",
-    guide_tip_timeout_desc: "If you see 'Timeout' errors, increase the Timeout setting (default 150s) or lower concurrency in Options.",
-    guide_tip_manual_title: "🎨 Manual Mode & Built-in Editor",
-    guide_tip_manual_desc: "Switch to Manual Mode. You can copy crops to external tools, or use the built-in **Edit Button** (appears on hover) for brush and text tools.",
+    guide_tip_manga_title: "📖 What is Manga Module?",
+    guide_tip_manga_desc: "It's an extension for manga scanlation. When enabled, you can auto-detect text bubbles, run OCR, and use built-in tools for cleaning and typesetting.",
+    guide_tip_editor_title: "🎨 Patch Editor (Manual)",
+    guide_tip_editor_desc: "In Manual Workbench, hover a region to find the Edit button. Use the brush to erase content and the text tool to add new translations with ease.",
+    guide_tip_batch_title: "⚡ Batch Auto-Detection",
+    guide_tip_batch_desc: "Process hundreds of pages at once by setting detection scope to 'All Images' in the Manga Toolkit.",
+    guide_tip_manual_title: "🎨 Manual Processing",
+    guide_tip_manual_desc: "In the Patch Workbench, you can manually edit each region. You can paste processed images directly or use the built-in editor for erasing and typesetting.",
+    guide_tip_timeout_title: "⏳ Timeout & Retries",
+    guide_tip_timeout_desc: "If the AI is slow and causes timeouts, try increasing the 'Timeout' in the Execution Options or adding retries for unstable connections.",
   }
 };
 

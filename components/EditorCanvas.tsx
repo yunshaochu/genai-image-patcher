@@ -12,6 +12,9 @@ interface EditorCanvasProps {
   onOpenEditor: (regionId: string) => void;
   selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
+  onOcrRegion?: (regionId: string) => void;
+  showOcrButton?: boolean;
+  showEditorButton?: boolean; // New Prop
 }
 
 type InteractionType = 'idle' | 'drawing' | 'moving' | 'resizing';
@@ -32,7 +35,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     language, 
     onOpenEditor,
     selectedRegionId,
-    onSelectRegion
+    onSelectRegion,
+    onOcrRegion,
+    showOcrButton = false,
+    showEditorButton = false
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -337,8 +343,27 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                     onMouseDown={(e) => e.stopPropagation()} // CRITICAL: Prevent dragging start
                  >
                     
-                    {/* EDIT (New) */}
-                    {!disabled && (
+                    {/* OCR (Conditioned on Prop) */}
+                    {!disabled && onOcrRegion && showOcrButton && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOcrRegion(region.id);
+                          }}
+                          className={`w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:shadow-lg transition-all ${region.isOcrLoading ? 'opacity-70 cursor-wait' : ''}`}
+                          title={t(language, 'ocrBtn')}
+                          disabled={region.isOcrLoading}
+                        >
+                          {region.isOcrLoading ? (
+                             <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                          ) : (
+                             <span className="text-[9px] font-bold tracking-tighter">OCR</span>
+                          )}
+                        </button>
+                    )}
+
+                    {/* EDIT (Conditioned on Prop) */}
+                    {!disabled && showEditorButton && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
