@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import PatchEditor from './components/PatchEditor';
+import PatchEditor, { TextObject } from './components/PatchEditor';
 import { loadImage, cropRegion, stitchImage } from './services/imageUtils';
 import { generateRegionEdit } from './services/aiService';
 import { detectBubbles, recognizeText } from './services/detectionService';
@@ -45,7 +45,12 @@ export default function App() {
   const [showHelp, setShowHelp] = useState(false);
   
   // Editor State
-  const [editingRegion, setEditingRegion] = useState<{ imageId: string, regionId: string, startBase64: string } | null>(null);
+  const [editingRegion, setEditingRegion] = useState<{ 
+      imageId: string, 
+      regionId: string, 
+      startBase64: string,
+      initialTextObjects?: TextObject[] // New: Pass initial text when opening full editor
+  } | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -87,10 +92,38 @@ export default function App() {
       if (!img) return;
 
       if (regionId === 'manual-full-image') {
+          // CONVERT REGIONS TO TEXT OBJECTS
+          const textObjects: TextObject[] = img.regions.map((r, index) => {
+             // Basic heuristic for font size based on box height (approx 1/2 of height is text body)
+             // We convert percentage coords to pixels
+             const boxH = (r.height / 100) * img.originalHeight;
+             const fontSize = Math.max(14, Math.round(boxH * 0.3)); 
+             const width = (r.width / 100) * img.originalWidth;
+             const height = (r.height / 100) * img.originalHeight;
+             
+             return {
+                 id: r.id, // Reuse region ID to potentially link back later
+                 x: (r.x / 100) * img.originalWidth,
+                 y: (r.y / 100) * img.originalHeight,
+                 width: width,
+                 height: height,
+                 text: r.ocrText || `Text ${index + 1}`, // Default text so the box is visible
+                 fontSize: fontSize,
+                 color: '#000000',
+                 outlineColor: '#ffffff',
+                 outlineWidth: 3,
+                 backgroundColor: 'transparent',
+                 isVertical: r.height > r.width * 1.5, // Simple heuristic for vertical text
+                 isBold: true,
+                 rotation: 0
+             };
+          });
+
           setEditingRegion({
               imageId,
               regionId,
-              startBase64: img.finalResultUrl || img.previewUrl
+              startBase64: img.finalResultUrl || img.previewUrl,
+              initialTextObjects: textObjects
           });
           return;
       }
@@ -103,7 +136,26 @@ export default function App() {
          const imgEl = await loadImage(img.previewUrl);
          startBase64 = await cropRegion(imgEl, region);
       }
-      setEditingRegion({ imageId, regionId, startBase64 });
+      
+      // If editing a single region, check if it has OCR text to prepopulate
+      let singleTextObj: TextObject[] | undefined = undefined;
+      if (region.ocrText) {
+          singleTextObj = [{
+             id: crypto.randomUUID(),
+             x: 10, y: 10, // Relative to the crop, hard to guess perfect center without crop dim calc
+             text: region.ocrText,
+             fontSize: 24,
+             color: '#000000',
+             outlineColor: '#ffffff',
+             outlineWidth: 3,
+             backgroundColor: 'transparent',
+             isVertical: region.height > region.width * 1.5,
+             isBold: true,
+             rotation: 0
+          }];
+      }
+
+      setEditingRegion({ imageId, regionId, startBase64, initialTextObjects: singleTextObj });
   };
 
   const handleEditorSave = (newBase64: string) => {
@@ -502,6 +554,7 @@ export default function App() {
             onSave={handleEditorSave}
             onCancel={() => setEditingRegion(null)}
             language={config.language}
+            initialTextObjects={editingRegion.initialTextObjects}
          />
       )}
 
@@ -591,51 +644,6 @@ export default function App() {
               </div>
               <div className="p-4 border-t border-skin-border bg-skin-fill/30">
                   <button onClick={() => setShowGlobalSettings(false)} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">
-                     {t(config.language, 'close')}
-                  </button>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {/* Help Modal - Hoisted to Root Level */}
-      {showHelp && (
-        <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-           <div className="bg-skin-surface max-w-lg w-full max-h-[80vh] rounded-xl shadow-2xl flex flex-col border border-skin-border animate-in fade-in zoom-in-95">
-              <div className="p-4 border-b border-skin-border flex justify-between items-center">
-                 <h3 className="font-bold text-lg">{t(config.language, 'guideTitle')}</h3>
-                 <button onClick={() => setShowHelp(false)} className="p-1 hover:bg-skin-fill rounded">✕</button>
-              </div>
-              <div className="p-6 overflow-y-auto space-y-6 text-sm text-skin-text">
-                  <section>
-                      <h4 className="font-bold text-skin-primary mb-2 border-b border-skin-border/50 pb-1">{t(config.language, 'guide_sec_basics')}</h4>
-                      <ol className="list-decimal list-inside space-y-2 text-skin-muted">
-                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_upload')}</strong>: {t(config.language, 'guide_step_upload_desc')}</li>
-                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_region')}</strong>: {t(config.language, 'guide_step_region_desc')}</li>
-                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_config')}</strong>: {t(config.language, 'guide_step_config_desc')}</li>
-                          <li><strong className="text-skin-text">{t(config.language, 'guide_step_run')}</strong>: {t(config.language, 'guide_step_run_desc')}</li>
-                      </ol>
-                  </section>
-                  <section>
-                      <h4 className="font-bold text-skin-primary mb-2 border-b border-skin-border/50 pb-1">{t(config.language, 'guide_sec_advanced')}</h4>
-                      <div className="space-y-3">
-                         <div className="bg-skin-fill/50 p-3 rounded-lg">
-                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_batch_title')}</h5>
-                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_batch_desc')}</p>
-                         </div>
-                         <div className="bg-skin-fill/50 p-3 rounded-lg">
-                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_manual_title')}</h5>
-                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_manual_desc')}</p>
-                         </div>
-                         <div className="bg-skin-fill/50 p-3 rounded-lg">
-                            <h5 className="font-bold text-xs mb-1">{t(config.language, 'guide_tip_timeout_title')}</h5>
-                            <p className="text-xs text-skin-muted">{t(config.language, 'guide_tip_timeout_desc')}</p>
-                         </div>
-                      </div>
-                  </section>
-              </div>
-              <div className="p-4 border-t border-skin-border bg-skin-fill/30">
-                  <button onClick={() => setShowHelp(false)} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">
                      {t(config.language, 'close')}
                   </button>
               </div>

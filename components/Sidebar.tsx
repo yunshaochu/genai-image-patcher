@@ -33,6 +33,8 @@ interface SidebarProps {
   onApplyAsOriginal: () => void;
 }
 
+const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
+
 const Section: React.FC<{ 
   title: string; 
   children: React.ReactNode; 
@@ -279,20 +281,32 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [processAll, setProcessAll] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
   const [showDetectTuning, setShowDetectTuning] = useState(false);
-  const [clearConfirmation, setClearConfirmation] = useState(false); // New state for double-click confirmation
+  const [clearConfirmation, setClearConfirmation] = useState(false); 
   
   // Model Dropdown State
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const [sectionsState, setSectionsState] = useState({
-    gallery: true,
-    manga: true,
-    workflow: true,
-    prompt: true,
-    settings: false, 
-    execution: false,
-    manual: true
+  // Initialize sections state from localStorage or default
+  const [sectionsState, setSectionsState] = useState(() => {
+    try {
+      const saved = localStorage.getItem(SECTION_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Failed to load sidebar sections state", e);
+    }
+    // Default: Gallery and Workflow open
+    return {
+      gallery: true,
+      manga: false,
+      workflow: true, // DEFAULT: TRUE
+      prompt: false,
+      settings: false, 
+      execution: false,
+      manual: false
+    };
   });
 
   const selectedRegion = currentImage && selectedRegionId 
@@ -314,8 +328,13 @@ const Sidebar: React.FC<SidebarProps> = ({
     };
   }, [showModelDropdown]);
 
+  // Persist sections state when changed
+  useEffect(() => {
+    localStorage.setItem(SECTION_STORAGE_KEY, JSON.stringify(sectionsState));
+  }, [sectionsState]);
+
   const toggleSection = (key: keyof typeof sectionsState) => {
-    setSectionsState(prev => ({ ...prev, [key]: !prev[key] }));
+    setSectionsState((prev: any) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
@@ -611,6 +630,27 @@ const Sidebar: React.FC<SidebarProps> = ({
            )}
         </Section>
         
+        {/* Workflow Mode - Reordered to be above Manga Toolkit */}
+        <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
+           <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+               {(['api', 'manual'] as const).map(m => (
+                 <button
+                   key={m}
+                   onClick={() => {
+                       handleConfigChange('processingMode', m);
+                       // Auto-expand Manual Workbench when switching to manual mode
+                       if (m === 'manual') {
+                           setSectionsState(prev => ({ ...prev, manual: true }));
+                       }
+                   }}
+                   className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${config.processingMode === m ? 'bg-skin-surface text-skin-primary shadow-sm' : 'text-skin-muted hover:text-skin-text'}`}
+                 >
+                    {m === 'api' ? t(lang, 'modeApi') : t(lang, 'modeManual')}
+                 </button>
+               ))}
+           </div>
+        </Section>
+
         {/* Manga Toolkit - Conditioned on Global Setting */}
         {showMangaToolkit && currentImage && (
             <Section title={t(lang, 'mangaTitle')} isOpen={sectionsState.manga} onToggle={() => toggleSection('manga')}>
@@ -634,7 +674,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <button
                         onClick={() => onAutoDetect(detectScope)}
                         disabled={isDetecting}
-                        className="w-full py-3 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 text-white font-bold rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 mb-2"
+                        className="w-full py-2.5 bg-skin-primary text-white font-bold rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 mb-2 hover:bg-opacity-90"
                     >
                         {isDetecting ? (
                             <>
@@ -746,21 +786,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                )}
             </Section>
         )}
-
-        {/* Workflow Mode */}
-        <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
-           <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
-               {(['api', 'manual'] as const).map(m => (
-                 <button
-                   key={m}
-                   onClick={() => handleConfigChange('processingMode', m)}
-                   className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${config.processingMode === m ? 'bg-skin-surface text-skin-primary shadow-sm' : 'text-skin-muted hover:text-skin-text'}`}
-                 >
-                    {m === 'api' ? t(lang, 'modeApi') : t(lang, 'modeManual')}
-                 </button>
-               ))}
-           </div>
-        </Section>
 
         {/* Prompt Section */}
         {!isManualMode && (
@@ -1037,6 +1062,19 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Manual Patch Workbench */}
         {isManualMode && currentImage && (
            <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
+              
+              {/* Moved and Restyled "Edit Full Image" Button to Top */}
+              {showEditor && (
+                  <button 
+                     onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
+                     className="w-full py-2.5 mb-3 bg-skin-primary text-white rounded-lg text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 group hover:bg-opacity-90"
+                     title="Open Global Typesetting Editor"
+                  >
+                      <svg className="w-4 h-4 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                      Edit Full Image
+                  </button>
+              )}
+
               {currentImage.regions.length === 0 ? (
                  <div className="text-center py-4 text-xs text-skin-muted">{t(lang, 'noRegions')}</div>
               ) : (
@@ -1055,15 +1093,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                         />
                      ))}
                  </div>
-              )}
-              
-              {showEditor && (
-                  <button 
-                     onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                     className="w-full py-2 mt-2 bg-skin-surface border border-dashed border-skin-primary/50 text-skin-primary rounded-lg text-xs hover:bg-skin-fill transition-colors"
-                  >
-                      + Edit Full Image
-                  </button>
               )}
            </Section>
         )}

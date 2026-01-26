@@ -1,5 +1,5 @@
 {
-  "name": "Copy of GenAI Image Patcher",
+  "name": "GenAI Image Patcher 2",
   "description": "A web-based tool to upload images, select multiple regions, and use Generative AI to modify those regions and stitch them back into the original image.",
   "requestFramePermissions": []
 }

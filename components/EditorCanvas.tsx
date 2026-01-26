@@ -1,5 +1,3 @@
-
-
 import React, { useRef, useState, useEffect } from 'react';
 import { UploadedImage, Region, Language } from '../types';
 import { t } from '../services/translations';
@@ -298,7 +296,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               className={`absolute transition-all duration-75 group ${
                 isSelected 
                   ? 'z-20 border-2 border-skin-primary shadow-[0_0_0_1px_rgba(255,255,255,0.5)]' 
-                  : 'z-10 border border-skin-primary/70 hover:border-skin-primary'
+                  : 'z-10 border-2 border-skin-primary hover:border-skin-primary'
               } ${
                 region.status === 'completed' 
                   ? 'border-emerald-500 bg-emerald-500/10' 
