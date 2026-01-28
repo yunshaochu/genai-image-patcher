@@ -1,3 +1,5 @@
+
+
 import { Region, UploadedImage } from '../types';
 
 /**
@@ -42,6 +44,123 @@ export const cropRegion = async (
 
   return canvas.toDataURL('image/png');
 };
+
+/**
+ * Creates a full-size image where only the specified region is visible, 
+ * and the rest is masked with white.
+ */
+export const createMaskedFullImage = (
+  imageElement: HTMLImageElement,
+  region: Region
+): string => {
+  const canvas = document.createElement('canvas');
+  canvas.width = imageElement.naturalWidth;
+  canvas.height = imageElement.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  // Fill white
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Calculate coordinates in pixels
+  const x = (region.x / 100) * imageElement.naturalWidth;
+  const y = (region.y / 100) * imageElement.naturalHeight;
+  const w = (region.width / 100) * imageElement.naturalWidth;
+  const h = (region.height / 100) * imageElement.naturalHeight;
+
+  // Draw the specific region from original image onto the white canvas at the same position
+  ctx.drawImage(
+    imageElement,
+    x, y, w, h, // Source rect
+    x, y, w, h  // Dest rect (same position)
+  );
+
+  return canvas.toDataURL('image/png');
+};
+
+/**
+ * Extracts the crop corresponding to the region from a full-size returned image
+ * Applies feathering (alpha blending) to the edges to ensure seamless stitching.
+ */
+export const extractCropFromFullImage = async (
+  fullImageBase64: string,
+  region: Region,
+  originalWidth: number,
+  originalHeight: number,
+  opaquePercent: number = 99 // Percentage of the center that remains fully opaque
+): Promise<string> => {
+  const fullImg = await loadImage(fullImageBase64);
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  // We want the resulting crop to be the size specified by the region percentages
+  // relative to the *original* image size (which is what the stitching expects).
+  const w = (region.width / 100) * originalWidth;
+  const h = (region.height / 100) * originalHeight;
+
+  canvas.width = w;
+  canvas.height = h;
+
+  // However, the returned image might have been resized by the AI.
+  // We assume the AI preserves aspect ratio and the region position percentages are still valid relative to the *returned* image size.
+  const resultW = fullImg.naturalWidth;
+  const resultH = fullImg.naturalHeight;
+  
+  const rx = (region.x / 100) * resultW;
+  const ry = (region.y / 100) * resultH;
+  const rw = (region.width / 100) * resultW;
+  const rh = (region.height / 100) * resultH;
+
+  // 1. Draw the raw crop
+  ctx.drawImage(
+    fullImg,
+    rx, ry, rw, rh, // Source from result
+    0, 0, w, h // Dest (original expected dimensions)
+  );
+
+  // 2. Apply Feathering (Blending Mask) if opaquePercent < 100
+  // This uses 'destination-in' composite operation.
+  if (opaquePercent < 100) {
+      ctx.globalCompositeOperation = 'destination-in';
+
+      // Calculate the start point of the feathering
+      // If opaquePercent is 99, we keep center 99% opaque.
+      // The remaining 1% is distributed to the edges (0.5% each side).
+      
+      const p = Math.max(0, Math.min(100, opaquePercent)) / 100;
+      const featherRatio = (1 - p) / 2; 
+      
+      // Horizontal Gradient Mask (Left/Right edges)
+      const hGrad = ctx.createLinearGradient(0, 0, w, 0);
+      hGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');               // Edge: Transparent
+      hGrad.addColorStop(featherRatio, 'rgba(0, 0, 0, 1)');    // Start of content: Opaque
+      hGrad.addColorStop(1 - featherRatio, 'rgba(0, 0, 0, 1)'); // End of content: Opaque
+      hGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');               // Edge: Transparent
+
+      ctx.fillStyle = hGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Vertical Gradient Mask (Top/Bottom edges)
+      // Applied ON TOP of the horizontal mask result. Since destination-in acts like an intersection,
+      // this effectively feathers all 4 sides and corners.
+      const vGrad = ctx.createLinearGradient(0, 0, 0, h);
+      vGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      vGrad.addColorStop(featherRatio, 'rgba(0, 0, 0, 1)');
+      vGrad.addColorStop(1 - featherRatio, 'rgba(0, 0, 0, 1)');
+      vGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+      ctx.fillStyle = vGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Reset composite operation
+      ctx.globalCompositeOperation = 'source-over';
+  }
+
+  return canvas.toDataURL('image/png');
+};
+
 
 /**
  * Stitches processed regions back onto the original image

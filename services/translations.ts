@@ -1,4 +1,5 @@
 
+
 import { Language } from "../types";
 
 export const translations = {
@@ -50,8 +51,10 @@ export const translations = {
     promptTitle: "提示词",
     promptGlobalLabel: "全局默认提示词",
     promptSpecificLabel: "当前选中选区提示词", 
+    promptFullImageLabel: "当前图片专用提示词 (全图模式)",
     promptPlaceholder: "描述你想要修改的内容 (例如: 去除水印, 换成蓝天)...",
     promptSpecificPlaceholder: "在此追加针对此区域的额外细节描述...", 
+    promptFullImagePlaceholder: "在此覆盖针对此整张图片的专用描述...",
     
     // Settings
     settingsTitle: "连接设置",
@@ -131,6 +134,7 @@ export const translations = {
     idle: "空闲",
     cropping: "正在裁剪区域...",
     api_calling: "AI 正在思考...",
+    translating: "AI 正在翻译上下文...",
     stitching: "正在合成图片...",
     done: "完成",
     stopped_by_user: "已由用户终止",
@@ -161,6 +165,19 @@ export const translations = {
     enableManualEditorDesc: "启用画笔涂抹和文字嵌字工具",
     enableVerticalTextDefault: "默认竖排文字",
     enableVerticalTextDefaultDesc: "新建文本框时默认开启【竖排】选项",
+    useFullImageMasking: "使用全图遮罩模式",
+    useFullImageMaskingDesc: "发送除选区外全白的整张图片给 API，而非仅发送裁剪切片",
+    fullImageOpaquePercent: "边缘融合不透明度 (%)",
+    fullImageOpaquePercentDesc: "在从全图回填切片时，中心多少百分比的区域保持完全不透明。剩余的边缘部分将进行渐变羽化融合。默认 99% 表示仅边缘 1% 会进行羽化。",
+    
+    // Translation Mode
+    enableTranslationMode: "启用翻译模式 (预处理)",
+    enableTranslationModeDesc: "在重绘之前，先使用 LLM 识别并翻译图片中的文字，作为上下文发送给重绘模型。",
+    translationSettings: "翻译模型设置 (OpenAI 兼容)",
+    translationPromptLabel: "翻译系统提示词 (Prompt)",
+    translationPromptPlaceholder: "例如: 翻译图片中的文本为中文，并保留位置描述...",
+    reset: "重置",
+    resetToDefault: "恢复默认提示词",
     
     // Guide: Sections
     guide_sec_basics: "核心流程",
@@ -237,8 +254,10 @@ export const translations = {
     promptTitle: "Prompt",
     promptGlobalLabel: "Global Default Prompt",
     promptSpecificLabel: "Current Region Prompt", 
+    promptFullImageLabel: "Full Image Specific Prompt",
     promptPlaceholder: "Describe the edit...",
     promptSpecificPlaceholder: "Append specific details for this region...", 
+    promptFullImagePlaceholder: "Override details for this specific image...",
     
     // Settings
     settingsTitle: "Connection Settings",
@@ -318,6 +337,7 @@ export const translations = {
     idle: "Idle",
     cropping: "Cropping regions...",
     api_calling: "AI is processing...",
+    translating: "AI is translating context...",
     stitching: "Stitching images...",
     done: "Done",
     stopped_by_user: "Stopped by user",
@@ -348,6 +368,19 @@ export const translations = {
     enableManualEditorDesc: "Enable brush and typesetting tools",
     enableVerticalTextDefault: "Default Vertical Text",
     enableVerticalTextDefaultDesc: "New text boxes default to Vertical orientation",
+    useFullImageMasking: "Use Full Image Masking",
+    useFullImageMaskingDesc: "Send masked full image to API instead of crop",
+    fullImageOpaquePercent: "Edge Blending Opaque (%)",
+    fullImageOpaquePercentDesc: "Determines how much of the center of the patch is kept opaque. 99% means the outer 1% is feathered for blending.",
+    
+    // Translation Mode
+    enableTranslationMode: "Enable Translation Mode (Pre-processing)",
+    enableTranslationModeDesc: "Before repainting, use an LLM to identify and translate text in the image, sending it as context to the repainting model.",
+    translationSettings: "Translation Model Settings (OpenAI Compatible)",
+    translationPromptLabel: "Translation System Prompt",
+    translationPromptPlaceholder: "e.g., Translate text in image to English...",
+    reset: "Reset",
+    resetToDefault: "Reset to Default Prompt",
     
     guide_sec_basics: "Core Workflow",
     guide_sec_advanced: "Advanced Tips",

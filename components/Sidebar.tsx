@@ -33,6 +33,8 @@ interface SidebarProps {
   onOpenHelp: () => void;
   showEditor: boolean;
   onApplyAsOriginal: () => void;
+  // New: Handler for updating image-specific prompt
+  onUpdateImagePrompt?: (imageId: string, prompt: string) => void; 
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
@@ -275,7 +277,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenGlobalSettings,
   onOpenHelp,
   showEditor,
-  onApplyAsOriginal
+  onApplyAsOriginal,
+  onUpdateImagePrompt
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -314,6 +317,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   const selectedRegion = currentImage && selectedRegionId 
     ? currentImage.regions.find(r => r.id === selectedRegionId) 
     : null;
+
+  // Determine if we should show full image specific prompt
+  const showFullImagePrompt = config.processFullImageIfNoRegions && currentImage && currentImage.regions.length === 0;
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -506,7 +512,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+        {/* Gallery Section */}
         <Section title={t(lang, 'galleryTitle')} isOpen={sectionsState.gallery} onToggle={() => toggleSection('gallery')}>
+           {/* ... (Existing gallery code remains unchanged) ... */}
            <div className="flex gap-2 mb-2">
                <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
                   <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
@@ -632,7 +640,7 @@ const Sidebar: React.FC<SidebarProps> = ({
            )}
         </Section>
         
-        {/* Workflow Mode - Reordered to be above Manga Toolkit */}
+        {/* Workflow Mode */}
         <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
            <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
                {(['api', 'manual'] as const).map(m => (
@@ -653,9 +661,10 @@ const Sidebar: React.FC<SidebarProps> = ({
            </div>
         </Section>
 
-        {/* Manga Toolkit - Conditioned on Global Setting */}
+        {/* Manga Toolkit */}
         {showMangaToolkit && currentImage && (
             <Section title={t(lang, 'mangaTitle')} isOpen={sectionsState.manga} onToggle={() => toggleSection('manga')}>
+               {/* ... (Existing Manga Toolkit code) ... */}
                {showDetection ? (
                  <>
                     <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded-lg border border-skin-border">
@@ -803,30 +812,52 @@ const Sidebar: React.FC<SidebarProps> = ({
                   />
                </div>
                
-               {/* REGION SPECIFIC PROMPT */}
+               {/* REGION SPECIFIC PROMPT or FULL IMAGE PROMPT */}
                {currentImage && (
                  <div className="pt-2 border-t border-skin-border border-dashed transition-all">
-                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
-                       {t(lang, 'promptSpecificLabel')}
-                       {selectedRegion && (
-                         <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
-                           ID: {selectedRegion.id.slice(0, 4)}
-                         </span>
-                       )}
-                    </label>
-                    
-                    {selectedRegion ? (
-                        <textarea 
-                          key={selectedRegion.id} // Re-render when selection changes
-                          value={selectedRegion.customPrompt || ''}
-                          onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
-                          className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
-                          placeholder={t(lang, 'promptSpecificPlaceholder')}
-                        />
+                    {showFullImagePrompt ? (
+                       // FULL IMAGE SPECIFIC PROMPT
+                       <>
+                           <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
+                                {t(lang, 'promptFullImageLabel')}
+                                <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
+                                Full Image
+                                </span>
+                           </label>
+                           <textarea 
+                                key={`full-${currentImage.id}`}
+                                value={currentImage.customPrompt || ''}
+                                onChange={(e) => onUpdateImagePrompt && onUpdateImagePrompt(currentImage.id, e.target.value)}
+                                className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
+                                placeholder={t(lang, 'promptFullImagePlaceholder')}
+                           />
+                       </>
                     ) : (
-                        <div className="w-full h-16 p-2 text-xs border border-dashed border-skin-border rounded-lg bg-skin-fill/20 flex items-center justify-center text-skin-muted text-center italic">
-                           Select a region to customize its prompt
-                        </div>
+                       // REGION SPECIFIC PROMPT
+                       <>
+                           <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
+                                {t(lang, 'promptSpecificLabel')}
+                                {selectedRegion && (
+                                    <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
+                                    ID: {selectedRegion.id.slice(0, 4)}
+                                    </span>
+                                )}
+                           </label>
+                           
+                           {selectedRegion ? (
+                                <textarea 
+                                key={selectedRegion.id} 
+                                value={selectedRegion.customPrompt || ''}
+                                onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
+                                className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
+                                placeholder={t(lang, 'promptSpecificPlaceholder')}
+                                />
+                           ) : (
+                                <div className="w-full h-16 p-2 text-xs border border-dashed border-skin-border rounded-lg bg-skin-fill/20 flex items-center justify-center text-skin-muted text-center italic">
+                                Select a region to customize its prompt
+                                </div>
+                           )}
+                       </>
                     )}
                  </div>
                )}
@@ -837,6 +868,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Settings */}
         {!isManualMode && (
           <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
+              {/* ... (Existing settings code) ... */}
               <div className="space-y-3">
                  <div>
                     <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
