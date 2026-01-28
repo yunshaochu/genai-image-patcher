@@ -1,3 +1,5 @@
+
+
 import { useState, useEffect, useCallback } from 'react';
 import { UploadedImage, Region, ImageHistoryState } from '../types';
 import { readFileAsDataURL, loadImage, naturalSortCompare, stitchImage, cropRegion } from '../services/imageUtils';
@@ -124,6 +126,13 @@ export function useImageManager() {
       }
       return { ...img, regions: newRegions, history: currentHistory };
     }));
+  };
+
+  const handleUpdateImagePrompt = (imageId: string, prompt: string) => {
+      setImages(prev => prev.map(img => {
+          if (img.id !== imageId) return img;
+          return { ...img, customPrompt: prompt };
+      }));
   };
 
   const handleToggleSkip = (imageId: string) => {
@@ -278,6 +287,7 @@ export function useImageManager() {
     handleSelectImage,
     handleUpdateRegions,
     handleUpdateRegionPrompt,
+    handleUpdateImagePrompt, // Exported
     handleToggleSkip,
     handleDeleteImage,
     handleClearAllImages,

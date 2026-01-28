@@ -32,6 +32,7 @@ export interface UploadedImage {
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
   isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
+  customPrompt?: string; // Full image specific prompt
   
   // History for Undo/Redo of "Apply as Original"
   history: ImageHistoryState[];
@@ -96,6 +97,17 @@ export interface AppConfig {
   enableOCR: boolean;              // Sub switch: Text recognition
   enableManualEditor: boolean;     // Sub switch: Brush/Text editor
   enableVerticalTextDefault: boolean; // Sub switch: Default text orientation
+
+  // Logic Switch
+  useFullImageMasking: boolean; // Send full image with non-selected areas masked white
+  fullImageOpaquePercent: number; // 0-100, default 99. Determines how much of the center is opaque before feathering starts.
+
+  // Translation Mode Settings
+  enableTranslationMode: boolean;
+  translationBaseUrl: string;
+  translationApiKey: string;
+  translationModel: string;
+  translationPrompt: string;
 }
 
 export enum ProcessingStep {

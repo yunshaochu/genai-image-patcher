@@ -5,12 +5,12 @@ import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
-import { loadImage, cropRegion, stitchImage } from './services/imageUtils';
-import { generateRegionEdit } from './services/aiService';
+import { loadImage, cropRegion, stitchImage, createMaskedFullImage, extractCropFromFullImage } from './services/imageUtils';
+import { generateRegionEdit, generateTranslation, fetchOpenAIModels } from './services/aiService';
 import { detectBubbles, recognizeText } from './services/detectionService';
 import { t } from './services/translations';
 import { AsyncSemaphore, runWithConcurrency } from './services/concurrencyUtils';
-import { useConfig } from './hooks/useConfig';
+import { useConfig, DEFAULT_TRANSLATION_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 
 export default function App() {
@@ -29,9 +29,10 @@ export default function App() {
     handleSelectImage,
     handleUpdateRegions,
     handleUpdateRegionPrompt,
+    handleUpdateImagePrompt, // New
     handleToggleSkip,
     handleDeleteImage,
-    handleClearAllImages, // Added
+    handleClearAllImages, 
     handleManualPatchUpdate,
     // History Actions
     handleApplyResultAsOriginal,
@@ -45,6 +46,9 @@ export default function App() {
   const [isDetecting, setIsDetecting] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  
+  // Translation Model Fetching State
+  const [transModels, setTransModels] = useState<string[]>([]);
   
   // Editor State
   const [editingRegion, setEditingRegion] = useState<{ 
@@ -266,6 +270,7 @@ export default function App() {
     imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
 
     // Handle "Process Full Image" option
+    // NOTE: Even if no user regions, we create a temporary 'fullRegion' to standardize processing
     let initialRegions = [...imageSnapshot.regions];
     if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
         const fullRegion: Region = {
@@ -278,6 +283,7 @@ export default function App() {
         initialRegions = [fullRegion];
         regionsMap.set(fullRegion.id, fullRegion);
         
+        // Update UI to show we created a region (so stitching works)
         setImages(prev => prev.map(img => 
             img.id === imageSnapshot.id ? { ...img, regions: initialRegions } : img
         ));
@@ -301,19 +307,70 @@ export default function App() {
         
         try {
             if (signal.aborted) return;
-            const croppedBase64 = await cropRegion(imgElement, region);
+
+            // 1. Prepare Input Image (Crop vs Masked Full)
+            let inputImageBase64: string;
+            if (config.useFullImageMasking) {
+                 inputImageBase64 = createMaskedFullImage(imgElement, region);
+            } else {
+                 inputImageBase64 = await cropRegion(imgElement, region);
+            }
+            
             if (signal.aborted) return;
+
+            // 2. Translation Mode Logic (New)
+            let translationText = '';
+            if (config.enableTranslationMode) {
+               setProcessingState(ProcessingStep.API_CALLING); // Or create a new TRANSLATING state visual
+               // Temporarily update UI to show "Translating..." via custom state mapping or just use API_CALLING
+               translationText = await generateTranslation(inputImageBase64, config, signal);
+            }
 
             setProcessingState(ProcessingStep.API_CALLING);
             
-            const globalPrompt = config.prompt.trim();
-            const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
-            const effectivePrompt = regionSpecificPrompt.length > 0 ? `${globalPrompt} ${regionSpecificPrompt}` : globalPrompt;
+            // 3. Construct Prompt
+            // Determine global prompt base: if processing full image specific, use image custom prompt if available
+            // If processing a region, use config.prompt (Global)
+            // But wait, if full image processing is enabled, the region acts as a placeholder for the full image.
+            
+            // Logic:
+            // If Region Source is Manual (full image auto-region) AND we have Image Specific Prompt -> Use that.
+            // Else -> Use Global Config Prompt.
+            let basePrompt = config.prompt.trim();
+            
+            if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
+               basePrompt = imageSnapshot.customPrompt.trim();
+            }
 
-            const processedBase64 = await generateRegionEdit(croppedBase64, effectivePrompt, config, signal);
+            const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
+            
+            let effectivePrompt = basePrompt;
+            if (regionSpecificPrompt) {
+                effectivePrompt += ` ${regionSpecificPrompt}`;
+            }
+            if (translationText) {
+                effectivePrompt += `\n\n[Context from Image Translation]:\n${translationText}`;
+            }
+
+            // 4. Generate Image
+            const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
             if (signal.aborted) return;
 
-            const completedRegion = { ...region, processedImageBase64: processedBase64, status: 'completed' as const };
+            // 5. Extract Result
+            let finalRegionImageBase64: string;
+            if (config.useFullImageMasking) {
+                 finalRegionImageBase64 = await extractCropFromFullImage(
+                    apiResultBase64, 
+                    region, 
+                    imgElement.naturalWidth, 
+                    imgElement.naturalHeight,
+                    config.fullImageOpaquePercent // PASS CONFIG VALUE
+                 );
+            } else {
+                 finalRegionImageBase64 = apiResultBase64;
+            }
+
+            const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);
 
             setProcessingState(ProcessingStep.STITCHING);
@@ -428,6 +485,17 @@ export default function App() {
       setConfig(prev => ({ ...prev, [key]: value }));
   };
 
+  // Fetch models for translation settings
+  const fetchTransModels = async () => {
+      if (!config.translationBaseUrl || !config.translationApiKey) return;
+      try {
+          const models = await fetchOpenAIModels(config.translationBaseUrl, config.translationApiKey);
+          setTransModels(models);
+      } catch(e) {
+          console.error(e);
+      }
+  };
+
   // Check if Editor tools should be visible
   const showEditor = config.enableMangaMode && config.enableManualEditor;
 
@@ -454,8 +522,9 @@ export default function App() {
         onDownload={handleDownload}
         onManualPatchUpdate={handleManualPatchUpdate}
         onUpdateRegionPrompt={handleUpdateRegionPrompt}
+        onUpdateImagePrompt={handleUpdateImagePrompt}
         onDeleteImage={handleDeleteImage}
-        onClearAllImages={handleClearAllImages} // Passed
+        onClearAllImages={handleClearAllImages} 
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
@@ -463,8 +532,8 @@ export default function App() {
         onOcrRegion={(imageId, regionId) => handleOcrRegion(imageId, regionId)}
         onOpenGlobalSettings={() => setShowGlobalSettings(true)}
         onOpenHelp={() => setShowHelp(true)}
-        showEditor={showEditor} // Pass to Sidebar
-        onApplyAsOriginal={() => selectedImage && handleApplyResultAsOriginal(selectedImage.id)} // Pass handler
+        showEditor={showEditor} 
+        onApplyAsOriginal={() => selectedImage && handleApplyResultAsOriginal(selectedImage.id)} 
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">
@@ -569,7 +638,7 @@ export default function App() {
                  <h3 className="font-bold text-lg">{t(config.language, 'globalSettings')}</h3>
                  <button onClick={() => setShowGlobalSettings(false)} className="p-1 hover:bg-skin-fill rounded">✕</button>
               </div>
-              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+              <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar">
                   
                   {/* Master Switch: Manga Module */}
                   <div className="flex items-center justify-between">
@@ -590,7 +659,7 @@ export default function App() {
 
                   {/* Sub-Switch: Bubble Detection */}
                   {config.enableMangaMode && (
-                     <div className="pl-4 border-l-2 border-skin-border space-y-4">
+                     <div className="pl-4 border-l-2 border-skin-border space-y-4 mt-4">
                          {/* Bubble Detection */}
                          <div className="flex items-center justify-between">
                             <div>
@@ -662,6 +731,138 @@ export default function App() {
                          )}
 
                      </div>
+                  )}
+
+                  {/* Feature: Full Image Masking Toggle */}
+                  <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
+                      <div>
+                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'useFullImageMasking')}</div>
+                          <div className="text-xs text-skin-muted max-w-[200px]">{t(config.language, 'useFullImageMaskingDesc')}</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={config.useFullImageMasking}
+                            onChange={(e) => updateConfig('useFullImageMasking', e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
+                      </label>
+                  </div>
+
+                  {/* Feathering Control - Only visible if Masking is ON */}
+                  {config.useFullImageMasking && (
+                      <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-2 animate-in fade-in slide-in-from-top-1 mt-2">
+                          <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(config.language, 'fullImageOpaquePercent')}</label>
+                          <div className="flex items-center gap-3">
+                              <input 
+                                  type="range" min="80" max="100" step="1"
+                                  value={config.fullImageOpaquePercent}
+                                  onChange={(e) => updateConfig('fullImageOpaquePercent', Number(e.target.value))}
+                                  className="flex-1 h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                              />
+                              <div className="relative">
+                                  <input 
+                                      type="number" min="0" max="100"
+                                      value={config.fullImageOpaquePercent}
+                                      onChange={(e) => updateConfig('fullImageOpaquePercent', Math.max(0, Math.min(100, Number(e.target.value))))}
+                                      className="w-12 p-1 text-xs text-center border border-skin-border rounded bg-skin-surface"
+                                  />
+                                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] text-skin-muted pointer-events-none">%</span>
+                              </div>
+                          </div>
+                          <p className="text-[10px] text-skin-muted leading-tight">{t(config.language, 'fullImageOpaquePercentDesc')}</p>
+                      </div>
+                  )}
+
+                  {/* Feature: Translation Mode */}
+                  <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
+                      <div>
+                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableTranslationMode')}</div>
+                          <div className="text-xs text-skin-muted max-w-[200px]">{t(config.language, 'enableTranslationModeDesc')}</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                            type="checkbox" 
+                            className="sr-only peer"
+                            checked={config.enableTranslationMode}
+                            onChange={(e) => updateConfig('enableTranslationMode', e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
+                      </label>
+                  </div>
+
+                  {/* Translation Mode Config */}
+                  {config.enableTranslationMode && (
+                      <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-2">
+                          <h4 className="text-xs font-bold text-skin-text uppercase tracking-wider">{t(config.language, 'translationSettings')}</h4>
+                          <div>
+                              <label className="text-[10px] text-skin-muted block mb-1">{t(config.language, 'baseUrl')}</label>
+                              <input 
+                                  type="text" 
+                                  value={config.translationBaseUrl}
+                                  onChange={(e) => updateConfig('translationBaseUrl', e.target.value)}
+                                  className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
+                              />
+                          </div>
+                          <div>
+                              <label className="text-[10px] text-skin-muted block mb-1">{t(config.language, 'apiKey')}</label>
+                              <input 
+                                  type="password" 
+                                  value={config.translationApiKey}
+                                  onChange={(e) => updateConfig('translationApiKey', e.target.value)}
+                                  className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
+                              />
+                          </div>
+                          <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-[10px] text-skin-muted block">{t(config.language, 'model')}</label>
+                                <button onClick={fetchTransModels} className="text-[10px] text-skin-primary hover:underline">{t(config.language, 'fetchList')}</button>
+                              </div>
+                              <div className="relative">
+                                  <input 
+                                      type="text" 
+                                      value={config.translationModel}
+                                      onChange={(e) => updateConfig('translationModel', e.target.value)}
+                                      className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
+                                  />
+                                  {transModels.length > 0 && (
+                                      <div className="mt-1 max-h-24 overflow-y-auto border border-skin-border rounded bg-skin-surface absolute z-10 w-full shadow-lg">
+                                          {transModels.map(m => (
+                                              <div 
+                                                key={m} 
+                                                onClick={() => { updateConfig('translationModel', m); setTransModels([]); }}
+                                                className="px-2 py-1 text-[10px] hover:bg-skin-fill cursor-pointer truncate"
+                                              >
+                                                  {m}
+                                              </div>
+                                          ))}
+                                      </div>
+                                  )}
+                              </div>
+                          </div>
+                          
+                          {/* Translation Prompt Editor */}
+                          <div>
+                              <div className="flex justify-between items-center mb-1">
+                                  <label className="text-[10px] text-skin-muted block">{t(config.language, 'translationPromptLabel')}</label>
+                                  <button 
+                                      onClick={() => updateConfig('translationPrompt', DEFAULT_TRANSLATION_PROMPT)}
+                                      className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                                      title={t(config.language, 'resetToDefault')}
+                                  >
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                      {t(config.language, 'reset')}
+                                  </button>
+                              </div>
+                              <textarea 
+                                  value={config.translationPrompt}
+                                  onChange={(e) => updateConfig('translationPrompt', e.target.value)}
+                                  className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm"
+                                  placeholder={t(config.language, 'translationPromptPlaceholder')}
+                              />
+                          </div>
+                      </div>
                   )}
                   
               </div>

@@ -3,6 +3,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
+import { DEFAULT_TRANSLATION_PROMPT } from "../hooks/useConfig";
 
 /**
  * Helper to sanitize header values (API Keys) to prevent
@@ -324,6 +325,76 @@ const generateOpenAIImage = async (
     }
     console.error("OpenAI Chat Generation Error:", error);
     throw error;
+  }
+};
+
+/**
+ * Perform translation using an OpenAI-compatible endpoint.
+ * Returns the translated text found in the image.
+ */
+export const generateTranslation = async (
+  imageBase64: string,
+  config: AppConfig,
+  signal?: AbortSignal
+): Promise<string> => {
+  const { translationBaseUrl, translationApiKey, translationModel, translationPrompt } = config;
+  
+  if (!translationApiKey || !translationBaseUrl) {
+      throw new Error("Translation API Key or Base URL missing.");
+  }
+
+  const safeApiKey = sanitizeHeaderValue(translationApiKey);
+  let cleanBaseUrl = translationBaseUrl.replace(/\/$/, "");
+  if (!cleanBaseUrl.endsWith('/v1')) {
+     cleanBaseUrl += '/v1';
+  }
+  const url = `${cleanBaseUrl}/chat/completions`;
+
+  const prompt = translationPrompt || DEFAULT_TRANSLATION_PROMPT;
+
+  const messages = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        {
+          type: "image_url",
+          image_url: {
+            url: imageBase64.startsWith('data:') 
+              ? imageBase64 
+              : `data:image/png;base64,${imageBase64}`
+          }
+        }
+      ]
+    }
+  ];
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${safeApiKey}`,
+      },
+      body: JSON.stringify({
+        model: translationModel,
+        messages: messages,
+        max_tokens: 2048
+      }),
+      signal: signal
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(`Translation API Error: ${err.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || '';
+
+  } catch (error) {
+      console.error("Translation API Error", error);
+      throw error;
   }
 };
 
