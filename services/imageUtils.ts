@@ -80,6 +80,41 @@ export const createMaskedFullImage = (
 };
 
 /**
+ * Creates a full-size image where ALL specified regions are visible, 
+ * and the rest is masked with white.
+ */
+export const createMultiMaskedFullImage = (
+  imageElement: HTMLImageElement,
+  regions: Region[]
+): string => {
+  const canvas = document.createElement('canvas');
+  canvas.width = imageElement.naturalWidth;
+  canvas.height = imageElement.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  // Fill white
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Draw all regions
+  regions.forEach(region => {
+      const x = (region.x / 100) * imageElement.naturalWidth;
+      const y = (region.y / 100) * imageElement.naturalHeight;
+      const w = (region.width / 100) * imageElement.naturalWidth;
+      const h = (region.height / 100) * imageElement.naturalHeight;
+
+      ctx.drawImage(
+        imageElement,
+        x, y, w, h, // Source
+        x, y, w, h  // Dest
+      );
+  });
+
+  return canvas.toDataURL('image/png');
+};
+
+/**
  * Extracts the crop corresponding to the region from a full-size returned image
  * Applies feathering (alpha blending) to the edges to ensure seamless stitching.
  */

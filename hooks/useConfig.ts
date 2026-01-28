@@ -1,5 +1,4 @@
 
-
 import { useState, useEffect } from 'react';
 import { AppConfig } from '../types';
 
@@ -43,8 +42,8 @@ const DEFAULT_CONFIG: AppConfig = {
   provider: 'openai',
   openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
-  openaiModel: 'dall-e-3',
-  openaiStream: true, // Default to true
+  openaiModel: 'gemini-imagen',
+  openaiStream: false, 
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
@@ -67,13 +66,13 @@ const DEFAULT_CONFIG: AppConfig = {
   
   // New Logic Toggle
   useFullImageMasking: false,
-  fullImageOpaquePercent: 99, // Default to 99% opaque (1% feathering)
+  fullImageOpaquePercent: 90, 
 
   // Translation Defaults
   enableTranslationMode: false,
-  translationBaseUrl: 'https://api.openai.com/v1',
+  translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
-  translationModel: 'gpt-4o',
+  translationModel: 'gemini-3-flash-preview',
   translationPrompt: DEFAULT_TRANSLATION_PROMPT
 };
 
@@ -101,7 +100,7 @@ export function useConfig() {
 
         // Ensure openaiStream exists (migration for existing users)
         if (typeof migratedConfig.openaiStream === 'undefined') {
-            migratedConfig.openaiStream = true;
+            migratedConfig.openaiStream = false;
         }
         
         // Ensure useFullImageMasking exists
@@ -111,15 +110,15 @@ export function useConfig() {
         
         // Ensure fullImageOpaquePercent exists
         if (typeof migratedConfig.fullImageOpaquePercent === 'undefined') {
-            migratedConfig.fullImageOpaquePercent = 99;
+            migratedConfig.fullImageOpaquePercent = 90;
         }
 
         // Ensure Translation settings exist
         if (typeof migratedConfig.enableTranslationMode === 'undefined') {
             migratedConfig.enableTranslationMode = false;
-            migratedConfig.translationBaseUrl = 'https://api.openai.com/v1';
+            migratedConfig.translationBaseUrl = 'http://localhost:7860/v1';
             migratedConfig.translationApiKey = '';
-            migratedConfig.translationModel = 'gpt-4o';
+            migratedConfig.translationModel = 'gemini-3-flash-preview';
             migratedConfig.translationPrompt = DEFAULT_TRANSLATION_PROMPT;
         }
         

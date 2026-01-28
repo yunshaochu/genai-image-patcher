@@ -4,7 +4,7 @@ import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
-import { loadImage, cropRegion, stitchImage, createMaskedFullImage, extractCropFromFullImage } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, extractCropFromFullImage } from './services/imageUtils';
 import { generateRegionEdit, generateTranslation, fetchOpenAIModels } from './services/aiService';
 import { detectBubbles, recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -341,6 +341,81 @@ export default function App() {
     if (signal.aborted) return;
     setProcessingState(ProcessingStep.CROPPING);
 
+    // --- BATCH MODE (Full Image Masking) ---
+    if (config.useFullImageMasking) {
+        await globalSemaphore.acquire();
+        try {
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+            // 1. Create Multi-Masked Image
+            const inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
+
+            // 2. Translation
+            let translationText = '';
+            if (config.enableTranslationMode) {
+               setProcessingState(ProcessingStep.API_CALLING); 
+               // Pass the masked image to translation so it only reads what's visible
+               translationText = await generateTranslation(inputImageBase64, config, signal);
+            }
+
+            setProcessingState(ProcessingStep.API_CALLING);
+
+            // 3. Prompt Construction
+            let basePrompt = config.prompt.trim();
+            // Use Image Custom Prompt if available (overrides global)
+            if (imageSnapshot.customPrompt) {
+               basePrompt = imageSnapshot.customPrompt.trim();
+            }
+            
+            let effectivePrompt = basePrompt;
+            if (translationText) {
+                effectivePrompt += `\n\n[Context from Image Translation]:\n${translationText}`;
+            }
+
+            // 4. Generate
+            const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
+            
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+            // 5. Extract Results
+            for (const region of regionsToProcess) {
+                const finalRegionImageBase64 = await extractCropFromFullImage(
+                    apiResultBase64, 
+                    region, 
+                    imgElement.naturalWidth, 
+                    imgElement.naturalHeight,
+                    config.fullImageOpaquePercent
+                );
+                
+                const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
+                regionsMap.set(region.id, completedRegion);
+            }
+
+            // 6. Stitch
+            setProcessingState(ProcessingStep.STITCHING);
+            const currentAllRegions = Array.from(regionsMap.values());
+            const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
+
+            setImages(prev => prev.map(img => {
+                if (img.id !== imageSnapshot.id) return img;
+                return { ...img, finalResultUrl: stitchedUrl, regions: currentAllRegions };
+            }));
+
+        } catch (err: any) {
+            if (err.name !== 'AbortError') {
+                console.error(`Batch processing failed for image ${imageSnapshot.id}`, err);
+                regionsToProcess.forEach(r => {
+                    regionsMap.set(r.id, { ...r, status: 'failed' as const });
+                });
+                setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
+            }
+        } finally {
+            globalSemaphore.release();
+        }
+        return;
+    }
+
+    // --- LEGACY MODE (Per Region Crop) ---
     const processRegionTask = async (region: Region) => {
         if (signal.aborted) return;
         await globalSemaphore.acquire();
@@ -348,36 +423,23 @@ export default function App() {
         try {
             if (signal.aborted) return;
 
-            // 1. Prepare Input Image (Crop vs Masked Full)
-            let inputImageBase64: string;
-            if (config.useFullImageMasking) {
-                 inputImageBase64 = createMaskedFullImage(imgElement, region);
-            } else {
-                 inputImageBase64 = await cropRegion(imgElement, region);
-            }
+            // 1. Prepare Input Image (Crop)
+            const inputImageBase64 = await cropRegion(imgElement, region);
             
             if (signal.aborted) return;
 
-            // 2. Translation Mode Logic (New)
+            // 2. Translation Mode Logic
             let translationText = '';
             if (config.enableTranslationMode) {
-               setProcessingState(ProcessingStep.API_CALLING); // Or create a new TRANSLATING state visual
-               // Temporarily update UI to show "Translating..." via custom state mapping or just use API_CALLING
+               setProcessingState(ProcessingStep.API_CALLING); 
                translationText = await generateTranslation(inputImageBase64, config, signal);
             }
 
             setProcessingState(ProcessingStep.API_CALLING);
             
             // 3. Construct Prompt
-            // Determine global prompt base: if processing full image specific, use image custom prompt if available
-            // If processing a region, use config.prompt (Global)
-            // But wait, if full image processing is enabled, the region acts as a placeholder for the full image.
-            
-            // Logic:
-            // If Region Source is Manual (full image auto-region) AND we have Image Specific Prompt -> Use that.
-            // Else -> Use Global Config Prompt.
             let basePrompt = config.prompt.trim();
-            
+            // If full image processing (no manual regions originally), use image prompt
             if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
                basePrompt = imageSnapshot.customPrompt.trim();
             }
@@ -397,18 +459,7 @@ export default function App() {
             if (signal.aborted) return;
 
             // 5. Extract Result
-            let finalRegionImageBase64: string;
-            if (config.useFullImageMasking) {
-                 finalRegionImageBase64 = await extractCropFromFullImage(
-                    apiResultBase64, 
-                    region, 
-                    imgElement.naturalWidth, 
-                    imgElement.naturalHeight,
-                    config.fullImageOpaquePercent // PASS CONFIG VALUE
-                 );
-            } else {
-                 finalRegionImageBase64 = apiResultBase64;
-            }
+            const finalRegionImageBase64 = apiResultBase64;
 
             const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);
