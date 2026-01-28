@@ -1,5 +1,4 @@
 
-
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
@@ -91,6 +90,47 @@ export default function App() {
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   }, [addImageFiles]); 
+
+  // --- Keyboard Navigation Handlers ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        const target = e.target as HTMLElement;
+        // Ignore if focus is in an input field
+        if (target.matches('input, textarea') || target.isContentEditable) return;
+        
+        // Ignore if modifier keys are pressed (e.g. Ctrl+C, Ctrl+Z)
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+        if (e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            
+            if (images.length === 0) return;
+
+            const currentIndex = images.findIndex(img => img.id === selectedImageId);
+            let newIndex = currentIndex;
+
+            if (currentIndex === -1) {
+                // If nothing selected, select first
+                newIndex = 0;
+            } else {
+                if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+                    // Previous
+                    newIndex = Math.max(0, currentIndex - 1);
+                } else {
+                    // Next
+                    newIndex = Math.min(images.length - 1, currentIndex + 1);
+                }
+            }
+
+            if (newIndex !== currentIndex) {
+                handleSelectImage(images[newIndex].id);
+            }
+        }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [images, selectedImageId, handleSelectImage]);
 
   // --- EDITOR HANDLERS ---
   const handleOpenEditor = async (imageId: string, regionId: string) => {
