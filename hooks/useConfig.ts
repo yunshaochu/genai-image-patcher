@@ -5,6 +5,11 @@ import { AppConfig } from '../types';
 const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
 const DEFAULT_PROMPT = "Enhance this section with high detail, keeping realistic lighting.";
 
+export const TRANSLATION_MODE_IMAGE_PROMPT = `0. 使用banana pro
+1. 请用中文翻译替换掉图片里的日文。
+2. 生成一张只有中文的图
+3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文`;
+
 export const DEFAULT_TRANSLATION_PROMPT = `> **角色设定**：
 > 你是专业的漫画汉化组成员，负责提取文本、定位和翻译。
 >
@@ -66,6 +71,7 @@ const DEFAULT_CONFIG: AppConfig = {
   
   // New Logic Toggle
   useFullImageMasking: false,
+  useInvertedMasking: false,
   fullImageOpaquePercent: 90, 
 
   // Translation Defaults
@@ -106,6 +112,11 @@ export function useConfig() {
         // Ensure useFullImageMasking exists
         if (typeof migratedConfig.useFullImageMasking === 'undefined') {
             migratedConfig.useFullImageMasking = false;
+        }
+
+        // Ensure useInvertedMasking exists
+        if (typeof migratedConfig.useInvertedMasking === 'undefined') {
+            migratedConfig.useInvertedMasking = false;
         }
         
         // Ensure fullImageOpaquePercent exists

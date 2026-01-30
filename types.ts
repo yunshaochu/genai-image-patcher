@@ -1,5 +1,4 @@
 
-
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -13,6 +12,7 @@ export interface Region {
   customPrompt?: string; // Image-specific prompt overrides global prompt
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
+  isRecalculating?: boolean; // New: visual flag for background refinements
 }
 
 export interface ImageHistoryState {
@@ -21,6 +21,7 @@ export interface ImageHistoryState {
   finalResultUrl?: string;
   width: number;
   height: number;
+  fullAiResultUrl?: string; // Added to history
 }
 
 export interface UploadedImage {
@@ -31,6 +32,7 @@ export interface UploadedImage {
   originalHeight: number;
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
+  fullAiResultUrl?: string; // The raw full-size output from the AI (before any cropping)
   isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
   customPrompt?: string; // Full image specific prompt
   
@@ -100,6 +102,7 @@ export interface AppConfig {
 
   // Logic Switch
   useFullImageMasking: boolean; // Send full image with non-selected areas masked white
+  useInvertedMasking: boolean; // New: Selected areas are masked white (AI generates BG), Orginal regions kept.
   fullImageOpaquePercent: number; // 0-100, default 99. Determines how much of the center is opaque before feathering starts.
 
   // Translation Mode Settings

@@ -1,16 +1,122 @@
 
-import React, { useState, useRef, useEffect } from 'react';
-import { UploadedImage, Region, ProcessingStep, AppConfig } from './types';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { UploadedImage, Region, ProcessingStep, AppConfig, Language } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
-import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, extractCropFromFullImage } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted } from './services/imageUtils';
 import { generateRegionEdit, generateTranslation, fetchOpenAIModels } from './services/aiService';
 import { detectBubbles, recognizeText } from './services/detectionService';
 import { t } from './services/translations';
 import { AsyncSemaphore, runWithConcurrency } from './services/concurrencyUtils';
-import { useConfig, DEFAULT_TRANSLATION_PROMPT } from './hooks/useConfig';
+import { useConfig, DEFAULT_TRANSLATION_PROMPT, TRANSLATION_MODE_IMAGE_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
+
+// ... (HelpModal code is preserved) ...
+// --- HELP MODAL COMPONENT ---
+const HelpModal = ({ onClose, language }: { onClose: () => void, language: Language }) => {
+    const [activeTab, setActiveTab] = useState<'basics' | 'manga' | 'pro' | 'editor' | 'tricks'>('basics');
+
+    const tabs = [
+        { id: 'basics', label: t(language, 'help_tab_basics'), icon: '🚀' },
+        { id: 'manga', label: t(language, 'help_tab_manga'), icon: '📖' },
+        { id: 'pro', label: t(language, 'help_tab_pro'), icon: '⚡' },
+        { id: 'editor', label: t(language, 'help_tab_editor'), icon: '🎨' },
+        { id: 'tricks', label: t(language, 'help_tab_tricks'), icon: '🧙‍♂️' },
+    ] as const;
+
+    const renderSection = (titleKey: any, descKey: any) => (
+        <div className="mb-6 last:mb-0">
+            <h4 className="text-sm font-bold text-skin-text mb-1 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-skin-primary"></span>
+                {t(language, titleKey)}
+            </h4>
+            <p className="text-xs text-skin-muted leading-relaxed pl-3.5 border-l border-skin-border/50">
+                {t(language, descKey)}
+            </p>
+        </div>
+    );
+
+    return (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+            <div className="bg-skin-surface w-full max-w-2xl h-[500px] rounded-2xl shadow-2xl flex border border-skin-border overflow-hidden">
+                {/* Sidebar */}
+                <div className="w-48 bg-skin-fill border-r border-skin-border flex flex-col">
+                    <div className="p-4 border-b border-skin-border">
+                        <h3 className="font-bold text-skin-text">{t(language, 'helpTitle')}</h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto py-2">
+                        {tabs.map(tab => (
+                            <button
+                                key={tab.id}
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`w-full text-left px-4 py-3 text-xs font-medium flex items-center gap-3 transition-all ${
+                                    activeTab === tab.id 
+                                        ? 'bg-skin-surface text-skin-primary border-l-4 border-skin-primary shadow-sm' 
+                                        : 'text-skin-muted hover:bg-skin-surface/50 hover:text-skin-text border-l-4 border-transparent'
+                                }`}
+                            >
+                                <span className="text-sm">{tab.icon}</span>
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Content */}
+                <div className="flex-1 flex flex-col bg-skin-surface">
+                    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+                        {activeTab === 'basics' && (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                                {renderSection('help_basics_1_title', 'help_basics_1_desc')}
+                                {renderSection('help_basics_2_title', 'help_basics_2_desc')}
+                                {renderSection('help_basics_3_title', 'help_basics_3_desc')}
+                                {renderSection('help_basics_4_title', 'help_basics_4_desc')}
+                            </div>
+                        )}
+                        {activeTab === 'manga' && (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                                {renderSection('help_manga_1_title', 'help_manga_1_desc')}
+                                {renderSection('help_manga_2_title', 'help_manga_2_desc')}
+                                {renderSection('help_manga_3_title', 'help_manga_3_desc')}
+                            </div>
+                        )}
+                        {activeTab === 'pro' && (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                                {renderSection('help_pro_1_title', 'help_pro_1_desc')}
+                                {renderSection('help_pro_2_title', 'help_pro_2_desc')}
+                                {renderSection('help_pro_3_title', 'help_pro_3_desc')}
+                            </div>
+                        )}
+                        {activeTab === 'editor' && (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                                {renderSection('help_editor_1_title', 'help_editor_1_desc')}
+                                {renderSection('help_editor_2_title', 'help_editor_2_desc')}
+                                {renderSection('help_editor_3_title', 'help_editor_3_desc')}
+                            </div>
+                        )}
+                        {activeTab === 'tricks' && (
+                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                                {renderSection('help_tricks_1_title', 'help_tricks_1_desc')}
+                                {renderSection('help_tricks_2_title', 'help_tricks_2_desc')}
+                                {renderSection('help_tricks_3_title', 'help_tricks_3_desc')}
+                                {renderSection('help_tricks_4_title', 'help_tricks_4_desc')}
+                            </div>
+                        )}
+                    </div>
+                    <div className="p-4 border-t border-skin-border bg-skin-fill/30 flex justify-end">
+                        <button 
+                            onClick={onClose}
+                            className="px-6 py-2 bg-skin-primary text-skin-primary-fg rounded-lg text-xs font-bold shadow hover:opacity-90 transition-all"
+                        >
+                            {t(language, 'close')}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 export default function App() {
   const { config, setConfig } = useConfig();
@@ -28,12 +134,11 @@ export default function App() {
     handleSelectImage,
     handleUpdateRegions,
     handleUpdateRegionPrompt,
-    handleUpdateImagePrompt, // New
+    handleUpdateImagePrompt,
     handleToggleSkip,
     handleDeleteImage,
     handleClearAllImages, 
     handleManualPatchUpdate,
-    // History Actions
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage
@@ -46,20 +151,126 @@ export default function App() {
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   
-  // Translation Model Fetching State
   const [transModels, setTransModels] = useState<string[]>([]);
-  
-  // Editor State
   const [editingRegion, setEditingRegion] = useState<{ 
       imageId: string, 
       regionId: string, 
       startBase64: string,
-      initialTextObjects?: TextObject[] // New: Pass initial text when opening full editor
+      initialTextObjects?: TextObject[]
   } | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
+  
+  // Debounce Timer Ref for Heavy Operations
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  
+  // Operation Version Ref for Race Condition Handling
+  const operationVersionRef = useRef<number>(0);
 
-  // --- File Upload Handlers ---
+  // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
+  const handleInteractionStart = useCallback(() => {
+      // 1. Cancel any pending debounce timer
+      if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+      }
+      // 2. Increment version to invalidate any running async operations
+      operationVersionRef.current++;
+      
+      // 3. Clear 'isRecalculating' flags immediately if user starts moving a yellow box
+      setImages(prev => prev.map(img => ({
+          ...img,
+          regions: img.regions.map(r => ({ ...r, isRecalculating: false }))
+      })));
+  }, [setImages]);
+
+  // --- Regions Update Handler with Auto Stitching ---
+  const onRegionsChanged = (imageId: string, newRegions: Region[]) => {
+      // 1. Optimistic Update
+      handleUpdateRegions(imageId, newRegions);
+
+      // If Inverted Masking is ON, we don't do complex crop extractions on move, because the result IS the background.
+      // Changing box size in Inverted Mode technically means "Reveal more/less of the Original".
+      // We might need to re-stitch the Inverted Result.
+      if (config.useInvertedMasking) {
+          const targetImage = images.find(img => img.id === imageId);
+          if (targetImage && targetImage.fullAiResultUrl) {
+              if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+              debounceTimerRef.current = setTimeout(async () => {
+                  const stitchedUrl = await stitchImageInverted(targetImage.previewUrl, targetImage.fullAiResultUrl!, newRegions);
+                  setImages(prev => prev.map(img => img.id === imageId ? { ...img, finalResultUrl: stitchedUrl } : img));
+              }, 200);
+          }
+          return;
+      }
+
+      const targetImage = images.find(img => img.id === imageId);
+      if (!targetImage) return;
+
+      // 2. Debounce Heavy Process
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      operationVersionRef.current++;
+      const currentVersion = operationVersionRef.current;
+
+      debounceTimerRef.current = setTimeout(async () => {
+          if (operationVersionRef.current !== currentVersion) return;
+
+          // Mark recalculating if needed
+          setImages(prev => prev.map(img => {
+              if (img.id !== imageId) return img;
+              return {
+                  ...img,
+                  regions: img.regions.map(r => {
+                      const changed = newRegions.find(nr => nr.id === r.id && nr.status === 'completed' && img.fullAiResultUrl);
+                      return changed ? { ...r, isRecalculating: true } : r;
+                  })
+              };
+          }));
+
+          let hasChanges = false;
+          // Re-crop high quality from full result if moved
+          const updatedRegions = await Promise.all(newRegions.map(async (newRegion) => {
+              if (operationVersionRef.current !== currentVersion) return newRegion;
+              
+              const oldRegion = targetImage.regions.find(r => r.id === newRegion.id);
+              if (newRegion.status === 'completed' && targetImage.fullAiResultUrl && oldRegion) {
+                  const posChanged = 
+                      Math.abs(newRegion.x - oldRegion.x) > 0.001 ||
+                      Math.abs(newRegion.y - oldRegion.y) > 0.001 ||
+                      Math.abs(newRegion.width - oldRegion.width) > 0.001 ||
+                      Math.abs(newRegion.height - oldRegion.height) > 0.001;
+
+                  if (posChanged) {
+                      hasChanges = true;
+                      try {
+                          const newCrop = await extractCropFromFullImage(
+                              targetImage.fullAiResultUrl,
+                              newRegion,
+                              targetImage.originalWidth,
+                              targetImage.originalHeight,
+                              config.fullImageOpaquePercent
+                          );
+                          if (operationVersionRef.current !== currentVersion) return newRegion;
+                          return { ...newRegion, processedImageBase64: newCrop, isRecalculating: false };
+                      } catch (e) {
+                          console.error("Failed to re-extract crop", e);
+                          return { ...newRegion, isRecalculating: false };
+                      }
+                  }
+              }
+              return { ...newRegion, isRecalculating: false };
+          }));
+
+          if (operationVersionRef.current === currentVersion) {
+              const finalRegions = hasChanges ? updatedRegions : newRegions;
+              // Just update regions, NO AUTO STITCHING (Standard Mode)
+              handleUpdateRegions(imageId, finalRegions);
+          }
+          debounceTimerRef.current = null;
+      }, 500);
+  };
+
+  // --- Handlers ---
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       await addImageFiles(Array.from(e.target.files));
@@ -67,12 +278,11 @@ export default function App() {
     e.target.value = '';
   };
 
+  // ... (Paste and Keydown Handlers preserved) ...
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
         const target = e.target as HTMLElement;
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-           return;
-        }
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
         const items = e.clipboardData?.items;
         if (!items) return;
         const files: File[] = [];
@@ -91,80 +301,62 @@ export default function App() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [addImageFiles]); 
 
-  // --- Keyboard Navigation Handlers ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
         const target = e.target as HTMLElement;
-        // Ignore if focus is in an input field
         if (target.matches('input, textarea') || target.isContentEditable) return;
-        
-        // Ignore if modifier keys are pressed (e.g. Ctrl+C, Ctrl+Z)
         if (e.ctrlKey || e.metaKey || e.altKey) return;
-
         if (e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
             e.preventDefault();
-            
             if (images.length === 0) return;
-
             const currentIndex = images.findIndex(img => img.id === selectedImageId);
             let newIndex = currentIndex;
-
             if (currentIndex === -1) {
-                // If nothing selected, select first
                 newIndex = 0;
             } else {
                 if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-                    // Previous
                     newIndex = Math.max(0, currentIndex - 1);
                 } else {
-                    // Next
                     newIndex = Math.min(images.length - 1, currentIndex + 1);
                 }
             }
-
             if (newIndex !== currentIndex) {
                 handleSelectImage(images[newIndex].id);
             }
         }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [images, selectedImageId, handleSelectImage]);
 
-  // --- EDITOR HANDLERS ---
+  // ... (Editor, OCR, Detect logic preserved) ...
   const handleOpenEditor = async (imageId: string, regionId: string) => {
       const img = images.find(i => i.id === imageId);
       if (!img) return;
 
       if (regionId === 'manual-full-image') {
-          // CONVERT REGIONS TO TEXT OBJECTS
           const textObjects: TextObject[] = img.regions.map((r, index) => {
-             // Basic heuristic for font size based on box height (approx 1/2 of height is text body)
-             // We convert percentage coords to pixels
              const boxH = (r.height / 100) * img.originalHeight;
              const fontSize = Math.max(14, Math.round(boxH * 0.3)); 
              const width = (r.width / 100) * img.originalWidth;
              const height = (r.height / 100) * img.originalHeight;
-             
              return {
-                 id: r.id, // Reuse region ID to potentially link back later
+                 id: r.id,
                  x: (r.x / 100) * img.originalWidth,
                  y: (r.y / 100) * img.originalHeight,
                  width: width,
                  height: height,
-                 text: r.ocrText || `Text ${index + 1}`, // Default text so the box is visible
+                 text: r.ocrText || `Text ${index + 1}`,
                  fontSize: fontSize,
                  color: '#000000',
                  outlineColor: '#ffffff',
                  outlineWidth: 3,
                  backgroundColor: 'transparent',
-                 isVertical: r.height > r.width * 1.5, // Simple heuristic for vertical text
+                 isVertical: r.height > r.width * 1.5,
                  isBold: true,
                  rotation: 0
              };
           });
-
           setEditingRegion({
               imageId,
               regionId,
@@ -176,19 +368,16 @@ export default function App() {
 
       const region = img.regions.find(r => r.id === regionId);
       if (!region) return;
-
       let startBase64 = region.processedImageBase64;
       if (!startBase64) {
          const imgEl = await loadImage(img.previewUrl);
          startBase64 = await cropRegion(imgEl, region);
       }
-      
-      // If editing a single region, check if it has OCR text to prepopulate
       let singleTextObj: TextObject[] | undefined = undefined;
       if (region.ocrText) {
           singleTextObj = [{
              id: crypto.randomUUID(),
-             x: 10, y: 10, // Relative to the crop, hard to guess perfect center without crop dim calc
+             x: 10, y: 10,
              text: region.ocrText,
              fontSize: 24,
              color: '#000000',
@@ -200,7 +389,6 @@ export default function App() {
              rotation: 0
           }];
       }
-
       setEditingRegion({ imageId, regionId, startBase64, initialTextObjects: singleTextObj });
   };
 
@@ -211,13 +399,10 @@ export default function App() {
       setEditingRegion(null);
   };
 
-  // --- OCR HANDLER ---
   const handleOcrRegion = async (imageId: string, regionId: string) => {
      const img = images.find(i => i.id === imageId);
      const region = img?.regions.find(r => r.id === regionId);
      if (!img || !region) return;
-
-     // Set Loading
      setImages(prev => prev.map(currentImg => 
          currentImg.id === imageId 
            ? {
@@ -226,13 +411,10 @@ export default function App() {
              }
            : currentImg
      ));
-
      try {
          const imgEl = await loadImage(img.previewUrl);
          const crop = await cropRegion(imgEl, region);
          const text = await recognizeText(crop, config);
-         
-         // Update with Text
          setImages(prev => prev.map(currentImg => 
             currentImg.id === imageId 
               ? {
@@ -242,10 +424,7 @@ export default function App() {
               : currentImg
          ));
      } catch (e: any) {
-         console.error("OCR Failed", e);
          setErrorMsg("OCR Error: " + e.message);
-         
-         // Reset Loading
          setImages(prev => prev.map(currentImg => 
             currentImg.id === imageId 
               ? {
@@ -257,24 +436,19 @@ export default function App() {
      }
   };
 
-  // --- AUTO DETECTION HANDLER ---
   const handleAutoDetect = async (scope: 'current' | 'all') => {
      setIsDetecting(true);
      setErrorMsg(null);
-     
      const controller = new AbortController();
      abortControllerRef.current = controller;
-
      try {
          const targets = scope === 'current' 
             ? (selectedImage ? [selectedImage] : [])
             : images.filter(img => !img.isSkipped);
-        
          if (targets.length === 0) {
             setIsDetecting(false);
             return;
          }
-
          const detectTask = async (img: UploadedImage) => {
             try {
                 const newRegions = await detectBubbles(img.previewUrl, config);
@@ -289,11 +463,8 @@ export default function App() {
                 console.error(`Detection failed for ${img.file.name}:`, e);
             }
          };
-
          await runWithConcurrency(targets, config.concurrencyLimit, detectTask, controller.signal, 0);
-
      } catch (e: any) {
-         console.error(e);
          setErrorMsg("Detection Error: " + e.message);
      } finally {
          setIsDetecting(false);
@@ -309,8 +480,6 @@ export default function App() {
     const regionsMap = new Map<string, Region>();
     imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
 
-    // Handle "Process Full Image" option
-    // NOTE: Even if no user regions, we create a temporary 'fullRegion' to standardize processing
     let initialRegions = [...imageSnapshot.regions];
     if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
         const fullRegion: Region = {
@@ -322,8 +491,6 @@ export default function App() {
         };
         initialRegions = [fullRegion];
         regionsMap.set(fullRegion.id, fullRegion);
-        
-        // Update UI to show we created a region (so stitching works)
         setImages(prev => prev.map(img => 
             img.id === imageSnapshot.id ? { ...img, regions: initialRegions } : img
         ));
@@ -333,77 +500,95 @@ export default function App() {
     if (regionsToProcess.length === 0) return;
 
     const imgElement = await loadImage(imageSnapshot.previewUrl);
-
-    // Set status to processing
     regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
     setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
 
     if (signal.aborted) return;
     setProcessingState(ProcessingStep.CROPPING);
 
-    // --- BATCH MODE (Full Image Masking) ---
     if (config.useFullImageMasking) {
         await globalSemaphore.acquire();
         try {
             if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+            
+            // Handle Inverted Masking
+            let inputImageBase64;
+            if (config.useInvertedMasking) {
+                inputImageBase64 = createInvertedMultiMaskedFullImage(imgElement, regionsToProcess);
+            } else {
+                inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
+            }
 
-            // 1. Create Multi-Masked Image
-            const inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
-
-            // 2. Translation
             let translationText = '';
             if (config.enableTranslationMode) {
                setProcessingState(ProcessingStep.API_CALLING); 
-               // Pass the masked image to translation so it only reads what's visible
                translationText = await generateTranslation(inputImageBase64, config, signal);
             }
-
             setProcessingState(ProcessingStep.API_CALLING);
-
-            // 3. Prompt Construction
             let basePrompt = config.prompt.trim();
-            // Use Image Custom Prompt if available (overrides global)
             if (imageSnapshot.customPrompt) {
                basePrompt = imageSnapshot.customPrompt.trim();
             }
-            
             let effectivePrompt = basePrompt;
             if (translationText) {
-                effectivePrompt += `\n\n[Context from Image Translation]:\n${translationText}`;
+                effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
             }
-
-            // 4. Generate
             const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
-            
             if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
-            // 5. Extract Results
-            for (const region of regionsToProcess) {
-                const finalRegionImageBase64 = await extractCropFromFullImage(
-                    apiResultBase64, 
-                    region, 
-                    imgElement.naturalWidth, 
-                    imgElement.naturalHeight,
-                    config.fullImageOpaquePercent
-                );
+            if (config.useInvertedMasking) {
+                // Inverted Mode: The result IS the background.
+                // We stitch immediately because EditorCanvas doesn't support floating 'Background' patches.
+                const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultBase64, regionsToProcess);
                 
-                const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
-                regionsMap.set(region.id, completedRegion);
+                // For regions, we mark them completed but they don't really hold the 'patch' content in this mode.
+                regionsToProcess.forEach(r => {
+                    regionsMap.set(r.id, { ...r, status: 'completed' as const });
+                });
+                const currentAllRegions = Array.from(regionsMap.values());
+
+                setImages(prev => prev.map(img => {
+                    if (img.id !== imageSnapshot.id) return img;
+                    const updatedHistory = [...img.history];
+                    if (updatedHistory[img.historyIndex]) {
+                       updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
+                    }
+                    return { 
+                        ...img, 
+                        fullAiResultUrl: apiResultBase64, 
+                        finalResultUrl: stitchedUrl,
+                        regions: currentAllRegions, 
+                        history: updatedHistory 
+                    };
+                }));
+            } else {
+                // Standard Masking Mode
+                for (const region of regionsToProcess) {
+                    const finalRegionImageBase64 = await extractCropFromFullImage(
+                        apiResultBase64, 
+                        region, 
+                        imgElement.naturalWidth, 
+                        imgElement.naturalHeight,
+                        config.fullImageOpaquePercent
+                    );
+                    const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
+                    regionsMap.set(region.id, completedRegion);
+                }
+
+                // NO AUTO STITCHING HERE (Standard Mode)
+                const currentAllRegions = Array.from(regionsMap.values());
+                
+                setImages(prev => prev.map(img => {
+                    if (img.id !== imageSnapshot.id) return img;
+                    const updatedHistory = [...img.history];
+                    if (updatedHistory[img.historyIndex]) {
+                       updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
+                    }
+                    return { ...img, fullAiResultUrl: apiResultBase64, regions: currentAllRegions, history: updatedHistory };
+                }));
             }
-
-            // 6. Stitch
-            setProcessingState(ProcessingStep.STITCHING);
-            const currentAllRegions = Array.from(regionsMap.values());
-            const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
-
-            setImages(prev => prev.map(img => {
-                if (img.id !== imageSnapshot.id) return img;
-                return { ...img, finalResultUrl: stitchedUrl, regions: currentAllRegions };
-            }));
-
         } catch (err: any) {
             if (err.name !== 'AbortError') {
-                console.error(`Batch processing failed for image ${imageSnapshot.id}`, err);
                 regionsToProcess.forEach(r => {
                     regionsMap.set(r.id, { ...r, status: 'failed' as const });
                 });
@@ -415,67 +600,46 @@ export default function App() {
         return;
     }
 
-    // --- LEGACY MODE (Per Region Crop) ---
+    // LEGACY / SINGLE REGION PROCESSING (Standard Mode Only)
     const processRegionTask = async (region: Region) => {
         if (signal.aborted) return;
         await globalSemaphore.acquire();
-        
         try {
             if (signal.aborted) return;
-
-            // 1. Prepare Input Image (Crop)
             const inputImageBase64 = await cropRegion(imgElement, region);
-            
             if (signal.aborted) return;
-
-            // 2. Translation Mode Logic
             let translationText = '';
             if (config.enableTranslationMode) {
                setProcessingState(ProcessingStep.API_CALLING); 
                translationText = await generateTranslation(inputImageBase64, config, signal);
             }
-
             setProcessingState(ProcessingStep.API_CALLING);
-            
-            // 3. Construct Prompt
             let basePrompt = config.prompt.trim();
-            // If full image processing (no manual regions originally), use image prompt
             if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
                basePrompt = imageSnapshot.customPrompt.trim();
             }
-
             const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
-            
             let effectivePrompt = basePrompt;
             if (regionSpecificPrompt) {
                 effectivePrompt += ` ${regionSpecificPrompt}`;
             }
             if (translationText) {
-                effectivePrompt += `\n\n[Context from Image Translation]:\n${translationText}`;
+                effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
             }
-
-            // 4. Generate Image
             const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
             if (signal.aborted) return;
-
-            // 5. Extract Result
-            const finalRegionImageBase64 = apiResultBase64;
-
-            const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
+            const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);
-
-            setProcessingState(ProcessingStep.STITCHING);
+            
+            // NO AUTO STITCHING
             const currentAllRegions = Array.from(regionsMap.values());
-            const stitchedUrl = await stitchImage(imageSnapshot.previewUrl, currentAllRegions);
-
+            
             setImages(prev => prev.map(img => {
                 if (img.id !== imageSnapshot.id) return img;
-                return { ...img, finalResultUrl: stitchedUrl, regions: currentAllRegions };
+                return { ...img, regions: currentAllRegions };
             }));
-
         } catch (err: any) {
             if (err.name === 'AbortError') return;
-            console.error(`Region ${region.id} failed`, err);
             const failedRegion = { ...region, status: 'failed' as const };
             regionsMap.set(region.id, failedRegion);
             setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
@@ -483,7 +647,6 @@ export default function App() {
             globalSemaphore.release();
         }
     };
-
     await runWithConcurrency(regionsToProcess, config.concurrencyLimit, processRegionTask, signal, 0);
   };
 
@@ -502,25 +665,19 @@ export default function App() {
 
   const handleProcess = async (processAll: boolean) => {
     if (abortControllerRef.current) abortControllerRef.current.abort();
-    
     const controller = new AbortController();
     abortControllerRef.current = controller;
-
     setProcessingState(ProcessingStep.CROPPING);
     setErrorMsg(null);
-
     const targets: UploadedImage[] = processAll 
         ? images.filter(img => !img.isSkipped)
         : (selectedImage ? [selectedImage] : []);
-
     if (targets.length === 0) {
         setProcessingState(ProcessingStep.IDLE);
         return;
     }
-
     const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
     const globalSemaphore = new AsyncSemaphore(actualLimit);
-
     try {
         if (config.executionMode === 'concurrent') {
             await runWithConcurrency<UploadedImage, void>(
@@ -535,29 +692,145 @@ export default function App() {
                 await processSingleImage(img, controller.signal, globalSemaphore);
             }
         }
-        
         if (controller.signal.aborted) setErrorMsg(t(config.language, 'stopped_by_user'));
         setProcessingState(ProcessingStep.DONE);
     } catch (e: any) {
         if (e.name !== 'AbortError') {
-             console.error("Global processing error", e);
              setErrorMsg(e.message || "Unknown error occurred");
         }
         setProcessingState(ProcessingStep.IDLE);
     }
   };
 
-  const handleDownload = () => {
-      if (!selectedImage || !selectedImage.finalResultUrl) return;
-      const link = document.createElement('a');
-      link.href = selectedImage.finalResultUrl;
-      link.download = `patched_${selectedImage.file.name}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+  // ON-DEMAND STITCHING for Download
+  const handleDownload = async () => {
+      if (!selectedImage) return;
+      try {
+          let stitchedUrl: string;
+          if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
+              stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);
+          } else {
+              stitchedUrl = await stitchImage(selectedImage.previewUrl, selectedImage.regions);
+          }
+          const link = document.createElement('a');
+          link.href = stitchedUrl;
+          link.download = `patched_${selectedImage.file.name}`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+      } catch (e) {
+          console.error("Failed to stitch for download", e);
+          setErrorMsg("Failed to generate download image.");
+      }
+  };
+  
+  // ON-DEMAND STITCHING for Apply
+  const handleApplyAsOriginalWrapper = async () => {
+      if (!selectedImage) return;
+      try {
+          // Perform stitch only when applying
+          let stitchedUrl: string;
+          if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
+              stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);
+          } else {
+              stitchedUrl = await stitchImage(selectedImage.previewUrl, selectedImage.regions);
+          }
+          handleApplyResultAsOriginal(selectedImage.id, stitchedUrl);
+      } catch (e) {
+          console.error("Failed to stitch for apply", e);
+          setErrorMsg("Failed to apply changes.");
+      }
   };
 
-  // --- DRAG & DROP UI EVENTS ---
+  // --- REFINEMENT HANDLER (Scroll to adjust box) ---
+  const handleAdjustRegion = useCallback(async (imageId: string, regionId: string, isExpand: boolean) => {
+      const img = images.find(i => i.id === imageId);
+      if (!img || !img.fullAiResultUrl) return;
+      
+      const region = img.regions.find(r => r.id === regionId);
+      if (!region || region.status !== 'completed') return;
+
+      const step = 1.0; 
+      const direction = isExpand ? 1 : -1;
+      
+      let newX = region.x - (step * direction);
+      let newY = region.y - (step * direction);
+      let newW = region.width + (step * 2 * direction);
+      let newH = region.height + (step * 2 * direction);
+
+      if (newW < 1) return;
+      if (newH < 1) return;
+      if (newX < 0) { newW += newX; newX = 0; }
+      if (newY < 0) { newH += newY; newY = 0; }
+      if (newX + newW > 100) newW = 100 - newX;
+      if (newY + newH > 100) newH = 100 - newY;
+
+      const updatedRegions = img.regions.map(r => 
+        r.id === regionId 
+          ? { ...r, x: newX, y: newY, width: newW, height: newH } 
+          : r
+      );
+      handleUpdateRegions(imageId, updatedRegions);
+
+      // Inverted Mode Refinement
+      if (config.useInvertedMasking) {
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = setTimeout(async () => {
+              const stitchedUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl!, updatedRegions);
+              setImages(prev => prev.map(i => i.id === imageId ? { ...i, finalResultUrl: stitchedUrl } : i));
+          }, 200);
+          return;
+      }
+
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      
+      operationVersionRef.current++;
+      const currentVersion = operationVersionRef.current;
+      
+      debounceTimerRef.current = setTimeout(async () => {
+          if (operationVersionRef.current !== currentVersion) return;
+
+          setImages(prev => prev.map(i => {
+              if (i.id !== imageId) return i;
+              return {
+                  ...i,
+                  regions: i.regions.map(r => r.id === regionId ? { ...r, isRecalculating: true } : r)
+              };
+          }));
+
+          try {
+              const newCropBase64 = await extractCropFromFullImage(
+                  img.fullAiResultUrl!,
+                  { ...region, x: newX, y: newY, width: newW, height: newH },
+                  img.originalWidth,
+                  img.originalHeight,
+                  config.fullImageOpaquePercent
+              );
+
+              if (operationVersionRef.current !== currentVersion) return;
+
+              const finalRegions = img.regions.map(r => 
+                r.id === regionId 
+                  ? { ...r, x: newX, y: newY, width: newW, height: newH, processedImageBase64: newCropBase64, isRecalculating: false } 
+                  : { ...r, isRecalculating: false }
+              );
+              
+              handleUpdateRegions(imageId, finalRegions);
+              
+              // NO AUTO STITCH
+              
+          } catch (e) {
+              console.error("Adjustment processing failed", e);
+              setImages(prev => prev.map(i => ({
+                  ...i,
+                  regions: i.regions.map(r => ({ ...r, isRecalculating: false }))
+              })));
+          }
+          debounceTimerRef.current = null;
+      }, 500); 
+  }, [images, config.fullImageOpaquePercent, config.useInvertedMasking, handleUpdateRegions, setImages]);
+
+  // --- DRAG & DROP ---
   const onDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
   const onDragLeave = (e: React.DragEvent) => {
     e.preventDefault(); e.stopPropagation();
@@ -576,18 +849,14 @@ export default function App() {
       setConfig(prev => ({ ...prev, [key]: value }));
   };
 
-  // Fetch models for translation settings
   const fetchTransModels = async () => {
       if (!config.translationBaseUrl || !config.translationApiKey) return;
       try {
           const models = await fetchOpenAIModels(config.translationBaseUrl, config.translationApiKey);
           setTransModels(models);
-      } catch(e) {
-          console.error(e);
-      }
+      } catch(e) { console.error(e); }
   };
 
-  // Check if Editor tools should be visible
   const showEditor = config.enableMangaMode && config.enableManualEditor;
 
   return (
@@ -624,7 +893,7 @@ export default function App() {
         onOpenGlobalSettings={() => setShowGlobalSettings(true)}
         onOpenHelp={() => setShowHelp(true)}
         showEditor={showEditor} 
-        onApplyAsOriginal={() => selectedImage && handleApplyResultAsOriginal(selectedImage.id)} 
+        onApplyAsOriginal={handleApplyAsOriginalWrapper} 
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">
@@ -637,7 +906,7 @@ export default function App() {
                  >
                    {t(config.language, 'readyToCreate')}
                  </button>
-                 {selectedImage.finalResultUrl && (
+                 {(selectedImage.regions.some(r => r.status === 'completed') || selectedImage.isSkipped || selectedImage.finalResultUrl) && (
                     <button 
                         onClick={() => setViewMode('result')}
                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'result' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
@@ -651,7 +920,6 @@ export default function App() {
                      </span>
                  )}
 
-                 {/* Undo/Redo Controls for Image History */}
                  <div className="flex gap-1 ml-2 border-l border-white/20 pl-2">
                     <button
                         onClick={() => handleUndoImage(selectedImage.id)}
@@ -672,10 +940,22 @@ export default function App() {
                  </div>
              </div>
 
-             {viewMode === 'original' ? (
-                <EditorCanvas
+             {viewMode === 'result' && config.useInvertedMasking && selectedImage.finalResultUrl ? (
+                 // Special Render for Inverted Mode Result: Just the full stitched image
+                 <div className="w-full h-full flex items-center justify-center p-8 overflow-hidden select-none">
+                    <div className="relative shadow-xl">
+                        <img 
+                            src={selectedImage.finalResultUrl} 
+                            className="max-h-[85vh] max-w-full block object-contain pointer-events-none rounded bg-skin-surface shadow-sm ring-1 ring-skin-border"
+                            alt="Result"
+                        />
+                    </div>
+                 </div>
+             ) : (
+                 // Standard Mode (Original & Result using EditorCanvas) or Inverted Mode Original
+                 <EditorCanvas
                     image={selectedImage}
-                    onUpdateRegions={handleUpdateRegions}
+                    onUpdateRegions={(imageId, newRegions) => onRegionsChanged(imageId, newRegions)}
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
                     language={config.language}
                     onOpenEditor={(regionId) => handleOpenEditor(selectedImage.id, regionId)}
@@ -683,12 +963,11 @@ export default function App() {
                     onSelectRegion={setSelectedRegionId}
                     onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
                     showOcrButton={config.enableMangaMode && config.enableOCR}
-                    showEditorButton={showEditor} // Pass to Canvas
+                    showEditorButton={showEditor}
+                    onAdjustRegionSize={(regionId, isExpand) => handleAdjustRegion(selectedImage.id, regionId, isExpand)}
+                    onInteractionStart={handleInteractionStart}
+                    viewMode={viewMode}
                 />
-             ) : (
-                <div className="w-full h-full flex items-center justify-center p-8">
-                    <img src={selectedImage.finalResultUrl} className="max-h-[85vh] max-w-full object-contain shadow-2xl rounded-lg ring-1 ring-skin-border" alt="Result" />
-                </div>
              )}
            </>
         ) : (
@@ -721,17 +1000,15 @@ export default function App() {
          />
       )}
 
-      {/* GLOBAL SETTINGS MODAL - Rendered here to be top level z-index */}
       {showGlobalSettings && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+           {/* Global Settings Content (Same as previous) */}
            <div className="bg-skin-surface max-w-sm w-full rounded-xl shadow-2xl flex flex-col border border-skin-border animate-in fade-in zoom-in-95">
               <div className="p-4 border-b border-skin-border flex justify-between items-center">
                  <h3 className="font-bold text-lg">{t(config.language, 'globalSettings')}</h3>
                  <button onClick={() => setShowGlobalSettings(false)} className="p-1 hover:bg-skin-fill rounded">✕</button>
               </div>
               <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                  
-                  {/* Master Switch: Manga Module */}
                   <div className="flex items-center justify-between">
                       <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</div>
@@ -747,11 +1024,9 @@ export default function App() {
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
                       </label>
                   </div>
-
-                  {/* Sub-Switch: Bubble Detection */}
+                  {/* ... Rest of settings (reusing existing structure logic) ... */}
                   {config.enableMangaMode && (
                      <div className="pl-4 border-l-2 border-skin-border space-y-4 mt-4">
-                         {/* Bubble Detection */}
                          <div className="flex items-center justify-between">
                             <div>
                                 <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableBubbleDetection')}</div>
@@ -767,8 +1042,6 @@ export default function App() {
                                 <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
                             </label>
                          </div>
-
-                         {/* OCR */}
                          <div className="flex items-center justify-between">
                             <div>
                                 <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableOCR')}</div>
@@ -784,8 +1057,6 @@ export default function App() {
                                 <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
                             </label>
                          </div>
-
-                         {/* Manual Editor */}
                          <div className="flex items-center justify-between">
                             <div>
                                 <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableManualEditor')}</div>
@@ -801,8 +1072,6 @@ export default function App() {
                                 <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
                             </label>
                          </div>
-
-                         {/* Vertical Text Default */}
                          {config.enableManualEditor && (
                              <div className="flex items-center justify-between">
                                 <div>
@@ -820,11 +1089,8 @@ export default function App() {
                                 </label>
                              </div>
                          )}
-
                      </div>
                   )}
-
-                  {/* Feature: Full Image Masking Toggle */}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
                       <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'useFullImageMasking')}</div>
@@ -840,33 +1106,47 @@ export default function App() {
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
                       </label>
                   </div>
-
-                  {/* Feathering Control - Only visible if Masking is ON */}
                   {config.useFullImageMasking && (
-                      <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-2 animate-in fade-in slide-in-from-top-1 mt-2">
-                          <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(config.language, 'fullImageOpaquePercent')}</label>
-                          <div className="flex items-center gap-3">
-                              <input 
-                                  type="range" min="80" max="100" step="1"
-                                  value={config.fullImageOpaquePercent}
-                                  onChange={(e) => updateConfig('fullImageOpaquePercent', Number(e.target.value))}
-                                  className="flex-1 h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
-                              />
-                              <div className="relative">
+                      <div className="pl-4 border-l-2 border-skin-border space-y-4 mt-4 animate-in fade-in slide-in-from-top-1">
+                          <div className="flex items-center justify-between">
+                            <div>
+                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'useInvertedMasking')}</div>
+                                <div className="text-[10px] text-skin-muted">{t(config.language, 'useInvertedMaskingDesc')}</div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    className="sr-only peer"
+                                    checked={config.useInvertedMasking}
+                                    onChange={(e) => updateConfig('useInvertedMasking', e.target.checked)}
+                                />
+                                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                            </label>
+                         </div>
+                      
+                          <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-2">
+                              <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(config.language, 'fullImageOpaquePercent')}</label>
+                              <div className="flex items-center gap-3">
                                   <input 
-                                      type="number" min="0" max="100"
+                                      type="range" min="80" max="100" step="1"
                                       value={config.fullImageOpaquePercent}
-                                      onChange={(e) => updateConfig('fullImageOpaquePercent', Math.max(0, Math.min(100, Number(e.target.value))))}
-                                      className="w-12 p-1 text-xs text-center border border-skin-border rounded bg-skin-surface"
+                                      onChange={(e) => updateConfig('fullImageOpaquePercent', Number(e.target.value))}
+                                      className="flex-1 h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
                                   />
-                                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] text-skin-muted pointer-events-none">%</span>
+                                  <div className="relative">
+                                      <input 
+                                          type="number" min="0" max="100"
+                                          value={config.fullImageOpaquePercent}
+                                          onChange={(e) => updateConfig('fullImageOpaquePercent', Math.max(0, Math.min(100, Number(e.target.value))))}
+                                          className="w-12 p-1 text-xs text-center border border-skin-border rounded bg-skin-surface"
+                                      />
+                                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] text-skin-muted pointer-events-none">%</span>
+                                  </div>
                               </div>
+                              <p className="text-[10px] text-skin-muted leading-tight">{t(config.language, 'fullImageOpaquePercentDesc')}</p>
                           </div>
-                          <p className="text-[10px] text-skin-muted leading-tight">{t(config.language, 'fullImageOpaquePercentDesc')}</p>
                       </div>
                   )}
-
-                  {/* Feature: Translation Mode */}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
                       <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableTranslationMode')}</div>
@@ -877,13 +1157,18 @@ export default function App() {
                             type="checkbox" 
                             className="sr-only peer"
                             checked={config.enableTranslationMode}
-                            onChange={(e) => updateConfig('enableTranslationMode', e.target.checked)}
+                            onChange={(e) => {
+                                const enabled = e.target.checked;
+                                setConfig(prev => ({ 
+                                    ...prev, 
+                                    enableTranslationMode: enabled,
+                                    prompt: enabled ? TRANSLATION_MODE_IMAGE_PROMPT : prev.prompt
+                                }));
+                            }}
                         />
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
                       </label>
                   </div>
-
-                  {/* Translation Mode Config */}
                   {config.enableTranslationMode && (
                       <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-2">
                           <h4 className="text-xs font-bold text-skin-text uppercase tracking-wider">{t(config.language, 'translationSettings')}</h4>
@@ -932,8 +1217,6 @@ export default function App() {
                                   )}
                               </div>
                           </div>
-                          
-                          {/* Translation Prompt Editor */}
                           <div>
                               <div className="flex justify-between items-center mb-1">
                                   <label className="text-[10px] text-skin-muted block">{t(config.language, 'translationPromptLabel')}</label>
@@ -955,7 +1238,6 @@ export default function App() {
                           </div>
                       </div>
                   )}
-                  
               </div>
               <div className="p-4 border-t border-skin-border bg-skin-fill/30">
                   <button onClick={() => setShowGlobalSettings(false)} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">
@@ -965,7 +1247,9 @@ export default function App() {
            </div>
         </div>
       )}
-      
+      {showHelp && (
+          <HelpModal onClose={() => setShowHelp(false)} language={config.language} />
+      )}
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-skin-fill/80 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200 pointer-events-none">
            <div className="w-[80%] h-[80%] border-4 border-dashed border-skin-primary rounded-3xl flex flex-col items-center justify-center text-skin-primary">

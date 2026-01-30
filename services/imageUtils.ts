@@ -1,5 +1,4 @@
 
-
 import { Region, UploadedImage } from '../types';
 
 /**
@@ -109,6 +108,41 @@ export const createMultiMaskedFullImage = (
         x, y, w, h, // Source
         x, y, w, h  // Dest
       );
+  });
+
+  return canvas.toDataURL('image/png');
+};
+
+/**
+ * REVERSE MASKING MODE:
+ * Creates a full-size image where the original background is visible,
+ * but the selected regions are masked out (White).
+ * This tells the AI: "Here is the context (bg), please fill these white boxes."
+ * But since our goal is to REPLACE the background, we might be abusing this.
+ * However, based on user request: "Only user circled is blank, others are original".
+ */
+export const createInvertedMultiMaskedFullImage = (
+  imageElement: HTMLImageElement,
+  regions: Region[]
+): string => {
+  const canvas = document.createElement('canvas');
+  canvas.width = imageElement.naturalWidth;
+  canvas.height = imageElement.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  // 1. Draw the Full Original Image
+  ctx.drawImage(imageElement, 0, 0);
+
+  // 2. Erase (Fill White) the selected regions
+  ctx.fillStyle = '#FFFFFF';
+  regions.forEach(region => {
+      const x = (region.x / 100) * imageElement.naturalWidth;
+      const y = (region.y / 100) * imageElement.naturalHeight;
+      const w = (region.width / 100) * imageElement.naturalWidth;
+      const h = (region.height / 100) * imageElement.naturalHeight;
+
+      ctx.fillRect(x, y, w, h);
   });
 
   return canvas.toDataURL('image/png');
@@ -228,6 +262,48 @@ export const stitchImage = async (
 
       ctx.drawImage(regionImg, x, y, w, h);
     }
+  }
+
+  return canvas.toDataURL('image/png');
+};
+
+/**
+ * REVERSE STITCHING:
+ * Base is the AI Generated Image (Full).
+ * We paste the ORIGINAL image regions on top.
+ * This effectively keeps the original characters (regions) but accepts the AI's new background.
+ */
+export const stitchImageInverted = async (
+  originalImageUrl: string,
+  aiFullResultUrl: string,
+  regions: Region[]
+): Promise<string> => {
+  const originalImg = await loadImage(originalImageUrl);
+  const aiImg = await loadImage(aiFullResultUrl);
+  
+  const canvas = document.createElement('canvas');
+  canvas.width = originalImg.naturalWidth;
+  canvas.height = originalImg.naturalHeight;
+  
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  // 1. Draw AI Result as Base (Background)
+  // Assuming AI output matches original dimensions or we stretch it
+  ctx.drawImage(aiImg, 0, 0, canvas.width, canvas.height);
+
+  // 2. Draw Original Regions on top (Keeping them "Original")
+  for (const region of regions) {
+      const x = (region.x / 100) * originalImg.naturalWidth;
+      const y = (region.y / 100) * originalImg.naturalHeight;
+      const w = (region.width / 100) * originalImg.naturalWidth;
+      const h = (region.height / 100) * originalImg.naturalHeight;
+
+      ctx.drawImage(
+        originalImg,
+        x, y, w, h, // Source from Original
+        x, y, w, h  // Dest on Canvas
+      );
   }
 
   return canvas.toDataURL('image/png');

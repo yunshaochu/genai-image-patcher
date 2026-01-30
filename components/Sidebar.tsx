@@ -1,9 +1,8 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
-import { cropRegion, loadImage } from '../services/imageUtils';
+import { cropRegion, loadImage, stitchImage, stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 
@@ -33,7 +32,6 @@ interface SidebarProps {
   onOpenHelp: () => void;
   showEditor: boolean;
   onApplyAsOriginal: () => void;
-  // New: Handler for updating image-specific prompt
   onUpdateImagePrompt?: (imageId: string, prompt: string) => void; 
 }
 
@@ -346,9 +344,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
-  const hasCompletedImages = images.some(img => img.finalResultUrl);
+  // Check if images have completed regions, even if finalResultUrl is not stitched yet
+  const hasCompletedImages = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
   const downloadCount = hasCompletedImages 
-      ? images.filter(img => img.finalResultUrl || img.isSkipped).length 
+      ? images.filter(img => img.regions.some(r => r.status === 'completed') || img.isSkipped).length 
       : images.length;
   
   const lang = config.language;
@@ -380,8 +379,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   const handleDownloadAllZip = async () => {
     let imagesToZip: UploadedImage[] = [];
 
-    if (images.some(img => img.finalResultUrl)) {
-        imagesToZip = images.filter(img => img.finalResultUrl || img.isSkipped);
+    // Prioritize images that have patches or skip enabled
+    const hasAnyResults = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
+    
+    if (hasAnyResults) {
+        imagesToZip = images.filter(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl || img.isSkipped);
     } 
     else {
         imagesToZip = images;
@@ -395,15 +397,31 @@ const Sidebar: React.FC<SidebarProps> = ({
       const folder = zip.folder("patched_results");
 
       const promises = imagesToZip.map(async (img, index) => {
-        const targetUrl = img.finalResultUrl || img.previewUrl;
-        if (!targetUrl) return;
+        let targetUrl = img.finalResultUrl || img.previewUrl;
+        
+        // ON-DEMAND STITCHING: If patches exist but no final result, stitch it now.
+        const hasPatches = img.regions.some(r => r.status === 'completed');
+        if (hasPatches && !img.isSkipped) {
+            try {
+               // Handle Inverted Mode Logic for Zip
+               if (config.useInvertedMasking && img.fullAiResultUrl) {
+                   targetUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl, img.regions);
+               } else {
+                   targetUrl = await stitchImage(img.previewUrl, img.regions);
+               }
+            } catch (e) {
+               console.error("Failed to stitch image for zip:", img.file.name, e);
+               // Fallback to previewUrl if stitching fails
+               targetUrl = img.previewUrl;
+            }
+        }
         
         const response = await fetch(targetUrl);
         const blob = await response.blob();
         
         const originalName = img.file.name.substring(0, img.file.name.lastIndexOf('.')) || img.file.name;
         const ext = img.file.name.split('.').pop() || 'png';
-        const suffix = img.finalResultUrl ? 'patched' : 'original';
+        const suffix = (hasPatches || img.finalResultUrl) && !img.isSkipped ? 'patched' : 'original';
         const filename = `${originalName}_${suffix}.${ext}`;
         
         folder?.file(filename, blob);
@@ -480,7 +498,7 @@ const Sidebar: React.FC<SidebarProps> = ({
              <button
                onClick={onOpenHelp}
                className="p-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill rounded-full transition-all"
-               title={t(lang, 'guideTitle')}
+               title={t(lang, 'helpTitle')}
              >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
              </button>
@@ -512,9 +530,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
+        
         {/* Gallery Section */}
         <Section title={t(lang, 'galleryTitle')} isOpen={sectionsState.gallery} onToggle={() => toggleSection('gallery')}>
-           {/* ... (Existing gallery code remains unchanged) ... */}
            <div className="flex gap-2 mb-2">
                <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
                   <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
@@ -612,7 +630,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                           </button>
 
-                          {img.finalResultUrl && (
+                          {(img.regions.some(r => r.status === 'completed') || img.finalResultUrl) && (
                              <div className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm border border-white z-10" title="Completed"></div>
                           )}
                         </div>
@@ -640,7 +658,6 @@ const Sidebar: React.FC<SidebarProps> = ({
            )}
         </Section>
         
-        {/* Workflow Mode */}
         <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
            <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
                {(['api', 'manual'] as const).map(m => (
@@ -648,7 +665,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                    key={m}
                    onClick={() => {
                        handleConfigChange('processingMode', m);
-                       // Auto-expand Manual Workbench when switching to manual mode
                        if (m === 'manual') {
                            setSectionsState(prev => ({ ...prev, manual: true }));
                        }
@@ -661,10 +677,8 @@ const Sidebar: React.FC<SidebarProps> = ({
            </div>
         </Section>
 
-        {/* Manga Toolkit */}
         {showMangaToolkit && currentImage && (
             <Section title={t(lang, 'mangaTitle')} isOpen={sectionsState.manga} onToggle={() => toggleSection('manga')}>
-               {/* ... (Existing Manga Toolkit code) ... */}
                {showDetection ? (
                  <>
                     <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded-lg border border-skin-border">
@@ -798,7 +812,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             </Section>
         )}
 
-        {/* Prompt Section */}
         {!isManualMode && (
           <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
              <div className="space-y-3">
@@ -812,11 +825,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                   />
                </div>
                
-               {/* REGION SPECIFIC PROMPT or FULL IMAGE PROMPT */}
                {currentImage && (
                  <div className="pt-2 border-t border-skin-border border-dashed transition-all">
                     {showFullImagePrompt ? (
-                       // FULL IMAGE SPECIFIC PROMPT
                        <>
                            <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
                                 {t(lang, 'promptFullImageLabel')}
@@ -833,7 +844,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                            />
                        </>
                     ) : (
-                       // REGION SPECIFIC PROMPT
                        <>
                            <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
                                 {t(lang, 'promptSpecificLabel')}
@@ -865,168 +875,129 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {/* Settings */}
+        {/* RESTORED SETTINGS SECTION */}
         {!isManualMode && (
           <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
-              {/* ... (Existing settings code) ... */}
-              <div className="space-y-3">
-                 <div>
-                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
-                    <div className="relative">
-                        <select 
-                          value={config.provider}
-                          onChange={(e) => handleConfigChange('provider', e.target.value)}
-                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary appearance-none"
+             <div className="space-y-4">
+               {/* Provider Switch */}
+               <div>
+                  <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
+                  <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+                     <button 
+                       onClick={() => handleConfigChange('provider', 'gemini')}
+                       className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'gemini' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                     >
+                       Google Gemini
+                     </button>
+                     <button 
+                       onClick={() => handleConfigChange('provider', 'openai')}
+                       className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'openai' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                     >
+                       OpenAI / Compatible
+                     </button>
+                  </div>
+               </div>
+
+               {/* OpenAI Specifics */}
+               {config.provider === 'openai' && (
+                 <>
+                   <div className="animate-in fade-in slide-in-from-top-1">
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>
+                      <input 
+                        type="text" 
+                        value={config.openaiBaseUrl}
+                        onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
+                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                        placeholder="https://api.openai.com/v1"
+                      />
+                   </div>
+                   <div className="animate-in fade-in slide-in-from-top-2">
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'apiKey')}</label>
+                      <input 
+                        type="password" 
+                        value={config.openaiApiKey}
+                        onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
+                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                        placeholder="sk-..."
+                      />
+                   </div>
+                   <div className="relative animate-in fade-in slide-in-from-top-3">
+                      <div className="flex justify-between items-center mb-1">
+                        <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(lang, 'model')}</label>
+                        <button 
+                          onClick={handleFetchOpenAIModels}
+                          disabled={isLoadingModels}
+                          className="text-[10px] text-skin-primary hover:underline disabled:opacity-50"
                         >
-                           <option value="openai">OpenAI Compatible (ChatGPT, Claude, etc)</option>
-                           <option value="gemini">Google Gemini</option>
-                        </select>
-                        <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-skin-muted">
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
-                        </div>
-                    </div>
-                 </div>
-                 
-                 {config.provider === 'openai' && (
-                    <>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>
-                        <input 
-                          type="text" 
-                          value={config.openaiBaseUrl}
-                          onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
-                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
-                        />
+                          {isLoadingModels ? t(lang, 'fetching') : t(lang, 'fetchList')}
+                        </button>
                       </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'apiKey')}</label>
-                        <input 
-                          type="password" 
-                          value={config.openaiApiKey}
-                          onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
-                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
-                        />
-                      </div>
-                      
-                      {/* IMPROVED MODEL SELECTOR */}
                       <div className="relative" ref={dropdownRef}>
-                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
-                         
-                         <div className="flex gap-2 mb-2">
-                             <div className="relative flex-1">
-                                 <input 
-                                   type="text" 
-                                   value={config.openaiModel}
-                                   onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
-                                   className="w-full pl-2 pr-8 py-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary transition-all shadow-sm"
-                                   placeholder={t(lang, 'modelIdPlaceholder')}
-                                   onFocus={() => {
-                                      if (modelList.length > 0) setShowModelDropdown(true);
-                                   }}
-                                 />
-                                 
-                                 {/* Dropdown Toggle Button */}
-                                 <button 
-                                     type="button"
-                                     onClick={() => {
-                                         if (modelList.length === 0) {
-                                             handleFetchOpenAIModels();
-                                         } else {
-                                             setShowModelDropdown(!showModelDropdown);
-                                         }
-                                     }}
-                                     className="absolute right-0 top-0 h-full px-2 text-skin-muted hover:text-skin-primary transition-colors flex items-center justify-center"
-                                 >
-                                     <svg className={`w-4 h-4 transition-transform duration-200 ${showModelDropdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                                     </svg>
-                                 </button>
-                             </div>
-                             
-                             <button 
-                               onClick={handleFetchOpenAIModels}
-                               disabled={isLoadingModels}
-                               className="px-3 py-1.5 bg-skin-surface border border-skin-border rounded-lg text-xs hover:bg-skin-fill hover:border-skin-primary/50 text-skin-muted hover:text-skin-primary transition-all shadow-sm active:scale-95 flex items-center justify-center min-w-[32px]"
-                               title={t(lang, 'fetchList')}
-                             >
-                               {isLoadingModels ? (
-                                   <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                               ) : (
-                                   <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                               )}
-                             </button>
-                         </div>
-
-                         {/* Dropdown List (Absolute, above input) */}
-                         {showModelDropdown && modelList.length > 0 && (
-                             <div className="absolute bottom-full left-0 right-0 mb-1 z-50 bg-skin-surface border border-skin-border rounded-lg shadow-xl max-h-48 overflow-y-auto custom-scrollbar animate-in fade-in zoom-in-95 origin-bottom">
-                                 {modelList.map(m => (
-                                     <button
-                                         key={m}
-                                         type="button"
-                                         onClick={() => {
-                                             handleConfigChange('openaiModel', m);
-                                             setShowModelDropdown(false);
-                                         }}
-                                         className={`w-full text-left px-3 py-2 text-xs transition-colors border-l-2 ${
-                                            config.openaiModel === m 
-                                                ? 'bg-skin-primary/5 text-skin-primary font-bold border-skin-primary' 
-                                                : 'text-skin-text border-transparent hover:bg-skin-fill hover:text-skin-primary hover:border-skin-border'
-                                         }`}
-                                     >
-                                         {m}
-                                     </button>
-                                 ))}
-                             </div>
-                         )}
-                         
-                         {/* Empty State / Prompt to Fetch */}
-                         {showModelDropdown && modelList.length === 0 && !isLoadingModels && (
-                             <div className="absolute bottom-full left-0 right-0 mb-1 z-50 bg-skin-surface border border-skin-border rounded-lg shadow-xl p-3 text-center origin-bottom animate-in fade-in zoom-in-95">
-                                 <p className="text-[10px] text-skin-muted mb-2">No models loaded.</p>
-                                 <button onClick={handleFetchOpenAIModels} className="text-xs text-skin-primary underline">Fetch Models</button>
-                             </div>
-                         )}
-
-                         {/* Streaming Toggle */}
-                         <label className="flex items-center gap-2 cursor-pointer mt-2">
-                             <input 
-                                 type="checkbox"
-                                 checked={config.openaiStream}
-                                 onChange={(e) => handleConfigChange('openaiStream', e.target.checked)}
-                                 className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                             />
-                             <span className="text-[10px] font-bold text-skin-muted uppercase">Enable Streaming</span>
-                         </label>
+                          <input 
+                            type="text" 
+                            value={config.openaiModel}
+                            onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
+                            onFocus={() => modelList.length > 0 && setShowModelDropdown(true)}
+                            className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                            placeholder={t(lang, 'modelIdPlaceholder')}
+                          />
+                          {showModelDropdown && modelList.length > 0 && (
+                              <div className="absolute top-full left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-skin-surface border border-skin-border rounded-lg shadow-lg z-50 custom-scrollbar">
+                                  {modelList.map(model => (
+                                      <div 
+                                        key={model}
+                                        onClick={() => {
+                                            handleConfigChange('openaiModel', model);
+                                            setShowModelDropdown(false);
+                                        }}
+                                        className="px-3 py-2 text-xs hover:bg-skin-fill cursor-pointer truncate text-skin-text"
+                                      >
+                                          {model}
+                                      </div>
+                                  ))}
+                              </div>
+                          )}
                       </div>
-                    </>
-                 )}
+                   </div>
+                   <div className="animate-in fade-in slide-in-from-top-4 pt-1">
+                      <label className="flex items-center gap-2 cursor-pointer group">
+                          <input 
+                            type="checkbox" 
+                            checked={config.openaiStream}
+                            onChange={(e) => handleConfigChange('openaiStream', e.target.checked)}
+                            className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
+                          />
+                          <span className="text-xs text-skin-muted group-hover:text-skin-text transition-colors">Enable Stream (Beta)</span>
+                      </label>
+                   </div>
+                 </>
+               )}
 
-                 {config.provider === 'gemini' && (
-                    <>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'apiKey')}</label>
-                        <input 
-                          type="password" 
-                          value={config.geminiApiKey}
-                          disabled={true}
-                          title="API Key is managed via environment variable"
-                          className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface opacity-60 cursor-not-allowed shadow-sm"
-                          placeholder="Using process.env.API_KEY"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
-                        <input 
-                           type="text" 
-                           value={config.geminiModel}
-                           onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
-                           className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm focus:ring-1 focus:ring-skin-primary/50 focus:border-skin-primary"
-                        />
-                      </div>
-                    </>
-                 )}
-              </div>
+               {/* Gemini Specifics */}
+               {config.provider === 'gemini' && (
+                 <>
+                   <div className="animate-in fade-in slide-in-from-top-1">
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">API Key (Optional Override)</label>
+                      <input 
+                        type="password" 
+                        value={config.geminiApiKey} // Although env is used, allow override for advanced users
+                        onChange={(e) => handleConfigChange('geminiApiKey', e.target.value)}
+                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                        placeholder="Leave empty to use env API_KEY"
+                      />
+                   </div>
+                   <div className="animate-in fade-in slide-in-from-top-2">
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
+                      <input 
+                        type="text" 
+                        value={config.geminiModel}
+                        onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
+                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                      />
+                   </div>
+                 </>
+               )}
+             </div>
           </Section>
         )}
         
@@ -1086,7 +1057,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                      </div>
                  </div>
                  
-                 <div className="pt-2 border-t border-skin-border/50">
+                 <div className="pt-2 border-t border-skin-border/50 space-y-2">
                     <label className="flex items-start gap-2 cursor-pointer group">
                         <input 
                           type="checkbox" 
@@ -1104,42 +1075,47 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {/* Manual Patch Workbench */}
-        {isManualMode && currentImage && (
-           <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
-              
-              {/* Moved and Restyled "Edit Full Image" Button to Top */}
-              {showEditor && (
-                  <button 
-                     onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                     className="w-full py-2.5 mb-3 bg-skin-primary text-white rounded-lg text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 group hover:bg-opacity-90"
-                     title="Open Global Typesetting Editor"
-                  >
-                      <svg className="w-4 h-4 text-white/80 group-hover:text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                      Edit Full Image
-                  </button>
-              )}
-
-              {currentImage.regions.length === 0 ? (
-                 <div className="text-center py-4 text-xs text-skin-muted">{t(lang, 'noRegions')}</div>
-              ) : (
-                 <div className="space-y-3">
-                     {currentImage.regions.map(region => (
-                        <ManualPatchRow 
-                           key={region.id}
-                           region={region}
-                           image={currentImage}
-                           onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
-                           lang={lang}
-                           onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}
-                           onOcr={() => onOcrRegion(currentImage.id, region.id)}
-                           showOcr={showOCR}
-                           showEditor={showEditor}
-                        />
-                     ))}
-                 </div>
-              )}
-           </Section>
+        {/* Manual Workbench */}
+        {isManualMode && (
+            <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
+            {selectedRegionId && currentImage ? (
+                <div className="animate-in fade-in slide-in-from-right-8">
+                    {(() => {
+                        const region = currentImage.regions.find(r => r.id === selectedRegionId);
+                        if (!region) return null;
+                        return (
+                            <ManualPatchRow 
+                                key={region.id}
+                                region={region} 
+                                image={currentImage} 
+                                onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
+                                lang={lang}
+                                onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}
+                                onOcr={() => onOcrRegion(currentImage.id, region.id)}
+                                showOcr={config.enableMangaMode && config.enableOCR}
+                                showEditor={showEditor}
+                            />
+                        );
+                    })()}
+                </div>
+            ) : config.enableMangaMode && currentImage ? (
+                    // Full Image Manual Editor Access (Only if Manga Mode is on)
+                    <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border text-center">
+                        <p className="text-[10px] text-skin-muted mb-2">Editor access for full image</p>
+                        <button 
+                            onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
+                            className="w-full py-2 bg-skin-surface border border-skin-border rounded text-xs font-bold hover:bg-skin-primary hover:text-white hover:border-skin-primary transition-all flex items-center justify-center gap-2"
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                            Edit Full Image
+                        </button>
+                    </div>
+            ) : (
+                <div className="text-center py-8 text-skin-muted italic text-xs">
+                    {t(lang, 'noRegions')}
+                </div>
+            )}
+            </Section>
         )}
       </div>
 
@@ -1179,7 +1155,7 @@ const Sidebar: React.FC<SidebarProps> = ({
              </label>
 
              <div className="grid grid-cols-2 gap-2">
-                 {currentImage?.finalResultUrl && (
+                 {(currentImage?.finalResultUrl || currentImage?.regions.some(r => r.status === 'completed')) && (
                      <>
                         <button 
                         onClick={onApplyAsOriginal}

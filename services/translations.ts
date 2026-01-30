@@ -1,5 +1,4 @@
 
-
 import { Language } from "../types";
 
 export const translations = {
@@ -149,10 +148,6 @@ export const translations = {
     readyToCreate: "准备开始",
     uploadHint: "通过左侧上传图片，或直接粘贴 (Ctrl+V)",
     
-    // Guide (Structured)
-    guideTitle: "使用指南与技巧",
-    close: "关闭",
-    
     // Global Settings
     globalSettings: "全局设置",
     enableMangaMode: "启用漫画模块",
@@ -166,9 +161,11 @@ export const translations = {
     enableVerticalTextDefault: "默认竖排文字",
     enableVerticalTextDefaultDesc: "新建文本框时默认开启【竖排】选项",
     useFullImageMasking: "使用全图遮罩模式",
-    useFullImageMaskingDesc: "发送除选区外全白的整张图片给 API，而非仅发送裁剪切片",
+    useFullImageMaskingDesc: "发送除选区外全白的整张图片给 API，而非仅发送裁剪切片。这能提供更好的上下文，并大幅减少 API 调用次数。",
+    useInvertedMasking: "反向遮罩模式 (重绘背景)",
+    useInvertedMaskingDesc: "将选区涂白让 AI 填充背景，合成时保留原图选区内容。适用于保留主体、仅替换背景的场景。",
     fullImageOpaquePercent: "边缘融合不透明度 (%)",
-    fullImageOpaquePercentDesc: "在从全图回填切片时，中心多少百分比的区域保持完全不透明。剩余的边缘部分将进行渐变羽化融合。默认 99% 表示仅边缘 1% 会进行羽化。",
+    fullImageOpaquePercentDesc: "在从全图回填切片时，中心多少百分比的区域保持完全不透明。剩余的边缘部分将进行渐变羽化融合。",
     
     // Translation Mode
     enableTranslationMode: "启用翻译模式 (预处理)",
@@ -178,37 +175,65 @@ export const translations = {
     translationPromptPlaceholder: "例如: 翻译图片中的文本为中文，并保留位置描述...",
     reset: "重置",
     resetToDefault: "恢复默认提示词",
+    close: "关闭",
+
+    // --- HELP CONTENT ---
+    helpTitle: "使用手册 & 技巧",
     
-    // Guide: Sections
-    guide_sec_basics: "核心流程",
-    guide_sec_advanced: "高级使用技巧",
-    guide_sec_manga: "漫画模块与衍生功能",
-    
-    // Guide: Steps
-    guide_step_upload: "上传图片",
-    guide_step_upload_desc: "从侧边栏上传或 Ctrl+V 粘贴。支持文件夹批量载入。",
-    guide_step_region: "框选区域",
-    guide_step_region_desc: "在画布拖动鼠标创建选区。每个选区可以有独立的 AI 提示词。",
-    guide_step_config: "模式切换",
-    guide_step_config_desc: "使用【AI 生成】模式自动处理，或切换到【手动模式】进行精细修补。",
-    guide_step_run: "执行处理",
-    guide_step_run_desc: "点击开始生成。勾选【应用到所有】可一键批量处理图库。",
-    
-    // Guide: Tips
-    guide_tip_manga_title: "📖 什么是漫画模块？",
-    guide_tip_manga_desc: "这是为漫画汉化和修图衍生的增强功能。开启后，你可以利用后端 Python 接口自动识别气泡、进行 OCR 识别，并使用内置的画笔涂抹和文字嵌字工具。",
-    guide_tip_editor_title: "🎨 修补编辑器 (手动功能)",
-    guide_tip_editor_desc: "在【手动修补工坊】中，悬停图片区域会出现【编辑】按钮。你可以直接在这里涂抹掉原始内容，并添加新的文本（支持横排、竖排和描边）。",
-    guide_tip_batch_title: "⚡ 批量气泡检测",
-    guide_tip_batch_desc: "如果你有一百张漫画，只需开启【漫画模块】->【气泡检测】，选择【所有图片】并点击自动检测，即可一键完成全选区的建立。",
-    guide_tip_manual_title: "🎨 手动处理",
-    guide_tip_manual_desc: "在【补丁工坊】中，你可以对每个选区进行手动编辑。支持直接粘贴图片或使用内置编辑器进行涂抹和嵌字。",
-    guide_tip_timeout_title: "⏳ 超时与重试",
-    guide_tip_timeout_desc: "如果 AI 响应缓慢导致超时，可以尝试增加侧边栏【执行选项】中的超时时间，或者增加重试次数以应对不稳定的网络。",
+    // Tabs
+    help_tab_basics: "🚀 快速上手",
+    help_tab_manga: "📖 漫画工具",
+    help_tab_pro: "⚡ 专业功能",
+    help_tab_editor: "🎨 手动编辑",
+    help_tab_tricks: "🧙‍♂️ 隐藏技巧",
+
+    // Content - Basics
+    help_basics_1_title: "1. 导入图片",
+    help_basics_1_desc: "点击左侧上传按钮，或者直接将图片/文件夹拖入窗口。支持 Ctrl+V 粘贴剪贴板图片。",
+    help_basics_2_title: "2. 框选区域",
+    help_basics_2_desc: "在中间的画布上，按住鼠标左键拖动，框选你想要 AI 修改的区域（如水印、文字气泡）。",
+    help_basics_3_title: "3. 配置提示词",
+    help_basics_3_desc: "在左侧输入提示词。全局提示词对所有选区生效，也可以点击选区单独设置专用提示词。",
+    help_basics_4_title: "4. 一键生成",
+    help_basics_4_desc: "配置好 API Key 后，点击【开始生成】。勾选【应用到所有】可批量处理整个图库。",
+
+    // Content - Manga
+    help_manga_1_title: "自动气泡检测",
+    help_manga_1_desc: "在【全局设置】开启漫画模块后，使用侧边栏的【自动检测】按钮，利用本地 Python 后端自动识别所有文本气泡，省去手动框选。",
+    help_manga_2_title: "OCR 文本识别",
+    help_manga_2_desc: "开启 OCR 后，每个选区上方会出现 OCR 按钮。点击可提取区域内的文字（需后端支持）。",
+    help_manga_3_title: "翻译模式",
+    help_manga_3_desc: "在重绘前，先让 AI 识别并翻译图片文字，将翻译结果作为“上下文”发给绘图模型，极大提高嵌字的准确性。",
+
+    // Content - Pro
+    help_pro_1_title: "全图遮罩模式 (省流神器)",
+    help_pro_1_desc: "默认是每个选区发一次请求（N次）。开启此模式后，系统会将一张图上的所有选区合并，只发送一次全图请求（非选区部分涂白）。既省钱，又能让 AI 看到选区之间的关联。",
+    help_pro_2_title: "应用为原图 (迭代编辑)",
+    help_pro_2_desc: "生成满意后，点击【应用为原图】。当前的生成结果会变成新的“原图”，你可以再次框选修补其他细节，实现无限次迭代。",
+    help_pro_3_title: "并发控制",
+    help_pro_3_desc: "在【处理选项】中调整并发数。Gemini 免费版建议串行（1），付费版或 OpenAI 可根据配额调高并发。",
+
+    // Content - Editor
+    help_editor_1_title: "内置修补器",
+    help_editor_1_desc: "在手动模式或完成生成后，点击选区上的【编辑】图标，进入全功能编辑器。",
+    help_editor_2_title: "画笔与填充",
+    help_editor_2_desc: "使用画笔涂抹去除杂物。点击【填充整块】可快速清空整个气泡背景。",
+    help_editor_3_title: "排版嵌字",
+    help_editor_3_desc: "添加文本框，支持横/竖排切换、描边、背景色和自动换行。滚轮可快速调整字号。",
+
+    // Content - Tricks (Hidden)
+    help_tricks_1_title: "⌨️ 键盘流操作",
+    help_tricks_1_desc: "使用方向键 (↑ ↓ ← →) 快速切换上一张/下一张图片。Ctrl+Z / Ctrl+Y 可在编辑器中撤销/重做。",
+    help_tricks_2_title: "🖱️ 鼠标滚轮妙用",
+    help_tricks_2_desc: "在编辑器中：Ctrl+滚轮 = 缩放画布；光标悬停在文本框上 + 滚轮 = 快速调整字号。",
+    help_tricks_3_title: "🛡️ 防误删机制",
+    help_tricks_3_desc: "底部的【清空图库】按钮需要“双击”才会执行，防止手滑清空列表。",
+    help_tricks_4_title: "📂 文件夹批量导入",
+    help_tricks_4_desc: "上传按钮旁边的文件夹图标，支持一次性导入整个目录的数百张图片。",
   },
   en: {
-    appTitle: "Patcher Pro",
-    appSubtitle: "AI Image Editor",
+    appTitle: "GenAI Patcher Pro",
+    appSubtitle: "AI Inpainting Tool",
     
     // Upload
     uploadFiles: "Files",
@@ -225,7 +250,7 @@ export const translations = {
     enableImage: "Enable processing",
     skipped: "SKIPPED",
     clearGallery: "Clear Gallery",
-    clearGalleryConfirm: "Are you sure you want to clear all images? This cannot be undone.",
+    clearGalleryConfirm: "Are you sure? This cannot be undone.",
     
     // Manga Toolkit
     mangaTitle: "Manga Toolkit",
@@ -352,10 +377,6 @@ export const translations = {
     readyToCreate: "Ready to Create",
     uploadHint: "Upload via sidebar or paste from clipboard (Ctrl+V)",
     
-    // Guide
-    guideTitle: "User Guide & Tips",
-    close: "Close",
-    
     // Global Settings
     globalSettings: "Global Settings",
     enableMangaMode: "Enable Manga Module",
@@ -369,42 +390,75 @@ export const translations = {
     enableVerticalTextDefault: "Default Vertical Text",
     enableVerticalTextDefaultDesc: "New text boxes default to Vertical orientation",
     useFullImageMasking: "Use Full Image Masking",
-    useFullImageMaskingDesc: "Send masked full image to API instead of crop",
+    useFullImageMaskingDesc: "Send masked full image to API instead of crops. Reduces API calls and provides better context.",
+    useInvertedMasking: "Inverted Masking (Repaint Background)",
+    useInvertedMaskingDesc: "Masks selected regions (white) for AI to fill background. Original regions are stitched back on top. Best for keeping subjects unchanged.",
     fullImageOpaquePercent: "Edge Blending Opaque (%)",
-    fullImageOpaquePercentDesc: "Determines how much of the center of the patch is kept opaque. 99% means the outer 1% is feathered for blending.",
+    fullImageOpaquePercentDesc: "Center opacity percentage. 99% means only the outer 1% is feathered for blending.",
     
     // Translation Mode
-    enableTranslationMode: "Enable Translation Mode (Pre-processing)",
-    enableTranslationModeDesc: "Before repainting, use an LLM to identify and translate text in the image, sending it as context to the repainting model.",
-    translationSettings: "Translation Model Settings (OpenAI Compatible)",
-    translationPromptLabel: "Translation System Prompt",
-    translationPromptPlaceholder: "e.g., Translate text in image to English...",
+    enableTranslationMode: "Enable Translation Mode",
+    enableTranslationModeDesc: "Pre-process image with LLM to translate text and provide context to the painting model.",
+    translationSettings: "Translation Settings (OpenAI)",
+    translationPromptLabel: "System Prompt",
+    translationPromptPlaceholder: "e.g., Translate text...",
     reset: "Reset",
-    resetToDefault: "Reset to Default Prompt",
+    resetToDefault: "Reset to Default",
+    close: "Close",
+
+    // --- HELP CONTENT ---
+    helpTitle: "Guide & Tricks",
     
-    guide_sec_basics: "Core Workflow",
-    guide_sec_advanced: "Advanced Tips",
-    guide_sec_manga: "Manga Module Extensions",
-    
-    guide_step_upload: "Upload",
-    guide_step_upload_desc: "Upload via sidebar or paste image. Batch folder loading supported.",
-    guide_step_region: "Draw Regions",
-    guide_step_region_desc: "Click and drag on canvas to create regions. Each can have its own prompt.",
-    guide_step_config: "Pick Workflow",
-    guide_step_config_desc: "Use AI mode for automation, or Manual mode for precision patching.",
-    guide_step_run: "Generate",
-    guide_step_run_desc: "Start processing. Toggle 'Apply to all' for bulk tasks.",
-    
-    guide_tip_manga_title: "📖 What is Manga Module?",
-    guide_tip_manga_desc: "It's an extension for manga scanlation. When enabled, you can auto-detect text bubbles, run OCR, and use built-in tools for cleaning and typesetting.",
-    guide_tip_editor_title: "🎨 Patch Editor (Manual)",
-    guide_tip_editor_desc: "In Manual Workbench, hover a region to find the Edit button. Use the brush to erase content and the text tool to add new translations with ease.",
-    guide_tip_batch_title: "⚡ Batch Auto-Detection",
-    guide_tip_batch_desc: "Process hundreds of pages at once by setting detection scope to 'All Images' in the Manga Toolkit.",
-    guide_tip_manual_title: "🎨 Manual Processing",
-    guide_tip_manual_desc: "In the Patch Workbench, you can manually edit each region. You can paste processed images directly or use the built-in editor for erasing and typesetting.",
-    guide_tip_timeout_title: "⏳ Timeout & Retries",
-    guide_tip_timeout_desc: "If the AI is slow and causes timeouts, try increasing the 'Timeout' in the Execution Options or adding retries for unstable connections.",
+    // Tabs
+    help_tab_basics: "🚀 Basics",
+    help_tab_manga: "📖 Manga Tools",
+    help_tab_pro: "⚡ Pro Features",
+    help_tab_editor: "🎨 Editor",
+    help_tab_tricks: "🧙‍♂️ Hidden Tricks",
+
+    // Content - Basics
+    help_basics_1_title: "1. Upload",
+    help_basics_1_desc: "Upload files or folders via the sidebar. You can also paste images (Ctrl+V) directly.",
+    help_basics_2_title: "2. Select",
+    help_basics_2_desc: "Draw rectangular regions on the canvas over areas you want to modify (watermarks, text, etc.).",
+    help_basics_3_title: "3. Prompt",
+    help_basics_3_desc: "Enter a prompt. Use the Global Prompt for all regions, or select a region to set a specific prompt.",
+    help_basics_4_title: "4. Generate",
+    help_basics_4_desc: "Configure your API key and click Generate. Use 'Apply to All' for batch processing.",
+
+    // Content - Manga
+    help_manga_1_title: "Auto-Detect Bubbles",
+    help_manga_1_desc: "Enable 'Manga Module' in settings. Use 'Auto Detect' to find all text bubbles instantly (Requires Python Backend).",
+    help_manga_2_title: "OCR",
+    help_manga_2_desc: "Enable OCR to see text recognition buttons on regions. Useful for extracting original text.",
+    help_manga_3_title: "Translation Mode",
+    help_manga_3_desc: "Reads and translates text before painting, sending the translation as context to the AI for better accuracy.",
+
+    // Content - Pro
+    help_pro_1_title: "Full Image Masking",
+    help_pro_1_desc: "Instead of sending 10 requests for 10 bubbles, this mode sends 1 masked image. Faster, cheaper, and better context.",
+    help_pro_2_title: "Apply as Original",
+    help_pro_2_desc: "Turn your result into the new 'Original' image. Allows for iterative editing and refinement.",
+    help_pro_3_title: "Concurrency",
+    help_pro_3_desc: "Adjust the number of parallel requests in 'Processing Options' to maximize speed or avoid rate limits.",
+
+    // Content - Editor
+    help_editor_1_title: "Patch Editor",
+    help_editor_1_desc: "Click the 'Edit' icon on any region to open the full manual editor.",
+    help_editor_2_title: "Brush & Fill",
+    help_editor_2_desc: "Erase content with the brush. 'Fill All' instantly cleans a text bubble.",
+    help_editor_3_title: "Typesetting",
+    help_editor_3_desc: "Add text with support for vertical writing, outlines, and bold fonts. Scroll to resize text.",
+
+    // Content - Tricks (Hidden)
+    help_tricks_1_title: "⌨️ Keyboard Navigation",
+    help_tricks_1_desc: "Use Arrow Keys (↑ ↓ ← →) to quickly switch between images. Ctrl+Z/Y for Undo/Redo in editor.",
+    help_tricks_2_title: "🖱️ Mouse Wheel Actions",
+    help_tricks_2_desc: "In Editor: Ctrl+Wheel zooms canvas. Hovering a text box + Wheel changes font size.",
+    help_tricks_3_title: "🛡️ Safety Clear",
+    help_tricks_3_desc: "The 'Clear Gallery' button requires a Double Click to execute, preventing accidental data loss.",
+    help_tricks_4_title: "📂 Batch Upload",
+    help_tricks_4_desc: "Use the 'Upload Folder' icon to load hundreds of images at once.",
   }
 };
 
