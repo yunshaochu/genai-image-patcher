@@ -12,7 +12,6 @@ import { AsyncSemaphore, runWithConcurrency } from './services/concurrencyUtils'
 import { useConfig, DEFAULT_TRANSLATION_PROMPT, TRANSLATION_MODE_IMAGE_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 
-// ... (HelpModal code is preserved) ...
 // --- HELP MODAL COMPONENT ---
 const HelpModal = ({ onClose, language }: { onClose: () => void, language: Language }) => {
     const [activeTab, setActiveTab] = useState<'basics' | 'manga' | 'pro' | 'editor' | 'tricks'>('basics');
@@ -138,7 +137,6 @@ export default function App() {
     handleToggleSkip,
     handleDeleteImage,
     handleClearAllImages, 
-    handleManualPatchUpdate,
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage
@@ -166,6 +164,117 @@ export default function App() {
   
   // Operation Version Ref for Race Condition Handling
   const operationVersionRef = useRef<number>(0);
+
+  // Custom wrapper for manual patch updates to handle Full Image row special case
+  const handleManualPatchUpdate = (imageId: string, regionId: string, base64: string) => {
+    // We can't do async inside the setImages directly cleanly if we want to run extractCropFromFullImage loop
+    // So we handle the special case outside setImages first if needed, OR we trigger a side effect.
+    
+    // For 'special-full-image-mask', we need to update fullAiResultUrl AND update all regions.
+    // Since extractCropFromFullImage is async, we should handle it here.
+    
+    if (regionId === 'special-full-image-mask') {
+        const targetImg = images.find(img => img.id === imageId);
+        if (!targetImg) return;
+
+        // Start processing the update
+        (async () => {
+            const updatedRegions: Region[] = [];
+            
+            // If Inverted Masking, we don't necessarily extract crops for patches (because the result IS the background),
+            // but we might still want to mark them completed.
+            // If Standard Masking, we MUST extract crops.
+            
+            if (config.useInvertedMasking) {
+                // Inverted Mode: Just mark all as completed
+                for (const r of targetImg.regions) {
+                    updatedRegions.push({ ...r, status: 'completed' });
+                }
+                // Also trigger stitch
+                const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, base64, updatedRegions);
+                
+                setImages(prev => prev.map(img => {
+                    if (img.id !== imageId) return img;
+                    const currentHistory = [...img.history];
+                    if (currentHistory[img.historyIndex]) {
+                       currentHistory[img.historyIndex].fullAiResultUrl = base64;
+                    }
+                    return { 
+                        ...img, 
+                        fullAiResultUrl: base64,
+                        finalResultUrl: stitchedUrl,
+                        regions: updatedRegions, 
+                        history: currentHistory 
+                    };
+                }));
+            } else {
+                // Standard Mode: Extract all crops
+                for (const r of targetImg.regions) {
+                    try {
+                        const crop = await extractCropFromFullImage(
+                            base64, 
+                            r, 
+                            targetImg.originalWidth, 
+                            targetImg.originalHeight,
+                            config.fullImageOpaquePercent
+                        );
+                        updatedRegions.push({ ...r, processedImageBase64: crop, status: 'completed' });
+                    } catch (e) {
+                        console.error("Failed to extract crop for region", r.id, e);
+                        updatedRegions.push({ ...r, status: 'failed' });
+                    }
+                }
+                
+                setImages(prev => prev.map(img => {
+                    if (img.id !== imageId) return img;
+                    const currentHistory = [...img.history];
+                    if (currentHistory[img.historyIndex]) {
+                       currentHistory[img.historyIndex].fullAiResultUrl = base64;
+                    }
+                    return { 
+                        ...img, 
+                        fullAiResultUrl: base64,
+                        regions: updatedRegions, 
+                        history: currentHistory 
+                    };
+                }));
+            }
+        })();
+        return;
+    }
+
+    setImages(prev => {
+        return prev.map(img => {
+            if (img.id !== imageId) return img;
+            
+            let updatedRegions: Region[];
+            
+            // Legacy/Alternative Manual Full Image as a new region (fallback)
+            if (regionId === 'manual-full-image') {
+               const fullRegion: Region = {
+                   id: crypto.randomUUID(),
+                   x: 0, y: 0, width: 100, height: 100,
+                   type: 'rect',
+                   status: 'completed',
+                   processedImageBase64: base64,
+                   source: 'manual'
+               };
+               updatedRegions = [...img.regions, fullRegion];
+            } else {
+               updatedRegions = img.regions.map(r => 
+                 r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
+               );
+            }
+
+            const currentHistory = [...img.history];
+            if (currentHistory[img.historyIndex]) {
+                currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
+            }
+
+            return { ...img, regions: updatedRegions, history: currentHistory };
+        });
+    });
+  };
 
   // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
   const handleInteractionStart = useCallback(() => {
@@ -278,7 +387,6 @@ export default function App() {
     e.target.value = '';
   };
 
-  // ... (Paste and Keydown Handlers preserved) ...
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
         const target = e.target as HTMLElement;
@@ -329,7 +437,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [images, selectedImageId, handleSelectImage]);
 
-  // ... (Editor, OCR, Detect logic preserved) ...
   const handleOpenEditor = async (imageId: string, regionId: string) => {
       const img = images.find(i => i.id === imageId);
       if (!img) return;
@@ -1024,7 +1131,6 @@ export default function App() {
                         <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
                       </label>
                   </div>
-                  {/* ... Rest of settings (reusing existing structure logic) ... */}
                   {config.enableMangaMode && (
                      <div className="pl-4 border-l-2 border-skin-border space-y-4 mt-4">
                          <div className="flex items-center justify-between">

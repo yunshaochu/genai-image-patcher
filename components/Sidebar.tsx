@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
-import { cropRegion, loadImage, stitchImage, stitchImageInverted } from '../services/imageUtils';
+import { cropRegion, loadImage, stitchImage, stitchImageInverted, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 
@@ -64,6 +64,134 @@ const Section: React.FC<{
           {children}
         </div>
       )}
+    </div>
+  );
+};
+
+const FullImageMaskRow: React.FC<{
+  image: UploadedImage;
+  config: AppConfig;
+  onPatchUpdate: (base64: string) => void;
+  onOpenEditor: () => void;
+  showEditor: boolean;
+}> = ({ image, config, onPatchUpdate, onOpenEditor, showEditor }) => {
+  const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
+  
+  useEffect(() => {
+    let active = true;
+    const generatePreview = async () => {
+      // Even if no regions, show the full image if configured
+      try {
+        const imgEl = await loadImage(image.previewUrl);
+        let preview: string;
+        if (config.useInvertedMasking) {
+            preview = createInvertedMultiMaskedFullImage(imgEl, image.regions);
+        } else {
+            preview = createMultiMaskedFullImage(imgEl, image.regions);
+        }
+        if (active) setMaskedPreview(preview);
+      } catch (e) {
+        console.error("Failed to create masked preview", e);
+      }
+    };
+    generatePreview();
+    return () => { active = false; };
+  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking]);
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile();
+        if (file) {
+          const reader = new FileReader();
+          reader.onload = (evt) => {
+             if (evt.target?.result) {
+                onPatchUpdate(evt.target.result as string);
+             }
+          };
+          reader.readAsDataURL(file);
+          return;
+        }
+      }
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2 bg-skin-primary/5 p-2 rounded-lg border-2 border-dashed border-skin-primary/30 relative mb-4">
+      <div className="absolute -top-2.5 left-2 bg-skin-surface px-1.5 text-[9px] font-bold text-skin-primary border border-skin-primary/30 rounded">
+         {config.useInvertedMasking ? 'FULL IMAGE (REVERSE)' : 'FULL IMAGE (MASKED)'}
+      </div>
+      <div className="flex items-stretch gap-2 mt-2">
+          <div className="flex-1 flex flex-col gap-1 items-center">
+             <span className="text-[9px] text-skin-muted uppercase">{t(config.language, 'maskedInput')}</span>
+             <div className="w-16 h-16 bg-checkerboard rounded border border-skin-border overflow-hidden relative group">
+                {maskedPreview ? (
+                  <img src={maskedPreview} className="w-full h-full object-contain" />
+                ) : (
+                  <div className="w-full h-full animate-pulse bg-skin-fill"></div>
+                )}
+             </div>
+             <button 
+                onClick={async () => {
+                    if (maskedPreview) {
+                        try {
+                            const res = await fetch(maskedPreview);
+                            const blob = await res.blob();
+                            await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
+                        } catch(e) { console.error(e); }
+                    }
+                }}
+                disabled={!maskedPreview}
+                className="w-full text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate"
+             >
+                {t(config.language, 'copyCrop')}
+             </button>
+          </div>
+
+          <div className="flex items-center text-skin-muted flex-col justify-center">
+            <svg className="w-4 h-4 text-skin-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path></svg>
+          </div>
+
+          <div className="flex-1 flex flex-col gap-1 items-center">
+             <span className="text-[9px] text-skin-muted uppercase">{t(config.language, 'fullAiOutput')}</span>
+             <div 
+               className={`w-16 h-16 bg-skin-surface rounded border-2 border-dashed flex items-center justify-center overflow-hidden cursor-pointer outline-none transition-all relative group ${
+                 image.fullAiResultUrl ? 'border-emerald-400 bg-emerald-50/50' : 'border-skin-border hover:border-skin-primary'
+               }`}
+               tabIndex={0}
+               onPaste={handlePaste}
+               title={t(config.language, 'pasteHint')}
+             >
+                {image.fullAiResultUrl ? (
+                  <img src={image.fullAiResultUrl} className="w-full h-full object-contain" />
+                ) : (
+                  <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
+                )}
+                
+                {showEditor && (
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
+                            className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
+                            title={t(config.language, 'editor_title')}
+                        >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                        </button>
+                    </div>
+                )}
+             </div>
+             
+             <div className={`text-[9px] font-bold py-1 ${image.fullAiResultUrl ? 'text-emerald-500' : 'text-skin-muted'}`}>
+                {image.fullAiResultUrl ? 'Ready' : 'Empty'}
+             </div>
+          </div>
+      </div>
+      <div className="text-[9px] text-skin-muted text-center italic bg-skin-surface/50 rounded py-0.5">
+         Paste here updates all crops
+      </div>
     </div>
   );
 };
@@ -1078,9 +1206,20 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* Manual Workbench */}
         {isManualMode && (
             <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
-            {selectedRegionId && currentImage ? (
-                <div className="animate-in fade-in slide-in-from-right-8">
-                    {(() => {
+            {currentImage && (
+                <div className="space-y-3 animate-in fade-in slide-in-from-right-8">
+                    {/* Render Full Image Mask Row FIRST if enabled */}
+                    {config.useFullImageMasking && (
+                        <FullImageMaskRow 
+                            image={currentImage} 
+                            config={config} 
+                            onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, 'special-full-image-mask', base64)}
+                            onOpenEditor={() => onOpenEditor(currentImage.id, 'manual-full-image')}
+                            showEditor={showEditor}
+                        />
+                    )}
+
+                    {selectedRegionId ? (() => {
                         const region = currentImage.regions.find(r => r.id === selectedRegionId);
                         if (!region) return null;
                         return (
@@ -1096,23 +1235,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 showEditor={showEditor}
                             />
                         );
-                    })()}
-                </div>
-            ) : config.enableMangaMode && currentImage ? (
-                    // Full Image Manual Editor Access (Only if Manga Mode is on)
-                    <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border text-center">
-                        <p className="text-[10px] text-skin-muted mb-2">Editor access for full image</p>
-                        <button 
-                            onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                            className="w-full py-2 bg-skin-surface border border-skin-border rounded text-xs font-bold hover:bg-skin-primary hover:text-white hover:border-skin-primary transition-all flex items-center justify-center gap-2"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                            Edit Full Image
-                        </button>
-                    </div>
-            ) : (
-                <div className="text-center py-8 text-skin-muted italic text-xs">
-                    {t(lang, 'noRegions')}
+                    })() : !config.useFullImageMasking && config.enableMangaMode ? (
+                        // Only show specific full image editor button if NOT using Full Image Masking mode 
+                        // (because FullImageMaskRow handles it otherwise)
+                        <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border text-center">
+                            <p className="text-[10px] text-skin-muted mb-2">Editor access for full image</p>
+                            <button 
+                                onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
+                                className="w-full py-2 bg-skin-surface border border-skin-border rounded text-xs font-bold hover:bg-skin-primary hover:text-white hover:border-skin-primary transition-all flex items-center justify-center gap-2"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                                Edit Full Image
+                            </button>
+                        </div>
+                    ) : !config.useFullImageMasking && (
+                        <div className="text-center py-8 text-skin-muted italic text-xs">
+                            {t(lang, 'noRegions')}
+                        </div>
+                    )}
                 </div>
             )}
             </Section>
