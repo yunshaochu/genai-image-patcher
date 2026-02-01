@@ -1,10 +1,14 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
+import React, { useState, useEffect } from 'react';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
-import { cropRegion, loadImage, stitchImage, stitchImageInverted, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage } from '../services/imageUtils';
+import { stitchImage, stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
+import { Section } from './sidebar/Section';
+import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
+import { SettingsPanel } from './sidebar/SettingsPanel';
+import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
 
 interface SidebarProps {
   config: AppConfig;
@@ -36,339 +40,6 @@ interface SidebarProps {
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
-
-const Section: React.FC<{ 
-  title: string; 
-  children: React.ReactNode; 
-  isOpen?: boolean; 
-  onToggle?: () => void 
-}> = ({ title, children, isOpen, onToggle }) => {
-  return (
-    <div className="border border-skin-border rounded-xl bg-skin-surface shadow-sm transition-all hover:shadow-md mb-3">
-      <button 
-        onClick={onToggle}
-        className={`w-full flex items-center justify-between px-4 py-3 bg-skin-fill/30 hover:bg-skin-fill transition-colors text-left ${isOpen ? 'rounded-t-xl' : 'rounded-xl'}`}
-      >
-        <span className="text-xs font-bold text-skin-muted uppercase tracking-wider">{title}</span>
-        <svg 
-          className={`w-4 h-4 text-skin-muted transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`} 
-          fill="none" 
-          stroke="currentColor" 
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {isOpen && (
-        <div className="p-4 border-t border-skin-border space-y-4 bg-skin-surface rounded-b-xl">
-          {children}
-        </div>
-      )}
-    </div>
-  );
-};
-
-const FullImageMaskRow: React.FC<{
-  image: UploadedImage;
-  config: AppConfig;
-  onPatchUpdate: (base64: string) => void;
-  onOpenEditor: () => void;
-  showEditor: boolean;
-}> = ({ image, config, onPatchUpdate, onOpenEditor, showEditor }) => {
-  const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
-  
-  useEffect(() => {
-    let active = true;
-    const generatePreview = async () => {
-      // Even if no regions, show the full image if configured
-      try {
-        const imgEl = await loadImage(image.previewUrl);
-        let preview: string;
-        if (config.useInvertedMasking) {
-            preview = createInvertedMultiMaskedFullImage(imgEl, image.regions);
-        } else {
-            preview = createMultiMaskedFullImage(imgEl, image.regions);
-        }
-        if (active) setMaskedPreview(preview);
-      } catch (e) {
-        console.error("Failed to create masked preview", e);
-      }
-    };
-    generatePreview();
-    return () => { active = false; };
-  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking]);
-
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    const items = e.clipboardData.items;
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile();
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = (evt) => {
-             if (evt.target?.result) {
-                onPatchUpdate(evt.target.result as string);
-             }
-          };
-          reader.readAsDataURL(file);
-          return;
-        }
-      }
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2 bg-skin-primary/5 p-2 rounded-lg border-2 border-dashed border-skin-primary/30 relative mb-4">
-      <div className="absolute -top-2.5 left-2 bg-skin-surface px-1.5 text-[9px] font-bold text-skin-primary border border-skin-primary/30 rounded">
-         {config.useInvertedMasking ? 'FULL IMAGE (REVERSE)' : 'FULL IMAGE (MASKED)'}
-      </div>
-      <div className="flex items-stretch gap-2 mt-2">
-          <div className="flex-1 flex flex-col gap-1 items-center">
-             <span className="text-[9px] text-skin-muted uppercase">{t(config.language, 'maskedInput')}</span>
-             <div className="w-16 h-16 bg-checkerboard rounded border border-skin-border overflow-hidden relative group">
-                {maskedPreview ? (
-                  <img src={maskedPreview} className="w-full h-full object-contain" />
-                ) : (
-                  <div className="w-full h-full animate-pulse bg-skin-fill"></div>
-                )}
-             </div>
-             <button 
-                onClick={async () => {
-                    if (maskedPreview) {
-                        try {
-                            const res = await fetch(maskedPreview);
-                            const blob = await res.blob();
-                            await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
-                        } catch(e) { console.error(e); }
-                    }
-                }}
-                disabled={!maskedPreview}
-                className="w-full text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate"
-             >
-                {t(config.language, 'copyCrop')}
-             </button>
-          </div>
-
-          <div className="flex items-center text-skin-muted flex-col justify-center">
-            <svg className="w-4 h-4 text-skin-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path></svg>
-          </div>
-
-          <div className="flex-1 flex flex-col gap-1 items-center">
-             <span className="text-[9px] text-skin-muted uppercase">{t(config.language, 'fullAiOutput')}</span>
-             <div 
-               className={`w-16 h-16 bg-skin-surface rounded border-2 border-dashed flex items-center justify-center overflow-hidden cursor-pointer outline-none transition-all relative group ${
-                 image.fullAiResultUrl ? 'border-emerald-400 bg-emerald-50/50' : 'border-skin-border hover:border-skin-primary'
-               }`}
-               tabIndex={0}
-               onPaste={handlePaste}
-               title={t(config.language, 'pasteHint')}
-             >
-                {image.fullAiResultUrl ? (
-                  <img src={image.fullAiResultUrl} className="w-full h-full object-contain" />
-                ) : (
-                  <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
-                )}
-                
-                {showEditor && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
-                            className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
-                            title={t(config.language, 'editor_title')}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                        </button>
-                    </div>
-                )}
-             </div>
-             
-             <div className={`text-[9px] font-bold py-1 ${image.fullAiResultUrl ? 'text-emerald-500' : 'text-skin-muted'}`}>
-                {image.fullAiResultUrl ? 'Ready' : 'Empty'}
-             </div>
-          </div>
-      </div>
-      <div className="text-[9px] text-skin-muted text-center italic bg-skin-surface/50 rounded py-0.5">
-         Paste here updates all crops
-      </div>
-    </div>
-  );
-};
-
-const ManualPatchRow: React.FC<{
-  region: Region;
-  image: UploadedImage;
-  onPatchUpdate: (base64: string) => void;
-  lang: 'zh' | 'en';
-  onOpenEditor: () => void;
-  onOcr: () => void;
-  showOcr: boolean;
-  showEditor: boolean;
-}> = ({ region, image, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor }) => {
-  const [sourceCrop, setSourceCrop] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    const generateCrop = async () => {
-      try {
-        const imgEl = await loadImage(image.previewUrl);
-        const crop = await cropRegion(imgEl, region);
-        if (active) setSourceCrop(crop);
-      } catch (e) {
-        console.error("Failed to crop for manual view", e);
-      }
-    };
-    generateCrop();
-    return () => { active = false; };
-  }, [image.previewUrl, region]);
-
-  const handleCopy = async () => {
-    if (!sourceCrop) return;
-    try {
-      const response = await fetch(sourceCrop);
-      const blob = await response.blob();
-      await navigator.clipboard.write([
-        new ClipboardItem({ [blob.type]: blob })
-      ]);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error("Copy failed", e);
-      alert("Browser blocked copy. Please right click image to copy.");
-    }
-  };
-
-  const handlePaste = async (e: React.ClipboardEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-
-    const items = e.clipboardData.items;
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile();
-        if (file) {
-          const reader = new FileReader();
-          reader.onload = (evt) => {
-             if (evt.target?.result) {
-                onPatchUpdate(evt.target.result as string);
-             }
-          };
-          reader.readAsDataURL(file);
-          return;
-        }
-      }
-    }
-  };
-
-  return (
-    <div className={`flex flex-col gap-2 bg-skin-fill/30 p-2 rounded-lg border ${region.source === 'auto' ? 'border-dashed border-skin-primary/50' : 'border-skin-border'}`}>
-      <div className="flex items-stretch gap-2">
-          <div className="flex-1 flex flex-col gap-1 items-center">
-             <span className="text-[9px] text-skin-muted uppercase">{t(lang, 'sourceCrop')}</span>
-             <div className="w-16 h-16 bg-checkerboard rounded border border-skin-border overflow-hidden relative group">
-                {sourceCrop ? (
-                  <img src={sourceCrop} className="w-full h-full object-contain" />
-                ) : (
-                  <div className="w-full h-full animate-pulse bg-skin-fill"></div>
-                )}
-                {region.source === 'auto' && (
-                    <div className="absolute top-0 right-0 p-0.5 bg-skin-primary text-white rounded-bl shadow-sm" title="Detected Automatically">
-                       <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                    </div>
-                )}
-             </div>
-             <div className="flex gap-1 w-full">
-                 <button 
-                   onClick={handleCopy}
-                   disabled={!sourceCrop}
-                   className="flex-1 text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate"
-                   title={t(lang, 'copyCrop')}
-                 >
-                   {copied ? t(lang, 'copied') : t(lang, 'copyCrop')}
-                 </button>
-             </div>
-          </div>
-
-          <div className="flex items-center text-skin-muted flex-col justify-center">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7M5 5l7 7-7 7"></path></svg>
-          </div>
-
-          <div 
-            className="flex-1 flex flex-col gap-1 items-center"
-          >
-             <span className="text-[9px] text-skin-muted uppercase">{t(lang, 'patchZone')}</span>
-             <div 
-               className={`w-16 h-16 bg-skin-surface rounded border-2 border-dashed flex items-center justify-center overflow-hidden cursor-pointer outline-none transition-all relative group ${
-                 region.status === 'completed' ? 'border-emerald-400 bg-emerald-50/50' : 'border-skin-border hover:border-skin-primary focus:border-skin-primary focus:ring-1 focus:ring-skin-primary/50'
-               }`}
-               tabIndex={0}
-               onPaste={handlePaste}
-               title={t(lang, 'pasteHint')}
-             >
-                {region.processedImageBase64 ? (
-                  <img src={region.processedImageBase64} className="w-full h-full object-contain" />
-                ) : (
-                  <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
-                )}
-                
-                {/* Only show Editor button if showEditor is true */}
-                {showEditor && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
-                            className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
-                            title={t(lang, 'editor_title')}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                        </button>
-                    </div>
-                )}
-             </div>
-             
-             <div className={`text-[9px] font-bold py-1 ${
-                 region.status === 'completed' ? 'text-emerald-500' : 
-                 region.status === 'failed' ? 'text-rose-500' :
-                 'text-skin-muted'
-             }`}>
-                {region.status === 'failed' ? t(lang, 'status_failed') : region.status === 'completed' ? 'Done' : 'Empty'}
-             </div>
-          </div>
-      </div>
-      
-      {/* OCR Section - Only if enabled */}
-      {showOcr && (
-        <div className="border-t border-skin-border pt-1.5 flex items-center gap-2">
-           <button 
-              onClick={onOcr}
-              disabled={region.isOcrLoading}
-              className="text-[9px] px-2 py-0.5 bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 transition-colors flex items-center gap-1"
-           >
-              {region.isOcrLoading ? (
-                   <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-              ) : (
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
-              )}
-              OCR
-           </button>
-           <span className="text-[9px] text-skin-text truncate flex-1" title={region.ocrText}>
-              {region.ocrText || <span className="text-skin-muted italic">{t(lang, 'ocrPlaceholder')}</span>}
-           </span>
-           {region.ocrText && (
-               <button 
-                 onClick={() => navigator.clipboard.writeText(region.ocrText || '')}
-                 className="text-[9px] text-skin-muted hover:text-skin-primary"
-                 title="Copy Text"
-               >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-               </button>
-           )}
-        </div>
-      )}
-    </div>
-  );
-};
 
 const THEMES: { id: ThemeType; label: string; bg: string; ring: string }[] = [
   { id: 'light', label: 'Light', bg: 'bg-slate-100', ring: 'ring-slate-400' },
@@ -411,13 +82,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [isZipping, setIsZipping] = useState(false);
   const [processAll, setProcessAll] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
-  const [showDetectTuning, setShowDetectTuning] = useState(false);
   const [clearConfirmation, setClearConfirmation] = useState(false); 
   
-  // Model Dropdown State
-  const [showModelDropdown, setShowModelDropdown] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
   // Initialize sections state from localStorage or default
   const [sectionsState, setSectionsState] = useState(() => {
     try {
@@ -444,23 +110,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     ? currentImage.regions.find(r => r.id === selectedRegionId) 
     : null;
 
-  // Determine if we should show full image specific prompt
   const showFullImagePrompt = config.processFullImageIfNoRegions && currentImage && currentImage.regions.length === 0;
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-        if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-            setShowModelDropdown(false);
-        }
-    };
-
-    if (showModelDropdown) {
-        document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-        document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showModelDropdown]);
 
   // Persist sections state when changed
   useEffect(() => {
@@ -472,7 +122,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
-  // Check if images have completed regions, even if finalResultUrl is not stitched yet
   const hasCompletedImages = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
   const downloadCount = hasCompletedImages 
       ? images.filter(img => img.regions.some(r => r.status === 'completed') || img.isSkipped).length 
@@ -493,7 +142,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     try {
       const models = await fetchOpenAIModels(config.openaiBaseUrl, config.openaiApiKey);
       setModelList(models);
-      setShowModelDropdown(true);
       if (models.length > 0 && !models.includes(config.openaiModel)) {
         handleConfigChange('openaiModel', models[0]);
       }
@@ -506,8 +154,6 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const handleDownloadAllZip = async () => {
     let imagesToZip: UploadedImage[] = [];
-
-    // Prioritize images that have patches or skip enabled
     const hasAnyResults = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
     
     if (hasAnyResults) {
@@ -527,11 +173,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       const promises = imagesToZip.map(async (img, index) => {
         let targetUrl = img.finalResultUrl || img.previewUrl;
         
-        // ON-DEMAND STITCHING: If patches exist but no final result, stitch it now.
         const hasPatches = img.regions.some(r => r.status === 'completed');
         if (hasPatches && !img.isSkipped) {
             try {
-               // Handle Inverted Mode Logic for Zip
                if (config.useInvertedMasking && img.fullAiResultUrl) {
                    targetUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl, img.regions);
                } else {
@@ -539,7 +183,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                }
             } catch (e) {
                console.error("Failed to stitch image for zip:", img.file.name, e);
-               // Fallback to previewUrl if stitching fails
                targetUrl = img.previewUrl;
             }
         }
@@ -556,9 +199,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       });
 
       await Promise.all(promises);
-      
       const content = await zip.generateAsync({ type: "blob" });
-      
       const link = document.createElement('a');
       link.href = URL.createObjectURL(content);
       link.download = "results.zip";
@@ -574,7 +215,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  // Improved Clear Gallery Handler: Double Click Logic (No Alerts)
   const handleClearGallery = (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
@@ -584,7 +224,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           setClearConfirmation(false);
       } else {
           setClearConfirmation(true);
-          // Auto-reset confirmation state after 3 seconds
           setTimeout(() => setClearConfirmation(false), 3000);
       }
   };
@@ -605,10 +244,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const isManualMode = config.processingMode === 'manual';
   const statusKey = processingState.toLowerCase() as any;
-
   const showMangaToolkit = config.enableMangaMode;
-  const showDetection = config.enableMangaMode && config.enableBubbleDetection;
-  const showOCR = config.enableMangaMode && config.enableOCR;
 
   return (
     <aside className="w-80 h-full bg-skin-surface border-r border-skin-border flex flex-col shadow-2xl z-20 relative">
@@ -805,138 +441,17 @@ const Sidebar: React.FC<SidebarProps> = ({
            </div>
         </Section>
 
-        {showMangaToolkit && currentImage && (
+        {showMangaToolkit && (
             <Section title={t(lang, 'mangaTitle')} isOpen={sectionsState.manga} onToggle={() => toggleSection('manga')}>
-               {showDetection ? (
-                 <>
-                    <div className="flex gap-2 mb-2 bg-skin-fill p-1 rounded-lg border border-skin-border">
-                        <button 
-                            onClick={() => setDetectScope('current')}
-                            className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${detectScope === 'current' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
-                        >
-                            {t(lang, 'detectScopeCurrent')}
-                        </button>
-                        <button 
-                            onClick={() => setDetectScope('all')}
-                            className={`flex-1 py-1.5 text-[10px] rounded-md transition-all ${detectScope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
-                        >
-                            {t(lang, 'detectScopeAll')}
-                        </button>
-                    </div>
-
-                    <button
-                        onClick={() => onAutoDetect(detectScope)}
-                        disabled={isDetecting}
-                        className="w-full py-2.5 bg-skin-primary text-white font-bold rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 mb-2 hover:bg-opacity-90"
-                    >
-                        {isDetecting ? (
-                            <>
-                                <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-                                {t(lang, 'detecting')}
-                            </>
-                        ) : (
-                            <>
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                {t(lang, 'detectBtn')}
-                            </>
-                        )}
-                    </button>
-                    
-                    <button 
-                        onClick={() => setShowDetectTuning(!showDetectTuning)}
-                        className="w-full text-[10px] text-skin-muted flex items-center justify-center gap-1 hover:text-skin-text mb-2"
-                    >
-                        {showDetectTuning ? '▼' : '▶'} {t(lang, 'detectAdvanced')}
-                    </button>
-                    
-                    {showDetectTuning && (
-                        <div className="bg-skin-fill/30 p-2 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-1">
-                            <div>
-                            <div className="flex justify-between text-[10px] text-skin-muted mb-1">
-                                <span>{t(lang, 'detectInflation')}</span>
-                                <span className="font-mono text-skin-primary">{config.detectionInflationPercent > 0 ? '+' : ''}{config.detectionInflationPercent}%</span>
-                            </div>
-                            <input 
-                                type="range" min="-20" max="100" step="5"
-                                value={config.detectionInflationPercent}
-                                onChange={(e) => handleConfigChange('detectionInflationPercent', Number(e.target.value))}
-                                className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
-                            />
-                            </div>
-                            
-                            <div className="grid grid-cols-2 gap-2">
-                            <div>
-                                <div className="flex justify-between text-[10px] text-skin-muted mb-1">
-                                    <span>Offset X</span>
-                                    <span className="font-mono text-skin-primary">{config.detectionOffsetXPercent}%</span>
-                                </div>
-                                <input 
-                                    type="range" min="-50" max="50" step="5"
-                                    value={config.detectionOffsetXPercent}
-                                    onChange={(e) => handleConfigChange('detectionOffsetXPercent', Number(e.target.value))}
-                                    className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
-                                />
-                            </div>
-                            <div>
-                                <div className="flex justify-between text-[10px] text-skin-muted mb-1">
-                                    <span>Offset Y</span>
-                                    <span className="font-mono text-skin-primary">{config.detectionOffsetYPercent}%</span>
-                                </div>
-                                <input 
-                                    type="range" min="-50" max="50" step="5"
-                                    value={config.detectionOffsetYPercent}
-                                    onChange={(e) => handleConfigChange('detectionOffsetYPercent', Number(e.target.value))}
-                                    className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
-                                />
-                            </div>
-                            </div>
-
-                            <div>
-                            <div className="flex justify-between text-[10px] text-skin-muted mb-1">
-                                <span>{t(lang, 'detectConfidence')}</span>
-                                <span className="font-mono text-skin-primary">{config.detectionConfidenceThreshold / 100}</span>
-                            </div>
-                            <input 
-                                type="range" min="10" max="90" step="5"
-                                value={config.detectionConfidenceThreshold}
-                                onChange={(e) => handleConfigChange('detectionConfidenceThreshold', Number(e.target.value))}
-                                className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
-                            />
-                            </div>
-                        </div>
-                    )}
-
-                    <p className="text-[10px] text-skin-muted text-center mt-1 mb-2">{t(lang, 'detectTip')}</p>
-                    
-                    <div className="pt-2 border-t border-skin-border/50">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'detectApiLabel')}</label>
-                        <input 
-                            type="text" 
-                            value={config.detectionApiUrl}
-                            onChange={(e) => handleConfigChange('detectionApiUrl', e.target.value)}
-                            className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                            placeholder="http://localhost:5000/detect"
-                        />
-                    </div>
-                 </>
-               ) : (
-                  <div className="text-xs text-skin-muted italic text-center py-2">
-                     Enable "Bubble Detection" in Global Settings to see tools.
-                  </div>
-               )}
-
-               {showOCR && (
-                   <div className="pt-2">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'ocrApiLabel')}</label>
-                        <input 
-                            type="text" 
-                            value={config.ocrApiUrl}
-                            onChange={(e) => handleConfigChange('ocrApiUrl', e.target.value)}
-                            className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                            placeholder="http://localhost:5000/ocr"
-                        />
-                    </div>
-               )}
+               <MangaToolsPanel 
+                  config={config}
+                  onChange={handleConfigChange}
+                  onAutoDetect={onAutoDetect}
+                  isDetecting={isDetecting}
+                  currentImage={currentImage}
+                  detectScope={detectScope}
+                  setDetectScope={setDetectScope}
+               />
             </Section>
         )}
 
@@ -1003,145 +518,15 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {/* RESTORED SETTINGS SECTION */}
         {!isManualMode && (
           <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
-             <div className="space-y-4">
-               {/* Provider Switch */}
-               <div>
-                  <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
-                  <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
-                     <button 
-                       onClick={() => handleConfigChange('provider', 'gemini')}
-                       className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'gemini' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
-                     >
-                       Google Gemini
-                     </button>
-                     <button 
-                       onClick={() => handleConfigChange('provider', 'openai')}
-                       className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'openai' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
-                     >
-                       OpenAI / Compatible
-                     </button>
-                  </div>
-               </div>
-
-               {/* OpenAI Specifics */}
-               {config.provider === 'openai' && (
-                 <>
-                   <div className="animate-in fade-in slide-in-from-top-1">
-                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>
-                      <input 
-                        type="text" 
-                        value={config.openaiBaseUrl}
-                        onChange={(e) => handleConfigChange('openaiBaseUrl', e.target.value)}
-                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                        placeholder="https://api.openai.com/v1"
-                      />
-                   </div>
-                   <div className="animate-in fade-in slide-in-from-top-2">
-                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'apiKey')}</label>
-                      <input 
-                        type="password" 
-                        value={config.openaiApiKey}
-                        onChange={(e) => handleConfigChange('openaiApiKey', e.target.value)}
-                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                        placeholder="sk-..."
-                      />
-                   </div>
-                   <div className="relative animate-in fade-in slide-in-from-top-3">
-                      <div className="flex justify-between items-center mb-1">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(lang, 'model')}</label>
-                        <button 
-                          onClick={handleFetchOpenAIModels}
-                          disabled={isLoadingModels}
-                          className="text-[10px] text-skin-primary hover:underline disabled:opacity-50"
-                        >
-                          {isLoadingModels ? t(lang, 'fetching') : t(lang, 'fetchList')}
-                        </button>
-                      </div>
-                      <div className="relative" ref={dropdownRef}>
-                          <input 
-                            type="text" 
-                            value={config.openaiModel}
-                            onChange={(e) => handleConfigChange('openaiModel', e.target.value)}
-                            onFocus={() => modelList.length > 0 && setShowModelDropdown(true)}
-                            className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                            placeholder={t(lang, 'modelIdPlaceholder')}
-                          />
-                          {showModelDropdown && modelList.length > 0 && (
-                              <div className="absolute top-full left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-skin-surface border border-skin-border rounded-lg shadow-lg z-50 custom-scrollbar">
-                                  {modelList.map(model => (
-                                      <div 
-                                        key={model}
-                                        onClick={() => {
-                                            handleConfigChange('openaiModel', model);
-                                            setShowModelDropdown(false);
-                                        }}
-                                        className="px-3 py-2 text-xs hover:bg-skin-fill cursor-pointer truncate text-skin-text"
-                                      >
-                                          {model}
-                                      </div>
-                                  ))}
-                              </div>
-                          )}
-                      </div>
-                   </div>
-                   <div className="animate-in fade-in slide-in-from-top-4 pt-1">
-                      <label className="flex items-center gap-2 cursor-pointer group">
-                          <input 
-                            type="checkbox" 
-                            checked={config.openaiStream}
-                            onChange={(e) => handleConfigChange('openaiStream', e.target.checked)}
-                            className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                          />
-                          <span className="text-xs text-skin-muted group-hover:text-skin-text transition-colors">Enable Stream (Beta)</span>
-                      </label>
-                   </div>
-                 </>
-               )}
-
-               {/* Gemini Specifics */}
-               {config.provider === 'gemini' && (
-                 <>
-                   <div className="animate-in fade-in slide-in-from-top-1">
-                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">API Key (Optional Override)</label>
-                      <input 
-                        type="password" 
-                        value={config.geminiApiKey} // Although env is used, allow override for advanced users
-                        onChange={(e) => handleConfigChange('geminiApiKey', e.target.value)}
-                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                        placeholder="Leave empty to use env API_KEY"
-                      />
-                   </div>
-                   <div className="animate-in fade-in slide-in-from-top-2">
-                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
-                      <input 
-                        type="text" 
-                        value={config.geminiModel}
-                        onChange={(e) => handleConfigChange('geminiModel', e.target.value)}
-                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                      />
-                   </div>
-                 </>
-               )}
-
-               {/* Common Options */}
-               <div className="pt-2 border-t border-skin-border/50">
-                   <label className="flex items-start gap-2 cursor-pointer group">
-                        <input 
-                          type="checkbox" 
-                          checked={config.enableSquareFill}
-                          onChange={(e) => handleConfigChange('enableSquareFill', e.target.checked)}
-                          className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                        />
-                        <div>
-                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
-                           <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'squareFillDesc')}</span>
-                        </div>
-                   </label>
-               </div>
-             </div>
+             <SettingsPanel 
+                config={config}
+                onChange={handleConfigChange}
+                onFetchModels={handleFetchOpenAIModels}
+                modelList={modelList}
+                isLoadingModels={isLoadingModels}
+             />
           </Section>
         )}
         

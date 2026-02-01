@@ -1,121 +1,17 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { UploadedImage, Region, ProcessingStep, AppConfig, Language } from './types';
+import { Region, ProcessingStep, AppConfig } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
-import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, padImageToSquare, depadImageFromSquare, PaddingInfo } from './services/imageUtils';
-import { generateRegionEdit, generateTranslation, fetchOpenAIModels } from './services/aiService';
-import { detectBubbles, recognizeText } from './services/detectionService';
+import HelpModal from './components/HelpModal';
+import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted } from './services/imageUtils';
+import { fetchOpenAIModels } from './services/aiService';
+import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
-import { AsyncSemaphore, runWithConcurrency } from './services/concurrencyUtils';
-import { useConfig, DEFAULT_TRANSLATION_PROMPT, TRANSLATION_MODE_IMAGE_PROMPT } from './hooks/useConfig';
+import { useConfig, TRANSLATION_MODE_IMAGE_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
-
-// --- HELP MODAL COMPONENT ---
-const HelpModal = ({ onClose, language }: { onClose: () => void, language: Language }) => {
-    const [activeTab, setActiveTab] = useState<'basics' | 'manga' | 'pro' | 'editor' | 'tricks'>('basics');
-
-    const tabs = [
-        { id: 'basics', label: t(language, 'help_tab_basics'), icon: '🚀' },
-        { id: 'manga', label: t(language, 'help_tab_manga'), icon: '📖' },
-        { id: 'pro', label: t(language, 'help_tab_pro'), icon: '⚡' },
-        { id: 'editor', label: t(language, 'help_tab_editor'), icon: '🎨' },
-        { id: 'tricks', label: t(language, 'help_tab_tricks'), icon: '🧙‍♂️' },
-    ] as const;
-
-    const renderSection = (titleKey: any, descKey: any) => (
-        <div className="mb-6 last:mb-0">
-            <h4 className="text-sm font-bold text-skin-text mb-1 flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-skin-primary"></span>
-                {t(language, titleKey)}
-            </h4>
-            <p className="text-xs text-skin-muted leading-relaxed pl-3.5 border-l border-skin-border/50">
-                {t(language, descKey)}
-            </p>
-        </div>
-    );
-
-    return (
-        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
-            <div className="bg-skin-surface w-full max-w-2xl h-[500px] rounded-2xl shadow-2xl flex border border-skin-border overflow-hidden">
-                {/* Sidebar */}
-                <div className="w-48 bg-skin-fill border-r border-skin-border flex flex-col">
-                    <div className="p-4 border-b border-skin-border">
-                        <h3 className="font-bold text-skin-text">{t(language, 'helpTitle')}</h3>
-                    </div>
-                    <div className="flex-1 overflow-y-auto py-2">
-                        {tabs.map(tab => (
-                            <button
-                                key={tab.id}
-                                onClick={() => setActiveTab(tab.id)}
-                                className={`w-full text-left px-4 py-3 text-xs font-medium flex items-center gap-3 transition-all ${
-                                    activeTab === tab.id 
-                                        ? 'bg-skin-surface text-skin-primary border-l-4 border-skin-primary shadow-sm' 
-                                        : 'text-skin-muted hover:bg-skin-surface/50 hover:text-skin-text border-l-4 border-transparent'
-                                }`}
-                            >
-                                <span className="text-sm">{tab.icon}</span>
-                                {tab.label}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Content */}
-                <div className="flex-1 flex flex-col bg-skin-surface">
-                    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
-                        {activeTab === 'basics' && (
-                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-                                {renderSection('help_basics_1_title', 'help_basics_1_desc')}
-                                {renderSection('help_basics_2_title', 'help_basics_2_desc')}
-                                {renderSection('help_basics_3_title', 'help_basics_3_desc')}
-                                {renderSection('help_basics_4_title', 'help_basics_4_desc')}
-                            </div>
-                        )}
-                        {activeTab === 'manga' && (
-                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-                                {renderSection('help_manga_1_title', 'help_manga_1_desc')}
-                                {renderSection('help_manga_2_title', 'help_manga_2_desc')}
-                                {renderSection('help_manga_3_title', 'help_manga_3_desc')}
-                            </div>
-                        )}
-                        {activeTab === 'pro' && (
-                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-                                {renderSection('help_pro_1_title', 'help_pro_1_desc')}
-                                {renderSection('help_pro_2_title', 'help_pro_2_desc')}
-                                {renderSection('help_pro_3_title', 'help_pro_3_desc')}
-                            </div>
-                        )}
-                        {activeTab === 'editor' && (
-                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-                                {renderSection('help_editor_1_title', 'help_editor_1_desc')}
-                                {renderSection('help_editor_2_title', 'help_editor_2_desc')}
-                                {renderSection('help_editor_3_title', 'help_editor_3_desc')}
-                            </div>
-                        )}
-                        {activeTab === 'tricks' && (
-                            <div className="animate-in fade-in slide-in-from-right-4 duration-300">
-                                {renderSection('help_tricks_1_title', 'help_tricks_1_desc')}
-                                {renderSection('help_tricks_2_title', 'help_tricks_2_desc')}
-                                {renderSection('help_tricks_3_title', 'help_tricks_3_desc')}
-                                {renderSection('help_tricks_4_title', 'help_tricks_4_desc')}
-                            </div>
-                        )}
-                    </div>
-                    <div className="p-4 border-t border-skin-border bg-skin-fill/30 flex justify-end">
-                        <button 
-                            onClick={onClose}
-                            className="px-6 py-2 bg-skin-primary text-skin-primary-fg rounded-lg text-xs font-bold shadow hover:opacity-90 transition-all"
-                        >
-                            {t(language, 'close')}
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-};
+import { useImageProcessor } from './hooks/useImageProcessor';
 
 export default function App() {
   const { config, setConfig } = useConfig();
@@ -142,10 +38,17 @@ export default function App() {
     handleRedoImage
   } = useImageManager();
 
-  const [processingState, setProcessingState] = useState<ProcessingStep>(ProcessingStep.IDLE);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const {
+      processingState,
+      errorMsg,
+      setErrorMsg,
+      isDetecting,
+      handleProcess,
+      handleStop,
+      handleAutoDetect
+  } = useImageProcessor(images, setImages, config, selectedImage);
+
   const [isDragging, setIsDragging] = useState(false);
-  const [isDetecting, setIsDetecting] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   
@@ -156,8 +59,6 @@ export default function App() {
       startBase64: string,
       initialTextObjects?: TextObject[]
   } | null>(null);
-  
-  const abortControllerRef = useRef<AbortController | null>(null);
   
   // Debounce Timer Ref for Heavy Operations
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -541,304 +442,6 @@ export default function App() {
               : currentImg
          ));
      }
-  };
-
-  const handleAutoDetect = async (scope: 'current' | 'all') => {
-     setIsDetecting(true);
-     setErrorMsg(null);
-     const controller = new AbortController();
-     abortControllerRef.current = controller;
-     try {
-         const targets = scope === 'current' 
-            ? (selectedImage ? [selectedImage] : [])
-            : images.filter(img => !img.isSkipped);
-         if (targets.length === 0) {
-            setIsDetecting(false);
-            return;
-         }
-         const detectTask = async (img: UploadedImage) => {
-            try {
-                const newRegions = await detectBubbles(img.previewUrl, config);
-                if (newRegions.length > 0) {
-                    setImages(prev => prev.map(currentImg => 
-                        currentImg.id === img.id 
-                           ? { ...currentImg, regions: [...currentImg.regions, ...newRegions] }
-                           : currentImg
-                    ));
-                }
-            } catch (e: any) {
-                console.error(`Detection failed for ${img.file.name}:`, e);
-            }
-         };
-         await runWithConcurrency(targets, config.concurrencyLimit, detectTask, controller.signal, 0);
-     } catch (e: any) {
-         setErrorMsg("Detection Error: " + e.message);
-     } finally {
-         setIsDetecting(false);
-         abortControllerRef.current = null;
-     }
-  };
-
-  // --- CORE PROCESSING LOGIC ---
-  const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal, globalSemaphore: AsyncSemaphore) => {
-    if (signal.aborted) return;
-    if (imageSnapshot.isSkipped) return;
-
-    const regionsMap = new Map<string, Region>();
-    imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
-
-    let initialRegions = [...imageSnapshot.regions];
-    if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
-        const fullRegion: Region = {
-            id: crypto.randomUUID(),
-            x: 0, y: 0, width: 100, height: 100,
-            type: 'rect',
-            status: 'pending',
-            source: 'manual'
-        };
-        initialRegions = [fullRegion];
-        regionsMap.set(fullRegion.id, fullRegion);
-        setImages(prev => prev.map(img => 
-            img.id === imageSnapshot.id ? { ...img, regions: initialRegions } : img
-        ));
-    }
-
-    const regionsToProcess = Array.from(regionsMap.values()).filter(r => r.status === 'pending' || r.status === 'failed');
-    if (regionsToProcess.length === 0) return;
-
-    const imgElement = await loadImage(imageSnapshot.previewUrl);
-    regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
-    setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
-
-    if (signal.aborted) return;
-    setProcessingState(ProcessingStep.CROPPING);
-
-    if (config.useFullImageMasking) {
-        await globalSemaphore.acquire();
-        try {
-            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-            
-            // Handle Inverted Masking
-            let inputImageBase64;
-            if (config.useInvertedMasking) {
-                inputImageBase64 = createInvertedMultiMaskedFullImage(imgElement, regionsToProcess);
-            } else {
-                inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
-            }
-
-            // Square Fill Logic
-            let payloadBase64 = inputImageBase64;
-            let paddingInfo: PaddingInfo | null = null;
-            if (config.enableSquareFill) {
-                const padded = await padImageToSquare(inputImageBase64);
-                payloadBase64 = padded.base64;
-                paddingInfo = padded.info;
-            }
-
-            let translationText = '';
-            if (config.enableTranslationMode) {
-               setProcessingState(ProcessingStep.API_CALLING); 
-               // Use payload (padded or not) for translation too
-               translationText = await generateTranslation(payloadBase64, config, signal);
-            }
-            setProcessingState(ProcessingStep.API_CALLING);
-            let basePrompt = config.prompt.trim();
-            if (imageSnapshot.customPrompt) {
-               basePrompt = imageSnapshot.customPrompt.trim();
-            }
-            let effectivePrompt = basePrompt;
-            if (translationText) {
-                effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
-            }
-            let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
-            
-            // Depad Square Logic
-            if (config.enableSquareFill && paddingInfo) {
-                apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
-            }
-
-            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-            if (config.useInvertedMasking) {
-                // Inverted Mode: The result IS the background.
-                // We stitch immediately because EditorCanvas doesn't support floating 'Background' patches.
-                const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultBase64, regionsToProcess);
-                
-                // For regions, we mark them completed but they don't really hold the 'patch' content in this mode.
-                regionsToProcess.forEach(r => {
-                    regionsMap.set(r.id, { ...r, status: 'completed' as const });
-                });
-                const currentAllRegions = Array.from(regionsMap.values());
-
-                setImages(prev => prev.map(img => {
-                    if (img.id !== imageSnapshot.id) return img;
-                    const updatedHistory = [...img.history];
-                    if (updatedHistory[img.historyIndex]) {
-                       updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
-                    }
-                    return { 
-                        ...img, 
-                        fullAiResultUrl: apiResultBase64, 
-                        finalResultUrl: stitchedUrl,
-                        regions: currentAllRegions, 
-                        history: updatedHistory 
-                    };
-                }));
-            } else {
-                // Standard Masking Mode
-                for (const region of regionsToProcess) {
-                    const finalRegionImageBase64 = await extractCropFromFullImage(
-                        apiResultBase64, 
-                        region, 
-                        imgElement.naturalWidth, 
-                        imgElement.naturalHeight,
-                        config.fullImageOpaquePercent
-                    );
-                    const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
-                    regionsMap.set(region.id, completedRegion);
-                }
-
-                // NO AUTO STITCHING HERE (Standard Mode)
-                const currentAllRegions = Array.from(regionsMap.values());
-                
-                setImages(prev => prev.map(img => {
-                    if (img.id !== imageSnapshot.id) return img;
-                    const updatedHistory = [...img.history];
-                    if (updatedHistory[img.historyIndex]) {
-                       updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
-                    }
-                    return { ...img, fullAiResultUrl: apiResultBase64, regions: currentAllRegions, history: updatedHistory };
-                }));
-            }
-        } catch (err: any) {
-            if (err.name !== 'AbortError') {
-                regionsToProcess.forEach(r => {
-                    regionsMap.set(r.id, { ...r, status: 'failed' as const });
-                });
-                setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
-            }
-        } finally {
-            globalSemaphore.release();
-        }
-        return;
-    }
-
-    // LEGACY / SINGLE REGION PROCESSING (Standard Mode Only)
-    const processRegionTask = async (region: Region) => {
-        if (signal.aborted) return;
-        await globalSemaphore.acquire();
-        try {
-            if (signal.aborted) return;
-            const inputImageBase64 = await cropRegion(imgElement, region);
-            
-            // Square Fill Logic
-            let payloadBase64 = inputImageBase64;
-            let paddingInfo: PaddingInfo | null = null;
-            if (config.enableSquareFill) {
-                const padded = await padImageToSquare(inputImageBase64);
-                payloadBase64 = padded.base64;
-                paddingInfo = padded.info;
-            }
-
-            if (signal.aborted) return;
-            let translationText = '';
-            if (config.enableTranslationMode) {
-               setProcessingState(ProcessingStep.API_CALLING); 
-               translationText = await generateTranslation(payloadBase64, config, signal);
-            }
-            setProcessingState(ProcessingStep.API_CALLING);
-            let basePrompt = config.prompt.trim();
-            if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
-               basePrompt = imageSnapshot.customPrompt.trim();
-            }
-            const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
-            let effectivePrompt = basePrompt;
-            if (regionSpecificPrompt) {
-                effectivePrompt += ` ${regionSpecificPrompt}`;
-            }
-            if (translationText) {
-                effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
-            }
-            let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
-            
-            // Depad Square Logic
-            if (config.enableSquareFill && paddingInfo) {
-                apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
-            }
-
-            if (signal.aborted) return;
-            const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const };
-            regionsMap.set(region.id, completedRegion);
-            
-            // NO AUTO STITCHING
-            const currentAllRegions = Array.from(regionsMap.values());
-            
-            setImages(prev => prev.map(img => {
-                if (img.id !== imageSnapshot.id) return img;
-                return { ...img, regions: currentAllRegions };
-            }));
-        } catch (err: any) {
-            if (err.name === 'AbortError') return;
-            const failedRegion = { ...region, status: 'failed' as const };
-            regionsMap.set(region.id, failedRegion);
-            setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
-        } finally {
-            globalSemaphore.release();
-        }
-    };
-    await runWithConcurrency(regionsToProcess, config.concurrencyLimit, processRegionTask, signal, 0);
-  };
-
-  const handleStop = () => {
-      if (abortControllerRef.current) {
-          abortControllerRef.current.abort();
-          abortControllerRef.current = null;
-      }
-      setImages(prev => prev.map(img => ({
-          ...img,
-          regions: img.regions.map(r => r.status === 'processing' ? { ...r, status: 'pending' } : r)
-      })));
-      setProcessingState(ProcessingStep.IDLE);
-      setErrorMsg(t(config.language, 'stopped_by_user'));
-  };
-
-  const handleProcess = async (processAll: boolean) => {
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    setProcessingState(ProcessingStep.CROPPING);
-    setErrorMsg(null);
-    const targets: UploadedImage[] = processAll 
-        ? images.filter(img => !img.isSkipped)
-        : (selectedImage ? [selectedImage] : []);
-    if (targets.length === 0) {
-        setProcessingState(ProcessingStep.IDLE);
-        return;
-    }
-    const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
-    const globalSemaphore = new AsyncSemaphore(actualLimit);
-    try {
-        if (config.executionMode === 'concurrent') {
-            await runWithConcurrency<UploadedImage, void>(
-                targets, 
-                config.concurrencyLimit, 
-                (img) => processSingleImage(img, controller.signal, globalSemaphore),
-                controller.signal, 0 
-            );
-        } else {
-            for (const img of targets) {
-                if (controller.signal.aborted) break;
-                await processSingleImage(img, controller.signal, globalSemaphore);
-            }
-        }
-        if (controller.signal.aborted) setErrorMsg(t(config.language, 'stopped_by_user'));
-        setProcessingState(ProcessingStep.DONE);
-    } catch (e: any) {
-        if (e.name !== 'AbortError') {
-             setErrorMsg(e.message || "Unknown error occurred");
-        }
-        setProcessingState(ProcessingStep.IDLE);
-    }
   };
 
   // ON-DEMAND STITCHING for Download
@@ -1359,7 +962,7 @@ export default function App() {
                               <div className="flex justify-between items-center mb-1">
                                   <label className="text-[10px] text-skin-muted block">{t(config.language, 'translationPromptLabel')}</label>
                                   <button 
-                                      onClick={() => updateConfig('translationPrompt', DEFAULT_TRANSLATION_PROMPT)}
+                                      onClick={() => updateConfig('translationPrompt', TRANSLATION_MODE_IMAGE_PROMPT)}
                                       className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
                                       title={t(config.language, 'resetToDefault')}
                                   >

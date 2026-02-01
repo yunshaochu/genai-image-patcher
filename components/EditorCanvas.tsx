@@ -1,7 +1,8 @@
 
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { UploadedImage, Region, Language } from '../types';
 import { t } from '../services/translations';
+import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 
 interface EditorCanvasProps {
   image: UploadedImage;
@@ -19,21 +20,10 @@ interface EditorCanvasProps {
   viewMode?: 'original' | 'result'; // Controlled by parent
 }
 
-type InteractionType = 'idle' | 'drawing' | 'moving' | 'resizing';
-
-interface InteractionState {
-  type: InteractionType;
-  regionId?: string; // For moving/resizing
-  handle?: string; // For resizing (n, s, e, w, ne, nw, se, sw)
-  startPos: { x: number; y: number }; // Mouse start position (percentage)
-  initialRegion?: Region; // Snapshot of region before mod
-  currentRect?: Partial<Region>; // Visual temporary rect for drawing/moving/resizing
-}
-
 const EditorCanvas: React.FC<EditorCanvasProps> = ({ 
     image, 
     onUpdateRegions, 
-    disabled, 
+    disabled = false, 
     language, 
     onOpenEditor,
     selectedRegionId,
@@ -48,15 +38,21 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const selectedRegionRef = useRef<HTMLDivElement>(null);
   
-  // Interaction State
-  const [interaction, setInteraction] = useState<InteractionState>({ type: 'idle', startPos: { x: 0, y: 0 } });
-  
-  // Use Refs for event listeners to avoid stale closures without constant re-binding
-  const interactionRef = useRef(interaction);
-  const imageRef = useRef(image);
-  
-  useEffect(() => { interactionRef.current = interaction; }, [interaction]);
-  useEffect(() => { imageRef.current = image; }, [image]);
+  // Use Custom Interaction Hook
+  const { 
+      interaction, 
+      handleBackgroundMouseDown, 
+      handleRegionMouseDown, 
+      handleResizeMouseDown 
+  } = useCanvasInteraction(
+      containerRef,
+      image,
+      onUpdateRegions,
+      onSelectRegion,
+      onInteractionStart,
+      viewMode,
+      disabled
+  );
 
   // Non-passive wheel listener for the selected completed region to prevent browser zoom
   useEffect(() => {
@@ -84,164 +80,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           el.removeEventListener('wheel', handleWheel);
       };
   }, [selectedRegionId, onAdjustRegionSize, image.regions, onInteractionStart, viewMode]);
-
-  // Helper: Get mouse coordinates as percentage (0-100) of the container
-  const getRelativeCoords = (clientX: number, clientY: number) => {
-    if (!containerRef.current) return { x: 0, y: 0 };
-    const rect = containerRef.current.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * 100;
-    const y = ((clientY - rect.top) / rect.height) * 100;
-    return { x, y };
-  };
-
-  const handleBackgroundMouseDown = (e: React.MouseEvent) => {
-    if (disabled || viewMode === 'result') return; // No drawing in result mode
-    if (e.button !== 0) return; 
-    
-    if (onInteractionStart) onInteractionStart();
-
-    const coords = getRelativeCoords(e.clientX, e.clientY);
-    onSelectRegion(null);
-    const initialRect = { x: coords.x, y: coords.y, width: 0, height: 0 };
-    setInteraction({
-      type: 'drawing',
-      startPos: coords,
-      currentRect: initialRect
-    });
-  };
-
-  const handleRegionMouseDown = (e: React.MouseEvent, region: Region) => {
-    if (disabled || region.status === 'processing' || viewMode === 'result') return; // No moving in result mode
-    e.stopPropagation(); 
-    
-    if (onInteractionStart) onInteractionStart();
-
-    onSelectRegion(region.id);
-    
-    const coords = getRelativeCoords(e.clientX, e.clientY);
-    setInteraction({
-      type: 'moving',
-      regionId: region.id,
-      startPos: coords,
-      initialRegion: { ...region },
-      currentRect: { ...region } 
-    });
-  };
-
-  const handleResizeMouseDown = (e: React.MouseEvent, region: Region, handle: string) => {
-    if (disabled || viewMode === 'result') return;
-    e.stopPropagation();
-    
-    if (onInteractionStart) onInteractionStart();
-
-    const coords = getRelativeCoords(e.clientX, e.clientY);
-    setInteraction({
-      type: 'resizing',
-      regionId: region.id,
-      handle,
-      startPos: coords,
-      initialRegion: { ...region },
-      currentRect: { ...region }
-    });
-  };
-
-  // Global Mouse Move & Up
-  useEffect(() => {
-    const handleWindowMouseMove = (e: MouseEvent) => {
-      const state = interactionRef.current;
-      if (state.type === 'idle') return;
-      if (disabled) return;
-      const coords = getRelativeCoords(e.clientX, e.clientY);
-      const dx = coords.x - state.startPos.x;
-      const dy = coords.y - state.startPos.y;
-      if (state.type === 'drawing') {
-        const x = Math.min(coords.x, state.startPos.x);
-        const y = Math.min(coords.y, state.startPos.y);
-        const width = Math.abs(coords.x - state.startPos.x);
-        const height = Math.abs(coords.y - state.startPos.y);
-        setInteraction(prev => ({
-          ...prev,
-          currentRect: { 
-             x: Math.max(0, Math.min(100, x)), 
-             y: Math.max(0, Math.min(100, y)), 
-             width: Math.min(100 - x, width), 
-             height: Math.min(100 - y, height) 
-          }
-        }));
-      } 
-      else if (state.type === 'moving' && state.initialRegion && state.regionId) {
-        let newX = state.initialRegion.x + dx;
-        let newY = state.initialRegion.y + dy;
-        newX = Math.max(0, Math.min(100 - state.initialRegion.width, newX));
-        newY = Math.max(0, Math.min(100 - state.initialRegion.height, newY));
-        setInteraction(prev => ({
-          ...prev,
-          currentRect: { ...prev.currentRect, x: newX, y: newY }
-        }));
-      } 
-      else if (state.type === 'resizing' && state.initialRegion && state.regionId && state.handle) {
-        const r = state.initialRegion;
-        let { x, y, width, height } = r;
-        if (state.handle.includes('e')) width += dx;
-        if (state.handle.includes('w')) { x += dx; width -= dx; }
-        if (state.handle.includes('s')) height += dy;
-        if (state.handle.includes('n')) { y += dy; height -= dy; }
-        if (width < 0.5) {
-           if (state.handle.includes('w')) x = r.x + r.width - 0.5;
-           width = 0.5;
-        }
-        if (height < 0.5) {
-           if (state.handle.includes('n')) y = r.y + r.height - 0.5;
-           height = 0.5;
-        }
-        if (x < 0) { width += x; x = 0; }
-        if (y < 0) { height += y; y = 0; }
-        if (x + width > 100) width = 100 - x;
-        if (y + height > 100) height = 100 - y;
-        setInteraction(prev => ({
-          ...prev,
-          currentRect: { x, y, width, height }
-        }));
-      }
-    };
-    const handleWindowMouseUp = () => {
-      const state = interactionRef.current;
-      if (state.type === 'idle') return;
-      if (state.type === 'drawing' && state.currentRect) {
-         const { x, y, width, height } = state.currentRect;
-         if (width && height && width > 0.5 && height > 0.5) {
-            const newRegion: Region = {
-               id: crypto.randomUUID(),
-               x: x || 0,
-               y: y || 0,
-               width: width || 0,
-               height: height || 0,
-               type: 'rect',
-               status: 'pending',
-               source: 'manual',
-               customPrompt: ''
-            };
-            onUpdateRegions(imageRef.current.id, [...imageRef.current.regions, newRegion]);
-            onSelectRegion(newRegion.id); 
-         }
-      }
-      else if ((state.type === 'moving' || state.type === 'resizing') && state.currentRect && state.regionId) {
-         const updatedRegions = imageRef.current.regions.map(r => 
-            r.id === state.regionId 
-              ? { ...r, ...state.currentRect } as Region
-              : r
-         );
-         onUpdateRegions(imageRef.current.id, updatedRegions);
-      }
-      setInteraction({ type: 'idle', startPos: { x: 0, y: 0 } });
-    };
-    window.addEventListener('mousemove', handleWindowMouseMove);
-    window.addEventListener('mouseup', handleWindowMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleWindowMouseMove);
-      window.removeEventListener('mouseup', handleWindowMouseUp);
-    };
-  }, [disabled, onUpdateRegions, onSelectRegion]);
 
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -297,12 +135,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           let styleClasses = '';
           
           if (!isOriginalMode) {
-              // RESULT MODE: 
-              // Invisible container mostly, but needs to be positioned for the img inside.
-              // No borders.
               styleClasses = 'z-10 border-0'; 
           } else {
-              // ORIGINAL MODE: Show borders/status
               if (region.status === 'processing') {
                   styleClasses = 'border-2 border-amber-500 bg-amber-500/10 animate-pulse z-20';
               } else if (region.status === 'failed') {
@@ -316,7 +150,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                       styleClasses = 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer';
                   }
               } else {
-                  // PENDING
                   if (isSelected) {
                       styleClasses = 'border-2 border-skin-primary bg-skin-primary/10 shadow-[0_0_0_1px_rgba(255,255,255,0.5)] z-20 cursor-move';
                   } else {
@@ -325,10 +158,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               }
           }
 
-          // Force cursor for manipulation
           const cursorStyle = isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default';
-
-          // Handle Style
           const handleBaseStyle = "absolute w-3.5 h-3.5 bg-white border border-skin-primary rounded-full z-30 hover:scale-125 transition-transform shadow-sm";
           const centerTransform = { transform: 'translate(-50%, -50%)' };
 

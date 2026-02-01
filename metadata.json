@@ -1,5 +1,5 @@
 {
-  "name": "GenAI Image Patcher 6（全图遮罩3-实验）",
+  "name": "Copy of GenAI Image Patcher 10 代码拆分",
   "description": "A web-based tool to upload images, select multiple regions, and use Generative AI to modify those regions and stitch them back into the original image.",
   "requestFramePermissions": []
 }
