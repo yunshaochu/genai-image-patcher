@@ -50,7 +50,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
       onUpdateRegions,
       onSelectRegion,
       onInteractionStart,
-      viewMode,
+      viewMode as 'original' | 'result',
       disabled
   );
 

@@ -1,5 +1,5 @@
 
-import { useState, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, PaddingInfo } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';

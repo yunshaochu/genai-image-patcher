@@ -1,5 +1,5 @@
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Region } from '../types';
 
 export type InteractionType = 'idle' | 'drawing' | 'moving' | 'resizing';

@@ -117,13 +117,20 @@ const generateGeminiImage = async (
   imageBase64: string,
   prompt: string,
   modelName: string,
+  apiKey: string,
   signal?: AbortSignal
 ): Promise<string> => {
-  // Use process.env.API_KEY directly as per guidelines
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  const cleanBase64 = imageBase64.includes(',') 
-    ? imageBase64.split(',')[1] 
+  // Allow custom API Key from settings, fallback to env var
+  const finalApiKey = apiKey || process.env.API_KEY;
+
+  if (!finalApiKey) {
+      throw new Error("Gemini API Key is missing. Please set it in Settings.");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: finalApiKey });
+
+  const cleanBase64 = imageBase64.includes(',')
+    ? imageBase64.split(',')[1]
     : imageBase64;
 
   const apiCall = async () => {
@@ -148,19 +155,19 @@ const generateGeminiImage = async (
                  return `data:${mimeType};base64,${part.inlineData.data}`;
               }
             }
-            
+
             // 2. Look for Text (often contains error messages or refusals)
             const textParts = candidate.content.parts
               .filter(p => p.text)
               .map(p => p.text)
               .join(' ');
-              
+
             if (textParts) {
                throw new Error(`Gemini response: ${textParts}`);
             }
           }
         }
-        
+
         throw new Error("Gemini returned an empty response (no candidates or parts).");
 
       } catch (error: any) {
@@ -172,7 +179,7 @@ const generateGeminiImage = async (
         throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
       }
   };
-  
+
   return apiCall();
 };
 
@@ -195,7 +202,7 @@ const processContentToImage = async (content: string): Promise<string> => {
       let cleanUrl = urlMatch[1].replace(/[.,;>]+$/, "");
       return await fetchImageAsBase64(cleanUrl);
     }
-    
+
     // 3. Last resort: check if content IS the base64 string
     if (content.startsWith('data:image') || (content.length > 1000 && !content.includes(' '))) {
          return content.startsWith('data:') ? content : `data:image/png;base64,${content}`;
@@ -216,7 +223,7 @@ const generateOpenAIImage = async (
   signal?: AbortSignal
 ): Promise<string> => {
   const { openaiBaseUrl, openaiApiKey, openaiModel, openaiStream } = config;
-  
+
   const safeApiKey = sanitizeHeaderValue(openaiApiKey);
 
   // Ensure we hit the chat completions endpoint as per user request
@@ -241,8 +248,8 @@ const generateOpenAIImage = async (
           type: "image_url",
           image_url: {
             // Ensure data URI format
-            url: imageBase64.startsWith('data:') 
-              ? imageBase64 
+            url: imageBase64.startsWith('data:')
+              ? imageBase64
               : `data:image/png;base64,${imageBase64}`
           }
         }
@@ -262,10 +269,10 @@ const generateOpenAIImage = async (
       body: JSON.stringify({
         model: openaiModel,
         messages: messages,
-        stream: isStream, 
-        max_tokens: 4096 
+        stream: isStream,
+        max_tokens: 4096
       }),
-      signal: signal 
+      signal: signal
     });
 
     if (!response.ok) {
@@ -284,17 +291,17 @@ const generateOpenAIImage = async (
         while (!done) {
             const { value, done: readerDone } = await reader.read();
             done = readerDone;
-            
+
             if (value) {
                 const chunk = decoder.decode(value, { stream: true });
                 const lines = chunk.split('\n');
-                
+
                 for (const line of lines) {
                     const trimmed = line.trim();
                     if (trimmed.startsWith('data: ')) {
                         const dataStr = trimmed.slice(6);
                         if (dataStr === '[DONE]') continue;
-                        
+
                         try {
                             const json = JSON.parse(dataStr);
 
@@ -302,7 +309,7 @@ const generateOpenAIImage = async (
                             if (json.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
                                 return json.choices[0].message.images[0].image_url.url;
                             }
-                            
+
                             const deltaContent = json.choices?.[0]?.delta?.content || '';
                             content += deltaContent;
                         } catch (e) {
@@ -315,7 +322,7 @@ const generateOpenAIImage = async (
     } else {
         // Handle Normal Response
         const data = await response.json();
-        
+
         // Support for custom 'images' array in message (e.g. Gemini-OpenAI-Proxy)
         const message = data.choices?.[0]?.message;
         if (message?.images && Array.isArray(message.images) && message.images.length > 0) {
@@ -353,7 +360,7 @@ export const generateTranslation = async (
   signal?: AbortSignal
 ): Promise<string> => {
   const { translationBaseUrl, translationApiKey, translationModel, translationPrompt } = config;
-  
+
   if (!translationApiKey || !translationBaseUrl) {
       throw new Error("Translation API Key or Base URL missing.");
   }
@@ -375,8 +382,8 @@ export const generateTranslation = async (
         {
           type: "image_url",
           image_url: {
-            url: imageBase64.startsWith('data:') 
-              ? imageBase64 
+            url: imageBase64.startsWith('data:')
+              ? imageBase64
               : `data:image/png;base64,${imageBase64}`
           }
         }
@@ -422,14 +429,14 @@ export const generateRegionEdit = async (
   config: AppConfig,
   signal?: AbortSignal
 ): Promise<string> => {
-  
+
   const worker = async () => {
     if (config.provider === 'openai') {
       if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
       return generateOpenAIImage(imageBase64, prompt, config, signal);
     } else {
-      // Guidelines strictly state API Key must be from process.env.API_KEY
-      return generateGeminiImage(imageBase64, prompt, config.geminiModel, signal);
+      // Pass the user-configured key
+      return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey, signal);
     }
   };
 
