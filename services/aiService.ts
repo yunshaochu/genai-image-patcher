@@ -1,5 +1,4 @@
 
-
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
@@ -298,6 +297,12 @@ const generateOpenAIImage = async (
                         
                         try {
                             const json = JSON.parse(dataStr);
+
+                            // Check for custom images in stream (support for non-standard proxies)
+                            if (json.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
+                                return json.choices[0].message.images[0].image_url.url;
+                            }
+                            
                             const deltaContent = json.choices?.[0]?.delta?.content || '';
                             content += deltaContent;
                         } catch (e) {
@@ -310,7 +315,17 @@ const generateOpenAIImage = async (
     } else {
         // Handle Normal Response
         const data = await response.json();
-        content = data.choices?.[0]?.message?.content || '';
+        
+        // Support for custom 'images' array in message (e.g. Gemini-OpenAI-Proxy)
+        const message = data.choices?.[0]?.message;
+        if (message?.images && Array.isArray(message.images) && message.images.length > 0) {
+             const firstImg = message.images[0];
+             if (firstImg?.image_url?.url) {
+                 return firstImg.image_url.url;
+             }
+        }
+
+        content = message?.content || '';
     }
 
     if (!content) {
