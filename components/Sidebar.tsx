@@ -1125,6 +1125,22 @@ const Sidebar: React.FC<SidebarProps> = ({
                    </div>
                  </>
                )}
+
+               {/* Common Options */}
+               <div className="pt-2 border-t border-skin-border/50">
+                   <label className="flex items-start gap-2 cursor-pointer group">
+                        <input 
+                          type="checkbox" 
+                          checked={config.enableSquareFill}
+                          onChange={(e) => handleConfigChange('enableSquareFill', e.target.checked)}
+                          className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary"
+                        />
+                        <div>
+                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
+                           <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'squareFillDesc')}</span>
+                        </div>
+                   </label>
+               </div>
              </div>
           </Section>
         )}

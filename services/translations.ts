@@ -65,6 +65,8 @@ export const translations = {
     fetching: "获取中...",
     customModel: "自定义...",
     modelIdPlaceholder: "输入模型 ID",
+    squareFill: "正方形补全 (Square Fill)",
+    squareFillDesc: "发送前将图片填充为 1:1 正方形（防止被强制拉伸），生成后自动裁剪回原比例。适用于返回图被挤压变形的 API。",
     
     // Workflow Modes
     modeTitle: "工作流模式",
@@ -296,6 +298,8 @@ export const translations = {
     fetching: "Fetching...",
     customModel: "Custom...",
     modelIdPlaceholder: "Model ID",
+    squareFill: "Square Fill Padding",
+    squareFillDesc: "Pad input image to a 1:1 square (centering content) before sending, then crop the result back. Fixes distortion when API forces square output.",
     
     // Workflow Modes
     modeTitle: "Workflow Mode",

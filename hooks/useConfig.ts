@@ -52,6 +52,7 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
   openaiStream: false, 
+  enableSquareFill: false, // Default false
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
@@ -110,6 +111,11 @@ export function useConfig() {
         // Ensure openaiStream exists (migration for existing users)
         if (typeof migratedConfig.openaiStream === 'undefined') {
             migratedConfig.openaiStream = false;
+        }
+        
+        // Ensure enableSquareFill exists
+        if (typeof migratedConfig.enableSquareFill === 'undefined') {
+            migratedConfig.enableSquareFill = false;
         }
         
         // Ensure useFullImageMasking exists

@@ -4,7 +4,7 @@ import { UploadedImage, Region, ProcessingStep, AppConfig, Language } from './ty
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
-import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createMaskedFullImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, padImageToSquare, depadImageFromSquare, PaddingInfo } from './services/imageUtils';
 import { generateRegionEdit, generateTranslation, fetchOpenAIModels } from './services/aiService';
 import { detectBubbles, recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -626,10 +626,20 @@ export default function App() {
                 inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
             }
 
+            // Square Fill Logic
+            let payloadBase64 = inputImageBase64;
+            let paddingInfo: PaddingInfo | null = null;
+            if (config.enableSquareFill) {
+                const padded = await padImageToSquare(inputImageBase64);
+                payloadBase64 = padded.base64;
+                paddingInfo = padded.info;
+            }
+
             let translationText = '';
             if (config.enableTranslationMode) {
                setProcessingState(ProcessingStep.API_CALLING); 
-               translationText = await generateTranslation(inputImageBase64, config, signal);
+               // Use payload (padded or not) for translation too
+               translationText = await generateTranslation(payloadBase64, config, signal);
             }
             setProcessingState(ProcessingStep.API_CALLING);
             let basePrompt = config.prompt.trim();
@@ -640,7 +650,13 @@ export default function App() {
             if (translationText) {
                 effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
             }
-            const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
+            let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
+            
+            // Depad Square Logic
+            if (config.enableSquareFill && paddingInfo) {
+                apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
+            }
+
             if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
             if (config.useInvertedMasking) {
@@ -714,11 +730,21 @@ export default function App() {
         try {
             if (signal.aborted) return;
             const inputImageBase64 = await cropRegion(imgElement, region);
+            
+            // Square Fill Logic
+            let payloadBase64 = inputImageBase64;
+            let paddingInfo: PaddingInfo | null = null;
+            if (config.enableSquareFill) {
+                const padded = await padImageToSquare(inputImageBase64);
+                payloadBase64 = padded.base64;
+                paddingInfo = padded.info;
+            }
+
             if (signal.aborted) return;
             let translationText = '';
             if (config.enableTranslationMode) {
                setProcessingState(ProcessingStep.API_CALLING); 
-               translationText = await generateTranslation(inputImageBase64, config, signal);
+               translationText = await generateTranslation(payloadBase64, config, signal);
             }
             setProcessingState(ProcessingStep.API_CALLING);
             let basePrompt = config.prompt.trim();
@@ -733,7 +759,13 @@ export default function App() {
             if (translationText) {
                 effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
             }
-            const apiResultBase64 = await generateRegionEdit(inputImageBase64, effectivePrompt, config, signal);
+            let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
+            
+            // Depad Square Logic
+            if (config.enableSquareFill && paddingInfo) {
+                apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
+            }
+
             if (signal.aborted) return;
             const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const };
             regionsMap.set(region.id, completedRegion);

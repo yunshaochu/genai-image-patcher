@@ -1,6 +1,11 @@
 
 import { Region, UploadedImage } from '../types';
 
+export interface PaddingInfo {
+    originalWidth: number;
+    originalHeight: number;
+}
+
 /**
  * Loads an image from a URL into an HTMLImageElement
  */
@@ -12,6 +17,95 @@ export const loadImage = (url: string): Promise<HTMLImageElement> => {
     img.onerror = reject;
     img.src = url;
   });
+};
+
+/**
+ * Pads an image (from base64) to a 1:1 square canvas.
+ * The original image is centered.
+ * The extra space is transparent (or white if format enforces it, but we use PNG).
+ */
+export const padImageToSquare = async (
+    base64: string
+): Promise<{ base64: string; info: PaddingInfo }> => {
+    const img = await loadImage(base64);
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+    const maxDim = Math.max(w, h);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = maxDim;
+    canvas.height = maxDim;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error("Could not get canvas context for padding");
+
+    // Clear canvas (transparent)
+    ctx.clearRect(0, 0, maxDim, maxDim);
+
+    // Calculate center position
+    const x = (maxDim - w) / 2;
+    const y = (maxDim - h) / 2;
+
+    ctx.drawImage(img, x, y);
+
+    return {
+        base64: canvas.toDataURL('image/png'),
+        info: {
+            originalWidth: w,
+            originalHeight: h
+        }
+    };
+};
+
+/**
+ * Extracts the center content from a (potentially resized) square image 
+ * and resizes it back to the original dimensions.
+ */
+export const depadImageFromSquare = async (
+    squareBase64: string,
+    info: PaddingInfo
+): Promise<string> => {
+    const img = await loadImage(squareBase64);
+    const squareSize = Math.max(img.naturalWidth, img.naturalHeight); // It should be square, but take max just in case
+    
+    // We assume the content is centered and scaled proportionally to fill the square 
+    // in one dimension, matching the logic in padImageToSquare.
+    
+    // Determine the aspect ratio of the original content
+    const origW = info.originalWidth;
+    const origH = info.originalHeight;
+    
+    // Calculate the size of the content *inside* the square image
+    // If origW >= origH, contentWidth = squareSize, contentHeight = squareSize * (origH/origW)
+    // If origH > origW, contentHeight = squareSize, contentWidth = squareSize * (origW/origH)
+    
+    let contentW, contentH;
+    
+    if (origW >= origH) {
+        contentW = squareSize;
+        contentH = squareSize * (origH / origW);
+    } else {
+        contentH = squareSize;
+        contentW = squareSize * (origW / origH);
+    }
+    
+    // Calculate start position (centered)
+    const startX = (squareSize - contentW) / 2;
+    const startY = (squareSize - contentH) / 2;
+    
+    // Draw onto a new canvas of ORIGINAL dimensions
+    const canvas = document.createElement('canvas');
+    canvas.width = origW;
+    canvas.height = origH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error("Could not get canvas context for depadding");
+    
+    ctx.drawImage(
+        img,
+        startX, startY, contentW, contentH, // Source Crop
+        0, 0, origW, origH                  // Destination Scale
+    );
+    
+    return canvas.toDataURL('image/png');
 };
 
 /**
