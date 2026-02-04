@@ -55,8 +55,9 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   );
 
   // Non-passive wheel listener for the selected completed region to prevent browser zoom
+  // Listen on the container so Ctrl+Scroll works anywhere on the canvas when a completed region is selected
   useEffect(() => {
-      const el = selectedRegionRef.current;
+      const el = containerRef.current;
       // Only attach if we have a selected region that is completed (editable result)
       const region = image.regions.find(r => r.id === selectedRegionId);
       const isCompleted = region?.status === 'completed';

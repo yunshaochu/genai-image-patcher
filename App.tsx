@@ -487,7 +487,7 @@ export default function App() {
   // --- REFINEMENT HANDLER (Scroll to adjust box) ---
   const handleAdjustRegion = useCallback(async (imageId: string, regionId: string, isExpand: boolean) => {
       const img = images.find(i => i.id === imageId);
-      if (!img || !img.fullAiResultUrl) return;
+      if (!img) return;
       
       const region = img.regions.find(r => r.id === regionId);
       if (!region || region.status !== 'completed') return;
@@ -513,6 +513,10 @@ export default function App() {
           : r
       );
       handleUpdateRegions(imageId, updatedRegions);
+
+      // If no fullAiResultUrl, we can only adjust the box size but cannot re-extract the crop
+      // This happens when not using "Full Image Masking" mode
+      if (!img.fullAiResultUrl) return;
 
       // Inverted Mode Refinement
       if (config.useInvertedMasking) {
