@@ -170,7 +170,8 @@ const Sidebar: React.FC<SidebarProps> = ({
       const zip = new JSZip();
       const folder = zip.folder("patched_results");
 
-      const promises = imagesToZip.map(async (img, index) => {
+      // Process images sequentially to avoid OOM with many images
+      for (const img of imagesToZip) {
         let targetUrl = img.finalResultUrl || img.previewUrl;
         
         const hasPatches = img.regions.some(r => r.status === 'completed');
@@ -196,16 +197,17 @@ const Sidebar: React.FC<SidebarProps> = ({
         const filename = `${originalName}_${suffix}.${ext}`;
         
         folder?.file(filename, blob);
-      });
+      }
 
-      await Promise.all(promises);
-      const content = await zip.generateAsync({ type: "blob" });
+      const content = await zip.generateAsync({ type: "blob", streamFiles: true });
+      const objectUrl = URL.createObjectURL(content);
       const link = document.createElement('a');
-      link.href = URL.createObjectURL(content);
+      link.href = objectUrl;
       link.download = "results.zip";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+      URL.revokeObjectURL(objectUrl);
 
     } catch (error) {
       console.error("Zip generation failed", error);
