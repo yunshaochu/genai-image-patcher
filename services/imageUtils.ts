@@ -1,5 +1,5 @@
 
-import { Region, UploadedImage } from '../types';
+import { Region, UploadedImage, RestoreBox } from '../types';
 
 export interface PaddingInfo {
     originalWidth: number;
@@ -371,6 +371,65 @@ export const reCropProcessedImage = async (
 };
 
 /**
+ * Renders a processed region image with restore boxes applied.
+ * Restore boxes make portions of the processed image transparent,
+ * allowing the original image to show through when overlaid.
+ * Used for both display (EditorCanvas result mode) and stitching.
+ */
+export const renderRegionWithRestore = async (
+  processedImageBase64: string,
+  restoreBoxes: RestoreBox[]
+): Promise<string> => {
+  if (!restoreBoxes || restoreBoxes.length === 0) return processedImageBase64;
+
+  const img = await loadImage(processedImageBase64);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  const nonInverse = restoreBoxes.filter(b => !b.inverse);
+  const inverse = restoreBoxes.filter(b => b.inverse);
+
+  if (inverse.length > 0) {
+    ctx.globalCompositeOperation = 'source-over';
+    for (const box of inverse) {
+      const bx = (box.x / 100) * w;
+      const by = (box.y / 100) * h;
+      const bw = (box.width / 100) * w;
+      const bh = (box.height / 100) * h;
+      ctx.drawImage(img, bx, by, bw, bh, bx, by, bw, bh);
+    }
+    ctx.globalCompositeOperation = 'destination-out';
+    for (const box of nonInverse) {
+      const bx = (box.x / 100) * w;
+      const by = (box.y / 100) * h;
+      const bw = (box.width / 100) * w;
+      const bh = (box.height / 100) * h;
+      ctx.fillStyle = 'white';
+      ctx.fillRect(bx, by, bw, bh);
+    }
+  } else {
+    ctx.drawImage(img, 0, 0);
+    ctx.globalCompositeOperation = 'destination-out';
+    for (const box of nonInverse) {
+      const bx = (box.x / 100) * w;
+      const by = (box.y / 100) * h;
+      const bw = (box.width / 100) * w;
+      const bh = (box.height / 100) * h;
+      ctx.fillStyle = 'white';
+      ctx.fillRect(bx, by, bw, bh);
+    }
+  }
+
+  return canvas.toDataURL('image/png');
+};
+
+/**
  * Stitches processed regions back onto the original image
  */
 export const stitchImage = async (
@@ -392,7 +451,10 @@ export const stitchImage = async (
   // Draw processed regions on top
   for (const region of regions) {
     if (region.processedImageBase64 && region.status === 'completed') {
-      const regionImg = await loadImage(region.processedImageBase64);
+      const displayBase64 = region.restoreBoxes && region.restoreBoxes.length > 0
+        ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes)
+        : region.processedImageBase64;
+      const regionImg = await loadImage(displayBase64);
       
       const x = (region.x / 100) * baseImg.naturalWidth;
       const y = (region.y / 100) * baseImg.naturalHeight;

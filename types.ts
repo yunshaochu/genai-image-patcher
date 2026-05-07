@@ -1,4 +1,13 @@
 
+export interface RestoreBox {
+  id: string;
+  x: number;       // Percentage 0-100 relative to the region (not the full image)
+  y: number;
+  width: number;
+  height: number;
+  inverse: boolean; // true = keep AI result inside box, restore outside
+}
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -13,6 +22,7 @@ export interface Region {
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
   isRecalculating?: boolean; // New: visual flag for background refinements
+  restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
 }
 
 export interface ImageHistoryState {

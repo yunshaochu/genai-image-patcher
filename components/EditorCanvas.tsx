@@ -1,8 +1,9 @@
 
-import React, { useRef, useEffect } from 'react';
-import { UploadedImage, Region, Language } from '../types';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { UploadedImage, Region, Language, RestoreBox } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
+import { renderRegionWithRestore } from '../services/imageUtils';
 
 interface EditorCanvasProps {
   image: UploadedImage;
@@ -17,7 +18,9 @@ interface EditorCanvasProps {
   showEditorButton?: boolean;
   onAdjustRegionSize?: (regionId: string, isExpand: boolean) => void;
   onInteractionStart?: () => void; 
-  viewMode?: 'original' | 'result'; // Controlled by parent
+  viewMode?: 'original' | 'result';
+  restoreMode?: boolean;
+  onUpdateRestoreBoxes?: (regionId: string, boxes: RestoreBox[]) => void;
 }
 
 const EditorCanvas: React.FC<EditorCanvasProps> = ({ 
@@ -33,12 +36,13 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     showEditorButton = false,
     onAdjustRegionSize,
     onInteractionStart,
-    viewMode = 'original'
+    viewMode = 'original',
+    restoreMode = false,
+    onUpdateRestoreBoxes,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const selectedRegionRef = useRef<HTMLDivElement>(null);
   
-  // Use Custom Interaction Hook
   const { 
       interaction, 
       handleBackgroundMouseDown, 
@@ -54,15 +58,53 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
       disabled
   );
 
+  // --- Restore mode state ---
+  const [selectedRestoreRegionId, setSelectedRestoreRegionId] = useState<string | null>(null);
+  const [restoreBoxDrawing, setRestoreBoxDrawing] = useState(false);
+  const [restoreBoxStart, setRestoreBoxStart] = useState<{ x: number; y: number } | null>(null);
+  const [restoreBoxCurrent, setRestoreBoxCurrent] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [restoreCompositedCache, setRestoreCompositedCache] = useState<Record<string, string>>({});
+  const [isInverseMode, setIsInverseMode] = useState(false);
+
+  // Update composited cache when restore boxes change
+  useEffect(() => {
+    const updateCache = async () => {
+      const newCache: Record<string, string> = {};
+      for (const region of image.regions) {
+        if (region.status === 'completed' && region.processedImageBase64 && region.restoreBoxes && region.restoreBoxes.length > 0) {
+          try {
+            newCache[region.id] = await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes);
+          } catch (e) {
+            console.error('Failed to render restore for region', region.id, e);
+          }
+        }
+      }
+      setRestoreCompositedCache(newCache);
+    };
+    updateCache();
+  }, [image.regions]);
+
+  const getRelativeCoords = useCallback((clientX: number, clientY: number) => {
+    if (!containerRef.current) return { x: 0, y: 0 };
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    return { x, y };
+  }, []);
+
+  const getRegionRelativeCoords = useCallback((clientX: number, clientY: number, region: Region) => {
+    const container = getRelativeCoords(clientX, clientY);
+    const rx = ((container.x - region.x) / region.width) * 100;
+    const ry = ((container.y - region.y) / region.height) * 100;
+    return { x: Math.max(0, Math.min(100, rx)), y: Math.max(0, Math.min(100, ry)) };
+  }, [getRelativeCoords]);
+
   // Non-passive wheel listener for the selected completed region to prevent browser zoom
-  // Listen on the container so Ctrl+Scroll works anywhere on the canvas when a completed region is selected
   useEffect(() => {
       const el = containerRef.current;
-      // Only attach if we have a selected region that is completed (editable result)
+      if (restoreMode) return; // Don't handle wheel in restore mode
       const region = image.regions.find(r => r.id === selectedRegionId);
       const isCompleted = region?.status === 'completed';
-
-      // Only allow adjustment in ORIGINAL mode
       if (!el || !onAdjustRegionSize || !selectedRegionId || !isCompleted || viewMode !== 'original') return;
 
       const handleWheel = (e: WheelEvent) => {
@@ -70,7 +112,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               e.preventDefault();
               e.stopPropagation();
               if (onInteractionStart) onInteractionStart();
-              
               const isExpand = e.deltaY < 0; 
               onAdjustRegionSize(selectedRegionId, isExpand);
           }
@@ -80,7 +121,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
       return () => {
           el.removeEventListener('wheel', handleWheel);
       };
-  }, [selectedRegionId, onAdjustRegionSize, image.regions, onInteractionStart, viewMode]);
+  }, [selectedRegionId, onAdjustRegionSize, image.regions, onInteractionStart, viewMode, restoreMode]);
 
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -95,22 +136,124 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     if (disabled) return;
     const newRegions = image.regions.map((r) => {
       if (r.id === regionId) {
-        return { ...r, status: 'pending', processedImageBase64: undefined } as Region;
+        return { ...r, status: 'pending', processedImageBase64: undefined, restoreBoxes: undefined } as Region;
       }
       return r;
     });
     onUpdateRegions(image.id, newRegions);
   };
 
+  // --- Restore box mouse handlers ---
+  const handleRestoreContainerMouseDown = (e: React.MouseEvent) => {
+    if (!restoreMode || !onUpdateRestoreBoxes) return;
+    if (e.button !== 0) return;
+    
+    const target = e.target as HTMLElement;
+    if (target.closest('[data-restore-handle]')) return;
+
+    // Click on background deselects restore region
+    if (!target.closest('[data-region-id]')) {
+      setSelectedRestoreRegionId(null);
+      return;
+    }
+  };
+
+  const handleRestoreRegionClick = (e: React.MouseEvent, region: Region) => {
+    if (!restoreMode || !onUpdateRestoreBoxes) return;
+    if (region.status !== 'completed') return;
+    e.stopPropagation();
+    setSelectedRestoreRegionId(region.id === selectedRestoreRegionId ? null : region.id);
+  };
+
+  const handleRestoreBoxMouseDown = (e: React.MouseEvent, region: Region) => {
+    if (!restoreMode || !onUpdateRestoreBoxes || region.id !== selectedRestoreRegionId) return;
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    
+    const coords = getRegionRelativeCoords(e.clientX, e.clientY, region);
+    setRestoreBoxDrawing(true);
+    setRestoreBoxStart(coords);
+    setRestoreBoxCurrent({ x: coords.x, y: coords.y, width: 0, height: 0 });
+  };
+
+  // Window-level mouse handlers for restore box drawing
+  useEffect(() => {
+    if (!restoreMode || !onUpdateRestoreBoxes) return;
+
+    const handleWindowMouseMove = (e: MouseEvent) => {
+      if (!restoreBoxDrawing || !restoreBoxStart || !selectedRestoreRegionId) return;
+      const region = image.regions.find(r => r.id === selectedRestoreRegionId);
+      if (!region) return;
+      
+      const coords = getRegionRelativeCoords(e.clientX, e.clientY, region);
+      const x = Math.min(restoreBoxStart.x, coords.x);
+      const y = Math.min(restoreBoxStart.y, coords.y);
+      const width = Math.abs(coords.x - restoreBoxStart.x);
+      const height = Math.abs(coords.y - restoreBoxStart.y);
+      
+      setRestoreBoxCurrent({ x, y, width, height });
+    };
+
+    const handleWindowMouseUp = () => {
+      if (!restoreBoxDrawing || !restoreBoxStart || !restoreBoxCurrent || !selectedRestoreRegionId) {
+        setRestoreBoxDrawing(false);
+        setRestoreBoxStart(null);
+        setRestoreBoxCurrent(null);
+        return;
+      }
+
+      const { width, height } = restoreBoxCurrent;
+      if (width > 0.5 && height > 0.5) {
+        const region = image.regions.find(r => r.id === selectedRestoreRegionId);
+        if (region && onUpdateRestoreBoxes) {
+          const newBox: RestoreBox = {
+            id: crypto.randomUUID(),
+            x: restoreBoxCurrent.x,
+            y: restoreBoxCurrent.y,
+            width: restoreBoxCurrent.width,
+            height: restoreBoxCurrent.height,
+            inverse: isInverseMode,
+          };
+          onUpdateRestoreBoxes(selectedRestoreRegionId, [...(region.restoreBoxes || []), newBox]);
+        }
+      }
+
+      setRestoreBoxDrawing(false);
+      setRestoreBoxStart(null);
+      setRestoreBoxCurrent(null);
+    };
+
+    window.addEventListener('mousemove', handleWindowMouseMove);
+    window.addEventListener('mouseup', handleWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleWindowMouseMove);
+      window.removeEventListener('mouseup', handleWindowMouseUp);
+    };
+  }, [restoreMode, restoreBoxDrawing, restoreBoxStart, restoreBoxCurrent, selectedRestoreRegionId, image.regions, onUpdateRestoreBoxes, getRegionRelativeCoords, isInverseMode]);
+
+  const handleClearRestoreBoxes = () => {
+    if (!selectedRestoreRegionId || !onUpdateRestoreBoxes) return;
+    onUpdateRestoreBoxes(selectedRestoreRegionId, []);
+    setSelectedRestoreRegionId(null);
+  };
+
+  const handleDeleteRestoreBox = (regionId: string, boxId: string) => {
+    if (!onUpdateRestoreBoxes) return;
+    const region = image.regions.find(r => r.id === regionId);
+    if (!region) return;
+    onUpdateRestoreBoxes(regionId, (region.restoreBoxes || []).filter(b => b.id !== boxId));
+  };
+
   const isOriginalMode = viewMode === 'original';
+  const isRestoreActive = restoreMode && viewMode === 'result';
 
   return (
     <div className="relative w-full h-full flex items-center justify-center p-8 overflow-hidden select-none">
       <div 
         ref={containerRef}
-        className={`relative shadow-xl transition-all ${isOriginalMode ? '' : 'cursor-default'}`}
-        onMouseDown={handleBackgroundMouseDown}
-        style={{ cursor: isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default' }}
+        className={`relative shadow-xl transition-all ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
+        onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : handleBackgroundMouseDown}
+        style={{ cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default') }}
       >
         {/* Base Image (Always Visible) */}
         <img
@@ -136,7 +279,14 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           let styleClasses = '';
           
           if (!isOriginalMode) {
-              styleClasses = 'z-10 border-0'; 
+              if (isRestoreActive) {
+                  const isRestoreSelected = region.id === selectedRestoreRegionId;
+                  styleClasses = isRestoreSelected 
+                    ? 'border-2 border-amber-400 bg-amber-400/10 shadow-[0_0_0_2px_rgba(251,191,36,0.5)] z-30 cursor-crosshair' 
+                    : 'border border-white/30 bg-transparent z-10 cursor-pointer hover:border-amber-400/50';
+              } else {
+                  styleClasses = 'z-10 border-0'; 
+              }
           } else {
               if (region.status === 'processing') {
                   styleClasses = 'border-2 border-amber-500 bg-amber-500/10 animate-pulse z-20';
@@ -159,7 +309,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               }
           }
 
-          const cursorStyle = isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default';
+          const cursorStyle = isRestoreActive ? (region.id === selectedRestoreRegionId ? 'crosshair' : 'pointer') : (isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default');
           const handleBaseStyle = "absolute w-3.5 h-3.5 bg-white border border-skin-primary rounded-full z-30 hover:scale-125 transition-transform shadow-sm";
           const centerTransform = { transform: 'translate(-50%, -50%)' };
 
@@ -167,7 +317,16 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
             <div
               key={region.id}
               ref={isSelected ? selectedRegionRef : null}
-              onMouseDown={(e) => handleRegionMouseDown(e, region)}
+              data-region-id={region.id}
+              onMouseDown={(e) => {
+                if (isRestoreActive) {
+                  if (region.status === 'completed') {
+                    handleRestoreRegionClick(e, region);
+                  }
+                } else {
+                  handleRegionMouseDown(e, region);
+                }
+              }}
               className={`absolute transition-all duration-75 group ${styleClasses}`}
               style={{
                 left: `${x}%`,
@@ -175,20 +334,110 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                 width: `${width}%`,
                 height: `${height}%`,
                 transition: isManipulating ? 'none' : undefined,
-                cursor: isOriginalMode ? cursorStyle : 'default'
+                cursor: isOriginalMode || isRestoreActive ? cursorStyle : 'default',
+                overflow: isRestoreActive ? 'hidden' : 'visible'
               }}
             >
-              {/* RESULT MODE: Show Patched Image Floating */}
+              {/* RESULT MODE: Show Patched Image (with restore compositing if applicable) */}
               {!isOriginalMode && region.status === 'completed' && region.processedImageBase64 && (
+                region.restoreBoxes && region.restoreBoxes.length > 0 ? (
+                  <img 
+                    src={restoreCompositedCache[region.id] || region.processedImageBase64} 
+                    className="w-full h-full object-fill pointer-events-none select-none block"
+                    alt="" 
+                  />
+                ) : (
                   <img 
                     src={region.processedImageBase64} 
                     className="w-full h-full object-fill pointer-events-none select-none block"
                     alt="" 
                   />
+                )
+              )}
+
+              {/* RESTORE MODE: Box drawing overlay (only on selected region) */}
+              {isRestoreActive && region.id === selectedRestoreRegionId && (
+                <div
+                  className="absolute inset-0 z-40 cursor-crosshair"
+                  onMouseDown={(e) => handleRestoreBoxMouseDown(e, region)}
+                >
+                  {/* Existing restore boxes */}
+                  {(region.restoreBoxes || []).map(box => (
+                    <div
+                      key={box.id}
+                      className={`absolute border-2 pointer-events-none ${box.inverse ? 'border-blue-400 bg-blue-400/10' : 'border-rose-400 bg-rose-400/10'}`}
+                      style={{
+                        left: `${box.x}%`,
+                        top: `${box.y}%`,
+                        width: `${box.width}%`,
+                        height: `${box.height}%`,
+                      }}
+                    >
+                      {/* Delete button */}
+                      <button
+                        data-restore-handle
+                        className="absolute -top-2 -right-2 w-4 h-4 bg-rose-500 text-white rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto hover:bg-rose-600 z-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteRestoreBox(region.id, box.id);
+                        }}
+                        title="Delete restore box"
+                      >
+                        ✕
+                      </button>
+                      {/* Inverse toggle */}
+                      <button
+                        data-restore-handle
+                        className={`absolute -bottom-2 -right-2 w-4 h-4 rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto z-50 ${box.inverse ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-rose-500 text-white hover:bg-rose-600'}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!onUpdateRestoreBoxes) return;
+                          const updated = (region.restoreBoxes || []).map(b =>
+                            b.id === box.id ? { ...b, inverse: !b.inverse } : b
+                          );
+                          onUpdateRestoreBoxes(region.id, updated);
+                        }}
+                        title={box.inverse ? 'Inverse (keep AI)' : 'Normal (restore original)'}
+                      >
+                        {box.inverse ? '⊡' : '⊞'}
+                      </button>
+                    </div>
+                  ))}
+                  {/* Drawing preview */}
+                  {restoreBoxDrawing && restoreBoxCurrent && restoreBoxCurrent.width > 0 && restoreBoxCurrent.height > 0 && (
+                    <div
+                      className={`absolute border-2 border-dashed pointer-events-none ${isInverseMode ? 'border-blue-400 bg-blue-400/10' : 'border-rose-400 bg-rose-400/10'}`}
+                      style={{
+                        left: `${restoreBoxCurrent.x}%`,
+                        top: `${restoreBoxCurrent.y}%`,
+                        width: `${restoreBoxCurrent.width}%`,
+                        height: `${restoreBoxCurrent.height}%`,
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* RESTORE MODE: Restore box indicators on non-selected regions */}
+              {isRestoreActive && region.id !== selectedRestoreRegionId && region.status === 'completed' && region.restoreBoxes && region.restoreBoxes.length > 0 && (
+                <>
+                  {(region.restoreBoxes || []).map(box => (
+                    <div
+                      key={box.id}
+                      className={`absolute border pointer-events-none ${box.inverse ? 'border-blue-400/50' : 'border-rose-400/50'}`}
+                      style={{
+                        left: `${box.x}%`,
+                        top: `${box.y}%`,
+                        width: `${box.width}%`,
+                        height: `${box.height}%`,
+                      }}
+                    />
+                  ))}
+                </>
               )}
 
               {/* ORIGINAL MODE: Resize Handles */}
-              {isSelected && isEditable && !region.isRecalculating && (
+              {isSelected && isEditable && !region.isRecalculating && !restoreMode && (
                 <>
                   <div className={`${handleBaseStyle} cursor-nw-resize`} style={{ left: '0%', top: '0%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'nw')} />
                   <div className={`${handleBaseStyle} cursor-ne-resize`} style={{ left: '100%', top: '0%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'ne')} />
@@ -203,7 +452,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               )}
 
               {/* ORIGINAL MODE: Action Buttons */}
-              {isSelected && !isManipulating && !region.isRecalculating && (
+              {isSelected && !isManipulating && !region.isRecalculating && !restoreMode && (
                  <div 
                     className="absolute -top-9 left-1/2 -translate-x-1/2 flex gap-1 z-50"
                     onMouseDown={(e) => e.stopPropagation()} 
@@ -286,7 +535,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           );
         })}
 
-        {isOriginalMode && interaction.type === 'drawing' && interaction.currentRect && (
+        {isOriginalMode && interaction.type === 'drawing' && interaction.currentRect && !restoreMode && (
           <div
             className="absolute border-2 border-dashed border-skin-primary bg-skin-primary/20 pointer-events-none z-50"
             style={{

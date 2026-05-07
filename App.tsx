@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Region, ProcessingStep, AppConfig } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
@@ -51,6 +51,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [restoreMode, setRestoreMode] = useState(false);
   
   const [transModels, setTransModels] = useState<string[]>([]);
   const [editingRegion, setEditingRegion] = useState<{ 
@@ -462,6 +463,14 @@ export default function App() {
      }
   };
 
+  // --- RESTORE BOXES HANDLER ---
+  const handleUpdateRestoreBoxes = useCallback((regionId: string, boxes: RestoreBox[]) => {
+      setImages(prev => prev.map(img => ({
+          ...img,
+          regions: img.regions.map(r => r.id === regionId ? { ...r, restoreBoxes: boxes } : r)
+      })));
+  }, [setImages]);
+
   // ON-DEMAND STITCHING for Download
   const handleDownload = async () => {
       if (!selectedImage) return;
@@ -686,14 +695,22 @@ export default function App() {
                  >
                    {t(config.language, 'readyToCreate')}
                  </button>
-                 {(selectedImage.regions.some(r => r.status === 'completed') || selectedImage.isSkipped || selectedImage.finalResultUrl) && (
-                    <button 
-                        onClick={() => setViewMode('result')}
-                        className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'result' ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
-                    >
-                        {t(config.language, 'status_completed')}
-                    </button>
-                 )}
+                  {(selectedImage.regions.some(r => r.status === 'completed') || selectedImage.isSkipped || selectedImage.finalResultUrl) && (
+                     <button 
+                         onClick={() => { setViewMode('result'); setRestoreMode(false); }}
+                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'result' && !restoreMode ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                     >
+                         {t(config.language, 'status_completed')}
+                     </button>
+                  )}
+                  {viewMode === 'result' && selectedImage.regions.some(r => r.status === 'completed') && (
+                     <button 
+                         onClick={() => setRestoreMode(!restoreMode)}
+                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${restoreMode ? 'bg-amber-500 text-white border-amber-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                     >
+                         {restoreMode ? '退出还原' : '🔧 框选还原'}
+                     </button>
+                  )}
                  {selectedImage.isSkipped && (
                      <span className="px-3 py-1.5 rounded-full text-xs font-bold bg-zinc-500 text-white border border-zinc-500 backdrop-blur-md shadow-sm">
                         {t(config.language, 'skipped')}
@@ -731,9 +748,9 @@ export default function App() {
                         />
                     </div>
                  </div>
-             ) : (
-                 // Standard Mode (Original & Result using EditorCanvas) or Inverted Mode Original
-                 <EditorCanvas
+              ) : (
+                  // Standard Mode (Original & Result using EditorCanvas) or Inverted Mode Original
+                  <EditorCanvas
                     image={selectedImage}
                     onUpdateRegions={(imageId, newRegions) => onRegionsChanged(imageId, newRegions)}
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
@@ -747,9 +764,11 @@ export default function App() {
                     onAdjustRegionSize={(regionId, isExpand) => handleAdjustRegion(selectedImage.id, regionId, isExpand)}
                     onInteractionStart={handleInteractionStart}
                     viewMode={viewMode}
+                    restoreMode={restoreMode}
+                    onUpdateRestoreBoxes={restoreMode ? handleUpdateRestoreBoxes : undefined}
                 />
-             )}
-           </>
+              )}
+            </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-skin-muted select-none">
             <div className="w-24 h-24 mb-4 rounded-3xl bg-skin-surface border-2 border-dashed border-skin-border flex items-center justify-center animate-pulse">
