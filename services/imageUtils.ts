@@ -326,6 +326,51 @@ export const extractCropFromFullImage = async (
 
 
 /**
+ * Re-crops a processed region image when the region has been resized in default mode
+ * (i.e., no fullAiResultUrl available).
+ * Draws the processed image at its original position on a full-size canvas,
+ * then crops the new region from that canvas.
+ * Areas outside the original processed region become transparent.
+ */
+export const reCropProcessedImage = async (
+  processedImageBase64: string,
+  oldRegion: { x: number; y: number; width: number; height: number },
+  newRegion: { x: number; y: number; width: number; height: number },
+  originalWidth: number,
+  originalHeight: number
+): Promise<string> => {
+  const img = await loadImage(processedImageBase64);
+
+  const fullCanvas = document.createElement('canvas');
+  fullCanvas.width = originalWidth;
+  fullCanvas.height = originalHeight;
+  const fullCtx = fullCanvas.getContext('2d');
+  if (!fullCtx) throw new Error('Could not get canvas context');
+
+  const px = (oldRegion.x / 100) * originalWidth;
+  const py = (oldRegion.y / 100) * originalHeight;
+  const pw = (oldRegion.width / 100) * originalWidth;
+  const ph = (oldRegion.height / 100) * originalHeight;
+
+  fullCtx.drawImage(img, px, py, pw, ph);
+
+  const nx = (newRegion.x / 100) * originalWidth;
+  const ny = (newRegion.y / 100) * originalHeight;
+  const nw = (newRegion.width / 100) * originalWidth;
+  const nh = (newRegion.height / 100) * originalHeight;
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = nw;
+  outCanvas.height = nh;
+  const outCtx = outCanvas.getContext('2d');
+  if (!outCtx) throw new Error('Could not get canvas context');
+
+  outCtx.drawImage(fullCanvas, nx, ny, nw, nh, 0, 0, nw, nh);
+
+  return outCanvas.toDataURL('image/png');
+};
+
+/**
  * Stitches processed regions back onto the original image
  */
 export const stitchImage = async (
