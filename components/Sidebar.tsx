@@ -168,7 +168,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     setIsZipping(true);
     try {
       const zip = new JSZip();
-      const folder = zip.folder("patched_results");
+      const folder = zip.folder("images");
 
       // Process images sequentially to avoid OOM with many images
       for (const img of imagesToZip) {
@@ -191,10 +191,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         const response = await fetch(targetUrl);
         const blob = await response.blob();
         
-        const originalName = img.file.name.substring(0, img.file.name.lastIndexOf('.')) || img.file.name;
-        const ext = img.file.name.split('.').pop() || 'png';
-        const suffix = (hasPatches || img.finalResultUrl) && !img.isSkipped ? 'patched' : 'original';
-        const filename = `${originalName}_${suffix}.${ext}`;
+        const filename = img.file.name.replace(/\.[^.]+$/, '') + '.png';
         
         folder?.file(filename, blob);
       }

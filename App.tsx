@@ -493,7 +493,7 @@ export default function App() {
           }
           const link = document.createElement('a');
           link.href = stitchedUrl;
-          link.download = `patched_${selectedImage.file.name}`;
+          link.download = selectedImage.file.name.replace(/\.[^.]+$/, '') + '.png';
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
