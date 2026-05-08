@@ -41,7 +41,7 @@ export function useCanvasInteraction(
 
     const handleBackgroundMouseDown = (e: React.MouseEvent) => {
         if (disabled || viewMode === 'result') return;
-        if (e.button !== 0) return;
+        if (e.button !== 0 || e.altKey) return;
         
         if (onInteractionStart) onInteractionStart();
 
@@ -57,6 +57,7 @@ export function useCanvasInteraction(
 
     const handleRegionMouseDown = (e: React.MouseEvent, region: Region) => {
         if (disabled || region.status === 'processing' || viewMode === 'result') return;
+        if (e.altKey) return;
         e.stopPropagation();
         
         if (onInteractionStart) onInteractionStart();
@@ -75,6 +76,7 @@ export function useCanvasInteraction(
 
     const handleResizeMouseDown = (e: React.MouseEvent, region: Region, handle: string) => {
         if (disabled || viewMode === 'result') return;
+        if (e.altKey) return;
         e.stopPropagation();
         
         if (onInteractionStart) onInteractionStart();

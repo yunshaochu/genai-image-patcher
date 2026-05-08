@@ -51,7 +51,37 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     onSelectRestoreRegion,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const selectedRegionRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const isPanning = useRef(false);
+  const panStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+
+  const calculateFitZoom = useCallback(() => {
+    if (!viewportRef.current || !image.originalWidth) return 1;
+    const pad = 64;
+    const vw = viewportRef.current.clientWidth - pad;
+    const vh = viewportRef.current.clientHeight - pad;
+    if (vw <= 0 || vh <= 0) return 1;
+    return Math.min(vw / image.originalWidth, vh / image.originalHeight, 1);
+  }, [image.originalWidth, image.originalHeight]);
+
+  useEffect(() => {
+    const fit = calculateFitZoom();
+    if (fit) setZoom(fit);
+  }, [calculateFitZoom]);
+
+  const handleZoomIn = () => setZoom(z => Math.min(z * 1.2, 10));
+  const handleZoomOut = () => setZoom(z => Math.max(z / 1.2, 0.1));
+  const handleZoomReset = () => setZoom(calculateFitZoom());
+
+  const toggleContextOnly = (regionId: string) => {
+    if (disabled) return;
+    const newRegions = image.regions.map(r =>
+      r.id === regionId ? { ...r, contextOnly: !r.contextOnly } : r
+    );
+    onUpdateRegions(image.id, newRegions);
+  };
   
   const { 
       interaction, 
@@ -170,29 +200,75 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
     return { x: Math.max(0, Math.min(100, rx)), y: Math.max(0, Math.min(100, ry)) };
   }, [getRelativeCoords]);
 
-  // Non-passive wheel listener for the selected completed region to prevent browser zoom
+  // Ctrl+Wheel zoom handler
   useEffect(() => {
-      const el = containerRef.current;
-      if (restoreMode) return; // Don't handle wheel in restore mode
-      const region = image.regions.find(r => r.id === selectedRegionId);
-      const isCompleted = region?.status === 'completed';
-      if (!el || !onAdjustRegionSize || !selectedRegionId || !isCompleted || viewMode !== 'original') return;
+      const viewport = viewportRef.current;
+      if (!viewport || restoreMode) return;
 
       const handleWheel = (e: WheelEvent) => {
           if (e.ctrlKey || e.metaKey) {
               e.preventDefault();
               e.stopPropagation();
-              if (onInteractionStart) onInteractionStart();
-              const isExpand = e.deltaY < 0; 
-              onAdjustRegionSize(selectedRegionId, isExpand);
+              const delta = -e.deltaY;
+              const factor = delta > 0 ? 1.1 : 0.9;
+              if (containerRef.current) {
+                  const rect = containerRef.current.getBoundingClientRect();
+                  const relX = (e.clientX - rect.left) / zoom;
+                  const relY = (e.clientY - rect.top) / zoom;
+                  setZoom(prev => {
+                      const next = Math.max(0.1, Math.min(10, prev * factor));
+                      requestAnimationFrame(() => {
+                          if (viewport) {
+                              viewport.scrollLeft = relX * next - (e.clientX - viewport.getBoundingClientRect().left);
+                              viewport.scrollTop = relY * next - (e.clientY - viewport.getBoundingClientRect().top);
+                          }
+                      });
+                      return next;
+                  });
+              }
           }
       };
 
-      el.addEventListener('wheel', handleWheel, { passive: false });
-      return () => {
-          el.removeEventListener('wheel', handleWheel);
-      };
-  }, [selectedRegionId, onAdjustRegionSize, image.regions, onInteractionStart, viewMode, restoreMode]);
+      viewport.addEventListener('wheel', handleWheel, { passive: false });
+      return () => viewport.removeEventListener('wheel', handleWheel);
+  }, [restoreMode, zoom]);
+
+  // Middle-mouse or Alt+Left drag to pan
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 1 || (e.button === 0 && e.altKey)) {
+        e.preventDefault();
+        panStart.current = { x: e.clientX, y: e.clientY, scrollLeft: viewport.scrollLeft, scrollTop: viewport.scrollTop };
+        isPanning.current = true;
+        viewport.style.cursor = 'grabbing';
+      }
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isPanning.current) return;
+      const dx = e.clientX - panStart.current.x;
+      const dy = e.clientY - panStart.current.y;
+      viewport.scrollLeft = panStart.current.scrollLeft - dx;
+      viewport.scrollTop = panStart.current.scrollTop - dy;
+    };
+
+    const handleMouseUp = () => {
+      isPanning.current = false;
+      viewport.style.cursor = '';
+    };
+
+    viewport.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      viewport.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -392,18 +468,28 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   const isRestoreActive = restoreMode && viewMode === 'result';
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center p-8 overflow-hidden select-none">
-      <div 
-        ref={containerRef}
-        className={`relative shadow-xl transition-all ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
-        onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : handleBackgroundMouseDown}
-        style={{ cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default') }}
+    <div className="relative w-full h-full flex items-center justify-center select-none overflow-hidden">
+      <div
+        ref={viewportRef}
+        className="max-h-[85vh] max-w-full overflow-auto shadow-xl"
+        style={{ scrollbarWidth: 'thin' }}
       >
+        <div 
+          ref={containerRef}
+          className={`relative transition-all ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
+          onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : handleBackgroundMouseDown}
+          style={{ 
+            cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default'),
+            width: (image.originalWidth || 800) * zoom,
+            height: (image.originalHeight || 600) * zoom
+          }}
+        >
         {/* Base Image (Always Visible) */}
         <img
           src={image.previewUrl}
           alt="Workarea"
-          className="max-h-[85vh] max-w-full block object-contain pointer-events-none rounded bg-skin-surface shadow-sm ring-1 ring-skin-border"
+          className="block pointer-events-none select-none rounded bg-skin-surface ring-1 ring-skin-border"
+          style={{ width: '100%', height: '100%', display: 'block', objectFit: 'fill' }}
           draggable={false}
         />
 
@@ -451,6 +537,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                       styleClasses = 'border-2 border-skin-primary hover:border-skin-primary bg-skin-primary/5 z-10 cursor-pointer';
                   }
               }
+          }
+
+          if (region.contextOnly) {
+              styleClasses = isSelected
+                ? 'border-2 border-dashed border-amber-400 bg-amber-400/10 shadow-[0_0_0_1px_rgba(251,191,36,0.5)] z-20 cursor-move'
+                : 'border-2 border-dashed border-gray-400 bg-gray-400/5 z-10 cursor-pointer hover:border-amber-400/50';
           }
 
           const cursorStyle = isRestoreActive ? (region.id === restoreSelectedRegionId ? 'crosshair' : 'pointer') : (isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default');
@@ -618,6 +710,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
+                            toggleContextOnly(region.id);
+                          }}
+                          className={`w-6 h-6 border rounded-full flex items-center justify-center shadow-md hover:scale-110 transition-all ${region.contextOnly ? 'bg-amber-100 text-amber-600 border-amber-400' : 'bg-skin-surface text-skin-muted border-skin-border'}`}
+                          title={region.contextOnly ? 'Context Only (click to enable translation)' : 'Mark as Context Only'}
+                        >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
+                        </button>
+                    )}
+                    {!disabled && region.status !== 'processing' && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
                             removeRegion(region.id);
                           }}
                           className="w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:bg-rose-50 transition-all"
@@ -640,13 +744,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
                   {region.isRecalculating ? 'REFINE' : t(language, `status_${region.status}` as any)}
                 </div>
               )}
-
-              {/* ORIGINAL MODE: Refinement Tip */}
-              {isOriginalMode && isSelected && region.status === 'completed' && image.fullAiResultUrl && !region.isRecalculating && (
-                  <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[9px] text-emerald-600 font-bold whitespace-nowrap bg-skin-surface px-2 py-0.5 rounded shadow-sm border border-emerald-200 animate-bounce pointer-events-none">
-                    Ctrl + Scroll to adjust
-                  </div>
-              )}
             </div>
           );
         })}
@@ -663,6 +760,15 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           />
         )}
       </div>
+      </div>
+      {isOriginalMode && !restoreMode && (
+        <div className="absolute bottom-4 right-4 flex gap-1 z-40">
+          <button onClick={handleZoomOut} className="w-7 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-sm hover:bg-skin-fill transition" title="Zoom Out">−</button>
+          <span className="w-12 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-[10px] font-mono">{Math.round(zoom * 100)}%</span>
+          <button onClick={handleZoomIn} className="w-7 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-sm hover:bg-skin-fill transition" title="Zoom In">+</button>
+          <button onClick={handleZoomReset} className="w-7 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-[10px] hover:bg-skin-fill transition" title="Fit to Screen">⊡</button>
+        </div>
+      )}
     </div>
   );
 };

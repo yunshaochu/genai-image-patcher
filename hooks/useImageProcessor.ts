@@ -54,7 +54,8 @@ export function useImageProcessor(
             ));
         }
 
-        const regionsToProcess = Array.from(regionsMap.values()).filter(r => r.status === 'pending' || r.status === 'failed');
+        const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status === 'pending' || r.status === 'failed');
+        const regionsToProcess = allActiveRegions.filter(r => !r.contextOnly);
         if (regionsToProcess.length === 0) return;
 
         const imgElement = await loadImage(imageSnapshot.previewUrl);
@@ -72,9 +73,9 @@ export function useImageProcessor(
                 // Handle Inverted Masking
                 let inputImageBase64;
                 if (config.useInvertedMasking) {
-                    inputImageBase64 = createInvertedMultiMaskedFullImage(imgElement, regionsToProcess);
+                    inputImageBase64 = createInvertedMultiMaskedFullImage(imgElement, allActiveRegions);
                 } else {
-                    inputImageBase64 = createMultiMaskedFullImage(imgElement, regionsToProcess);
+                    inputImageBase64 = createMultiMaskedFullImage(imgElement, allActiveRegions);
                 }
 
                 // Square Fill Logic
@@ -174,7 +175,7 @@ export function useImageProcessor(
         let maskedContextBase64: string | undefined;
         if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
             try {
-                const fullMasked = createMultiMaskedFullImage(imgElement, regionsToProcess);
+                const fullMasked = createMultiMaskedFullImage(imgElement, allActiveRegions);
                 maskedContextBase64 = await compressImage(fullMasked, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
             } catch (e) {
                 console.warn('Failed to generate masked context image for translation:', e);

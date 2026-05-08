@@ -19,6 +19,7 @@ export interface Region {
   processedImageBase64?: string; // The result from API
   source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
   customPrompt?: string; // Image-specific prompt overrides global prompt
+  contextOnly?: boolean; // If true, region is visible context only — not translated or painted
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
   isRecalculating?: boolean; // New: visual flag for background refinements
