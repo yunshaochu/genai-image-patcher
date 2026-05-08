@@ -212,16 +212,21 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
               const delta = -e.deltaY;
               const factor = delta > 0 ? 1.1 : 0.9;
               if (containerRef.current) {
-                  const rect = containerRef.current.getBoundingClientRect();
+                  const container = containerRef.current;
+                  const rect = container.getBoundingClientRect();
                   const relX = (e.clientX - rect.left) / zoom;
                   const relY = (e.clientY - rect.top) / zoom;
                   setZoom(prev => {
                       const next = Math.max(0.1, Math.min(10, prev * factor));
                       requestAnimationFrame(() => {
-                          if (viewport) {
-                              viewport.scrollLeft = relX * next - (e.clientX - viewport.getBoundingClientRect().left);
-                              viewport.scrollTop = relY * next - (e.clientY - viewport.getBoundingClientRect().top);
-                          }
+                          if (!viewport || !container) return;
+                          const vpRect = viewport.getBoundingClientRect();
+                          const inner = viewport.firstElementChild as HTMLElement;
+                          if (!inner) return;
+                          const offsetX = container.getBoundingClientRect().left - inner.getBoundingClientRect().left;
+                          const offsetY = container.getBoundingClientRect().top - inner.getBoundingClientRect().top;
+                          viewport.scrollLeft = offsetX + relX * next - (e.clientX - vpRect.left);
+                          viewport.scrollTop = offsetY + relY * next - (e.clientY - vpRect.top);
                       });
                       return next;
                   });
@@ -268,6 +273,19 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
+  }, []);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const inner = viewport.firstElementChild as HTMLElement;
+    if (!inner) return;
+    const center = () => {
+      if (!viewport || !inner) return;
+      viewport.scrollLeft = (inner.scrollWidth - viewport.clientWidth) / 2;
+      viewport.scrollTop = (inner.scrollHeight - viewport.clientHeight) / 2;
+    };
+    requestAnimationFrame(() => requestAnimationFrame(center));
   }, []);
 
   const removeRegion = (regionId: string) => {
@@ -468,15 +486,16 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
   const isRestoreActive = restoreMode && viewMode === 'result';
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center select-none overflow-hidden">
+    <div className="relative w-full h-full flex flex-col select-none">
       <div
         ref={viewportRef}
-        className="max-h-[85vh] max-w-full overflow-auto shadow-xl"
+        className="flex-1 overflow-auto"
         style={{ scrollbarWidth: 'thin' }}
       >
+        <div className="flex items-center justify-center" style={{ minWidth: '300%', minHeight: '300%' }}>
         <div 
           ref={containerRef}
-          className={`relative transition-all ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
+          className={`relative transition-all shadow-xl ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
           onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : handleBackgroundMouseDown}
           style={{ 
             cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default'),
@@ -760,6 +779,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = ({
           />
         )}
       </div>
+    </div>
       </div>
       {isOriginalMode && !restoreMode && (
         <div className="absolute bottom-4 right-4 flex gap-1 z-40">
