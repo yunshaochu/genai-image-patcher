@@ -1024,6 +1024,21 @@ export default function App() {
                   {config.enableTranslationMode && (
                       <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-2">
                           <h4 className="text-xs font-bold text-skin-text uppercase tracking-wider">{t(config.language, 'translationSettings')}</h4>
+                           <div className="flex items-center justify-between">
+                               <div>
+                                   <div className="text-xs font-medium text-skin-text">{t(config.language, 'sendMaskedContextForTranslation')}</div>
+                                   <div className="text-[10px] text-skin-muted max-w-[220px]">{t(config.language, 'sendMaskedContextForTranslationDesc')}</div>
+                               </div>
+                               <label className="relative inline-flex items-center cursor-pointer">
+                                   <input 
+                                       type="checkbox" 
+                                       className="sr-only peer"
+                                       checked={config.sendMaskedContextForTranslation}
+                                       onChange={(e) => updateConfig('sendMaskedContextForTranslation', e.target.checked)}
+                                   />
+                                   <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                               </label>
+                           </div>
                           <div>
                               <label className="text-[10px] text-skin-muted block mb-1">{t(config.language, 'baseUrl')}</label>
                               <input 

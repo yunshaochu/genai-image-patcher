@@ -20,9 +20,9 @@ export const DEFAULT_TRANSLATION_PROMPT = `> **角色设定**：
 > 识别图片中的所有日语文字，并将其翻译成流畅的中文。
 >
 > **核心要求（严格执行）**：
-> 1.  **禁止闲聊**：**绝对不要**输出任何开场白（如“好的，这是翻译...”）、结束语或解释性文字。直接输出翻译内容。
+> 1.  **禁止闲聊**：**绝对不要**输出任何开场白（如"好的，这是翻译..."）、结束语或解释性文字。直接输出翻译内容。
 > 2.  **分镜结构**：必须按照漫画的分镜格（Panel）顺序，从上到下、从右到左排列。
-> 3.  **视觉锚点**：对于每一处文字，必须描述其在画面中的具体位置（例如：“长发女生的对话框”、“背景左侧的竖排心理描写”），以便我进行嵌字。
+> 3.  **视觉锚点**：对于每一处文字，必须描述其在画面中的具体位置（例如："长发女生的对话框"、"背景左侧的竖排心理描写"），以便我进行嵌字。
 > 4.  **格式规范**：请严格遵守下方的输出格式。
 >
 > **输出格式模板**：
@@ -35,6 +35,27 @@ export const DEFAULT_TRANSLATION_PROMPT = `> **角色设定**：
 >
 > ### [分镜描述，如：第二格（左下）]
 > *   **[具体位置/说话人]**： [日语原文] ——> **[中文翻译]**
+>
+> （以此类推...）`;
+
+export const TRANSLATION_CONTEXT_SYSTEM_PROMPT = `> **角色设定**：
+> 你是专业的漫画汉化组成员，负责提取文本、定位和翻译。
+>
+> **重要说明**：
+> 本次请求包含两张图片：
+> - **第1张图片（小图）**：从漫画中截取的**需要翻译的局部切片**。**只需要翻译这一小张图**里面的文字。
+> - **第2张图片（大图）**：整页漫画的**遮罩全图**（非选区部分已涂白），仅用于提供**上下文参考**（如对话场景、人物关系、画面氛围等）。**绝对不要翻译**第2张图里可见区域的任何文字。
+>
+> **核心要求（严格执行）**：
+> 1.  **翻译范围**：**只翻译第1张切片图片中的文字**，第2张大图仅作上下文参考。
+> 2.  **禁止闲聊**：**绝对不要**输出任何开场白（如"好的，这是翻译..."）、结束语或解释性文字。直接输出翻译内容。
+> 3.  **视觉锚点**：对于每一处文字，必须描述其在第1张切片图中的具体位置（例如："左上角对话框"、"右侧竖排小字"），以便我进行嵌字。
+> 4.  **格式规范**：请严格遵守下方的输出格式。
+>
+> **输出格式模板**：
+>
+> *   **[位置描述]**： [日语原文] ——> **[中文翻译]**
+> *   **[位置描述]**： [日语原文] ——> **[中文翻译]**
 >
 > （以此类推...）`;
 
@@ -80,6 +101,7 @@ const DEFAULT_CONFIG: AppConfig = {
 
   // Translation Defaults
   enableTranslationMode: false,
+  sendMaskedContextForTranslation: false,
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
   translationModel: 'gemini-3-flash-preview',
@@ -145,6 +167,11 @@ export function useConfig() {
         // Ensure translationPrompt exists (for users who had translation mode enabled but no prompt stored)
         if (typeof migratedConfig.translationPrompt === 'undefined') {
             migratedConfig.translationPrompt = DEFAULT_TRANSLATION_PROMPT;
+        }
+
+        // Ensure sendMaskedContextForTranslation exists
+        if (typeof migratedConfig.sendMaskedContextForTranslation === 'undefined') {
+            migratedConfig.sendMaskedContextForTranslation = false;
         }
 
         return migratedConfig;

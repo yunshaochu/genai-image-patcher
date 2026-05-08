@@ -542,6 +542,38 @@ export const extractBase64Data = (dataUrl: string): string => {
 };
 
 // Helper to download an image from a remote URL and convert to Base64 (needed for OpenAI URL responses)
+/**
+ * Compresses an image (base64) for use as a lightweight reference/context image.
+ * Reduces file size while keeping enough clarity for visual context.
+ */
+export const compressImage = async (
+  base64: string,
+  options: { maxWidth?: number; maxHeight?: number; quality?: number } = {}
+): Promise<string> => {
+  const { maxWidth = 1024, maxHeight = 1024, quality = 0.7 } = options;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return base64;
+
+  const img = await loadImage(base64);
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+
+  if (w === 0 || h === 0) return base64;
+
+  if (w > maxWidth || h > maxHeight) {
+    const ratio = Math.min(maxWidth / w, maxHeight / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
+  }
+
+  canvas.width = w;
+  canvas.height = h;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  return canvas.toDataURL('image/jpeg', quality);
+};
+
 export const fetchImageAsBase64 = async (url: string): Promise<string> => {
   try {
     const response = await fetch(url);

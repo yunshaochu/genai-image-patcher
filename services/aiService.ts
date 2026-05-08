@@ -2,7 +2,7 @@
 import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
-import { DEFAULT_TRANSLATION_PROMPT } from "../hooks/useConfig";
+import { DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT } from "../hooks/useConfig";
 
 /**
  * Helper to sanitize header values (API Keys) to prevent
@@ -357,7 +357,8 @@ const generateOpenAIImage = async (
 export const generateTranslation = async (
   imageBase64: string,
   config: AppConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  contextImageBase64?: string
 ): Promise<string> => {
   const { translationBaseUrl, translationApiKey, translationModel, translationPrompt } = config;
 
@@ -372,22 +373,38 @@ export const generateTranslation = async (
   }
   const url = `${cleanBaseUrl}/chat/completions`;
 
-  const prompt = translationPrompt || DEFAULT_TRANSLATION_PROMPT;
+  const useContext = !!contextImageBase64;
+  const prompt = useContext
+    ? TRANSLATION_CONTEXT_SYSTEM_PROMPT
+    : (translationPrompt || DEFAULT_TRANSLATION_PROMPT);
+
+  const imageContent: any[] = [
+    { type: "text", text: prompt },
+    {
+      type: "image_url",
+      image_url: {
+        url: imageBase64.startsWith('data:')
+          ? imageBase64
+          : `data:image/png;base64,${imageBase64}`
+      }
+    }
+  ];
+
+  if (useContext) {
+    imageContent.push({
+      type: "image_url",
+      image_url: {
+        url: contextImageBase64!.startsWith('data:')
+          ? contextImageBase64!
+          : `data:image/png;base64,${contextImageBase64}`
+      }
+    });
+  }
 
   const messages = [
     {
       role: "user",
-      content: [
-        { type: "text", text: prompt },
-        {
-          type: "image_url",
-          image_url: {
-            url: imageBase64.startsWith('data:')
-              ? imageBase64
-              : `data:image/png;base64,${imageBase64}`
-          }
-        }
-      ]
+      content: imageContent
     }
   ];
 

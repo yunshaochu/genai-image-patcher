@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, PaddingInfo } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -170,6 +170,18 @@ export function useImageProcessor(
             return;
         }
 
+        // Pre-generate masked full image as context for translation (compressed, shared across all regions)
+        let maskedContextBase64: string | undefined;
+        if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
+            try {
+                const fullMasked = createMultiMaskedFullImage(imgElement, regionsToProcess);
+                maskedContextBase64 = await compressImage(fullMasked, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
+            } catch (e) {
+                console.warn('Failed to generate masked context image for translation:', e);
+                maskedContextBase64 = undefined;
+            }
+        }
+
         // LEGACY / SINGLE REGION PROCESSING (Standard Mode Only)
         const processRegionTask = async (region: Region) => {
             if (signal.aborted) return;
@@ -190,7 +202,7 @@ export function useImageProcessor(
                 let translationText = '';
                 if (config.enableTranslationMode) {
                    setProcessingState(ProcessingStep.API_CALLING); 
-                   translationText = await generateTranslation(payloadBase64, config, signal);
+                   translationText = await generateTranslation(payloadBase64, config, signal, maskedContextBase64);
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();

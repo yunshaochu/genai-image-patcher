@@ -174,6 +174,8 @@ export const translations = {
     // Translation Mode
     enableTranslationMode: "启用翻译模式 (预处理)",
     enableTranslationModeDesc: "在重绘之前，先使用 LLM 识别并翻译图片中的文字，作为上下文发送给重绘模型。",
+    sendMaskedContextForTranslation: "发送遮罩全图作上下文",
+    sendMaskedContextForTranslationDesc: "翻译时除了切片，附加发送遮罩后的完整原图（非选区涂白），帮助AI理解语境。提示词会约束AI只翻译切片，不翻译全图。",
     translationSettings: "翻译模型设置 (OpenAI 兼容)",
     translationPromptLabel: "翻译系统提示词 (Prompt)",
     translationPromptPlaceholder: "例如: 翻译图片中的文本为中文，并保留位置描述...",
@@ -407,6 +409,8 @@ export const translations = {
     // Translation Mode
     enableTranslationMode: "Enable Translation Mode",
     enableTranslationModeDesc: "Pre-process image with LLM to translate text and provide context to the painting model.",
+    sendMaskedContextForTranslation: "Send masked context image",
+    sendMaskedContextForTranslationDesc: "Also send the masked full image (non-selected areas whited out) alongside the crop during translation, to provide visual context. Prompt will instruct AI to translate only the crop.",
     translationSettings: "Translation Settings (OpenAI)",
     translationPromptLabel: "System Prompt",
     translationPromptPlaceholder: "e.g., Translate text...",

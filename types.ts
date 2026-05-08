@@ -119,6 +119,7 @@ export interface AppConfig {
 
   // Translation Mode Settings
   enableTranslationMode: boolean;
+  sendMaskedContextForTranslation: boolean;
   translationBaseUrl: string;
   translationApiKey: string;
   translationModel: string;
