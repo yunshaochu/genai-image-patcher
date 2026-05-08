@@ -23,6 +23,7 @@ export interface Region {
   isOcrLoading?: boolean; // Loading state for OCR
   isRecalculating?: boolean; // New: visual flag for background refinements
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
+  restoreMaskBase64?: string; // Brush-based restore mask (涂抹还原), alpha=1=processed, 0=original
 }
 
 export interface ImageHistoryState {

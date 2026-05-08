@@ -378,9 +378,13 @@ export const reCropProcessedImage = async (
  */
 export const renderRegionWithRestore = async (
   processedImageBase64: string,
-  restoreBoxes: RestoreBox[]
+  restoreBoxes?: RestoreBox[],
+  restoreMaskBase64?: string
 ): Promise<string> => {
-  if (!restoreBoxes || restoreBoxes.length === 0) return processedImageBase64;
+  const hasBoxes = restoreBoxes && restoreBoxes.length > 0;
+  const hasMask = !!restoreMaskBase64;
+
+  if (!hasBoxes && !hasMask) return processedImageBase64;
 
   const img = await loadImage(processedImageBase64);
   const canvas = document.createElement('canvas');
@@ -392,38 +396,50 @@ export const renderRegionWithRestore = async (
   const w = canvas.width;
   const h = canvas.height;
 
-  const nonInverse = restoreBoxes.filter(b => !b.inverse);
-  const inverse = restoreBoxes.filter(b => b.inverse);
+  // Apply box restores
+  if (hasBoxes) {
+    const nonInverse = restoreBoxes!.filter(b => !b.inverse);
+    const inverse = restoreBoxes!.filter(b => b.inverse);
 
-  if (inverse.length > 0) {
-    ctx.globalCompositeOperation = 'source-over';
-    for (const box of inverse) {
-      const bx = (box.x / 100) * w;
-      const by = (box.y / 100) * h;
-      const bw = (box.width / 100) * w;
-      const bh = (box.height / 100) * h;
-      ctx.drawImage(img, bx, by, bw, bh, bx, by, bw, bh);
-    }
-    ctx.globalCompositeOperation = 'destination-out';
-    for (const box of nonInverse) {
-      const bx = (box.x / 100) * w;
-      const by = (box.y / 100) * h;
-      const bw = (box.width / 100) * w;
-      const bh = (box.height / 100) * h;
-      ctx.fillStyle = 'white';
-      ctx.fillRect(bx, by, bw, bh);
+    if (inverse.length > 0) {
+      ctx.globalCompositeOperation = 'source-over';
+      for (const box of inverse) {
+        const bx = (box.x / 100) * w;
+        const by = (box.y / 100) * h;
+        const bw = (box.width / 100) * w;
+        const bh = (box.height / 100) * h;
+        ctx.drawImage(img, bx, by, bw, bh, bx, by, bw, bh);
+      }
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const box of nonInverse) {
+        const bx = (box.x / 100) * w;
+        const by = (box.y / 100) * h;
+        const bw = (box.width / 100) * w;
+        const bh = (box.height / 100) * h;
+        ctx.fillStyle = 'white';
+        ctx.fillRect(bx, by, bw, bh);
+      }
+    } else {
+      ctx.drawImage(img, 0, 0);
+      ctx.globalCompositeOperation = 'destination-out';
+      for (const box of nonInverse) {
+        const bx = (box.x / 100) * w;
+        const by = (box.y / 100) * h;
+        const bw = (box.width / 100) * w;
+        const bh = (box.height / 100) * h;
+        ctx.fillStyle = 'white';
+        ctx.fillRect(bx, by, bw, bh);
+      }
     }
   } else {
     ctx.drawImage(img, 0, 0);
-    ctx.globalCompositeOperation = 'destination-out';
-    for (const box of nonInverse) {
-      const bx = (box.x / 100) * w;
-      const by = (box.y / 100) * h;
-      const bw = (box.width / 100) * w;
-      const bh = (box.height / 100) * h;
-      ctx.fillStyle = 'white';
-      ctx.fillRect(bx, by, bw, bh);
-    }
+  }
+
+  // Apply brush mask (destination-in: mask alpha defines where processed is visible)
+  if (hasMask) {
+    const maskImg = await loadImage(restoreMaskBase64!);
+    ctx.globalCompositeOperation = 'destination-in';
+    ctx.drawImage(maskImg, 0, 0, w, h);
   }
 
   return canvas.toDataURL('image/png');
@@ -451,8 +467,9 @@ export const stitchImage = async (
   // Draw processed regions on top
   for (const region of regions) {
     if (region.processedImageBase64 && region.status === 'completed') {
-      const displayBase64 = region.restoreBoxes && region.restoreBoxes.length > 0
-        ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes)
+      const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
+      const displayBase64 = hasRestore
+        ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes, region.restoreMaskBase64)
         : region.processedImageBase64;
       const regionImg = await loadImage(displayBase64);
       

@@ -52,6 +52,9 @@ export default function App() {
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [restoreMode, setRestoreMode] = useState(false);
+  const [restoreBrushMode, setRestoreBrushMode] = useState(false);
+  const [restoreBrushSize, setRestoreBrushSize] = useState(8);
+  const [restoreSelectedRegionId, setRestoreSelectedRegionId] = useState<string | null>(null);
   
   const [transModels, setTransModels] = useState<string[]>([]);
   const [editingRegion, setEditingRegion] = useState<{ 
@@ -471,6 +474,13 @@ export default function App() {
       })));
   }, [setImages]);
 
+  const handleUpdateRestoreMask = useCallback((regionId: string, maskBase64: string | null) => {
+      setImages(prev => prev.map(img => ({
+          ...img,
+          regions: img.regions.map(r => r.id === regionId ? { ...r, restoreMaskBase64: maskBase64 || undefined } : r)
+      })));
+  }, [setImages]);
+
   // ON-DEMAND STITCHING for Download
   const handleDownload = async () => {
       if (!selectedImage) return;
@@ -705,11 +715,50 @@ export default function App() {
                   )}
                   {viewMode === 'result' && selectedImage.regions.some(r => r.status === 'completed') && (
                      <button 
-                         onClick={() => setRestoreMode(!restoreMode)}
+                         onClick={() => { setRestoreMode(!restoreMode); setRestoreBrushMode(false); setRestoreSelectedRegionId(null); }}
                          className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${restoreMode ? 'bg-amber-500 text-white border-amber-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
                      >
                          {restoreMode ? '退出还原' : '🔧 框选还原'}
                      </button>
+                  )}
+                  {/* Restore toolbar - only when restore mode is active */}
+                  {restoreMode && (
+                    <div className="flex gap-1 items-center">
+                      <button
+                        onClick={() => setRestoreBrushMode(false)}
+                        className={`px-2 py-1 text-[10px] font-bold rounded border ${!restoreBrushMode ? 'bg-amber-500 text-white border-amber-500' : 'bg-black/60 text-amber-400 border-amber-400/50 hover:border-amber-400'}`}
+                      >□ 框选</button>
+                      <button
+                        onClick={() => setRestoreBrushMode(true)}
+                        className={`px-2 py-1 text-[10px] font-bold rounded border ${restoreBrushMode ? 'bg-amber-500 text-white border-amber-500' : 'bg-black/60 text-amber-400 border-amber-400/50 hover:border-amber-400'}`}
+                      >🖌 涂抹</button>
+                      {restoreBrushMode && (
+                        <>
+                          <span className="text-[9px] text-white/70 ml-1">大小</span>
+                          <input type="range" min="1" max="20" step="0.5" value={restoreBrushSize}
+                            onChange={(e) => setRestoreBrushSize(Number(e.target.value))}
+                            className="w-10 h-1 accent-amber-400" />
+                          <span className="text-[9px] text-white/60 w-4">{restoreBrushSize}</span>
+                        </>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!restoreSelectedRegionId || !selectedImage) return;
+                          setImages(prev => prev.map(img => {
+                            if (img.id !== selectedImage.id) return img;
+                            return {
+                              ...img,
+                              regions: img.regions.map(r => {
+                                if (r.id !== restoreSelectedRegionId) return r;
+                                return { ...r, restoreBoxes: undefined, restoreMaskBase64: undefined };
+                              })
+                            };
+                          }));
+                        }}
+                        className="px-2 py-1 text-[10px] font-bold bg-rose-500/80 text-white rounded border border-rose-500 hover:bg-rose-500 disabled:opacity-30"
+                        disabled={!restoreSelectedRegionId}
+                      >清除</button>
+                    </div>
                   )}
                  {selectedImage.isSkipped && (
                      <span className="px-3 py-1.5 rounded-full text-xs font-bold bg-zinc-500 text-white border border-zinc-500 backdrop-blur-md shadow-sm">
@@ -766,6 +815,11 @@ export default function App() {
                     viewMode={viewMode}
                     restoreMode={restoreMode}
                     onUpdateRestoreBoxes={restoreMode ? handleUpdateRestoreBoxes : undefined}
+                    onUpdateRestoreMask={restoreMode ? handleUpdateRestoreMask : undefined}
+                    restoreBrushMode={restoreBrushMode}
+                    restoreBrushSize={restoreBrushSize}
+                    restoreSelectedRegionId={restoreSelectedRegionId}
+                    onSelectRestoreRegion={setRestoreSelectedRegionId}
                 />
               )}
             </>
