@@ -117,6 +117,15 @@ const Sidebar: React.FC<SidebarProps> = ({
     localStorage.setItem(SECTION_STORAGE_KEY, JSON.stringify(sectionsState));
   }, [sectionsState]);
 
+  // Scroll gallery to selected thumbnail when selection changes (e.g. arrow keys)
+  useEffect(() => {
+    if (!selectedImageId) return;
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-image-id="${selectedImageId}"]`);
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    });
+  }, [selectedImageId]);
+
   const toggleSection = (key: keyof typeof sectionsState) => {
     setSectionsState((prev: any) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -360,7 +369,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <div className="grid grid-cols-2 gap-2 max-h-[240px] overflow-y-auto custom-scrollbar pr-1 border border-skin-border/30 rounded-lg p-1 bg-skin-fill/10">
                   {images.map(img => (
                     <div 
-                      key={img.id} 
+                      key={img.id}
+                      data-image-id={img.id}
                       className={`group relative flex flex-col p-2 rounded-lg border transition-all cursor-pointer overflow-hidden ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
                       onClick={() => onSelectImage(img.id)}
                     >

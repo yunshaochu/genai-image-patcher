@@ -54,8 +54,8 @@ export function useImageProcessor(
             ));
         }
 
-        const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status === 'pending' || r.status === 'failed');
-        const regionsToProcess = allActiveRegions.filter(r => !r.contextOnly);
+        const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
+        const regionsToProcess = allActiveRegions.filter(r => (r.status === 'pending' || r.status === 'failed') && !r.contextOnly);
         if (regionsToProcess.length === 0) return;
 
         const imgElement = await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);

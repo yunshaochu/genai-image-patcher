@@ -59,16 +59,31 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
   const calculateFitZoom = useCallback(() => {
     if (!viewportRef.current || !image.originalWidth) return 1;
-    const pad = 64;
-    const vw = viewportRef.current.clientWidth - pad;
-    const vh = viewportRef.current.clientHeight - pad;
+    const vw = viewportRef.current.clientWidth;
+    const vh = viewportRef.current.clientHeight;
     if (vw <= 0 || vh <= 0) return 1;
     return Math.min(vw / image.originalWidth, vh / image.originalHeight, 1);
   }, [image.originalWidth, image.originalHeight]);
 
   useEffect(() => {
-    const fit = calculateFitZoom();
-    if (fit) setZoom(fit);
+    // Double rAF ensures DOM is fully laid out (scrollbars settled, flex resolved)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const fit = calculateFitZoom();
+        if (fit) setZoom(fit);
+      });
+    });
+  }, [calculateFitZoom]);
+
+  // Recalculate fit zoom when the viewport resizes (window resize, sidebar toggle, etc.)
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(() => {
+      setZoom(calculateFitZoom());
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
   }, [calculateFitZoom]);
 
   const handleZoomIn = () => setZoom(z => Math.min(z * 1.2, 10));
@@ -534,7 +549,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 top: `${ay}%`,
                 width: `${aw}%`,
                 height: `${ah}%`,
-                objectFit: 'fill',
+                objectFit: 'contain',
+                objectPosition: 'center center',
                 clipPath: `inset(${clipTop}% ${clipRight}% ${clipBottom}% ${clipLeft}%)`,
                 zIndex: 5,
               }}
