@@ -71,7 +71,8 @@ export const padImageToSquare = async (
  */
 export const depadImageFromSquare = async (
     squareBase64: string,
-    info: PaddingInfo
+    info: PaddingInfo,
+    margin: number = 2
 ): Promise<string> => {
     const img = await loadImage(squareBase64);
     const w = img.naturalWidth;
@@ -94,7 +95,8 @@ export const depadImageFromSquare = async (
 
     // A pixel is "dark" if it's close to the #000000 fill we used for padding.
     // Tolerance handles slight noise from AI encode/decode cycles.
-    const isDark = (r: number, g: number, b: number) => (r + g + b) <= 20;
+    const isDark = (r: number, g: number, b: number) => (r + g + b) <= 40;
+    const ROW_DARK_RATIO = 0.90;
 
     // Scan from top: find first row where < 95% of pixels are dark
     let topCrop = 0;
@@ -104,7 +106,7 @@ export const depadImageFromSquare = async (
             const i = (y * w + x) * 4;
             if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
         }
-        if (darkCount / w < 0.95) break;
+        if (darkCount / w < ROW_DARK_RATIO) break;
         topCrop = y + 1;
     }
 
@@ -116,7 +118,7 @@ export const depadImageFromSquare = async (
             const i = (y * w + x) * 4;
             if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
         }
-        if (darkCount / w < 0.95) break;
+        if (darkCount / w < ROW_DARK_RATIO) break;
         bottomCrop = h - y;
     }
 
@@ -128,7 +130,7 @@ export const depadImageFromSquare = async (
             const i = (y * w + x) * 4;
             if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
         }
-        if (darkCount / h < 0.95) break;
+        if (darkCount / h < ROW_DARK_RATIO) break;
         leftCrop = x + 1;
     }
 
@@ -140,9 +142,15 @@ export const depadImageFromSquare = async (
             const i = (y * w + x) * 4;
             if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
         }
-        if (darkCount / h < 0.95) break;
+        if (darkCount / h < ROW_DARK_RATIO) break;
         rightCrop = w - x;
     }
+
+    // Trim safety margin from each side to remove residual dark edge lines
+    topCrop = Math.min(topCrop + margin, h);
+    bottomCrop = Math.min(bottomCrop + margin, h);
+    leftCrop = Math.min(leftCrop + margin, w);
+    rightCrop = Math.min(rightCrop + margin, w);
 
     const contentW = w - leftCrop - rightCrop;
     const contentH = h - topCrop - bottomCrop;

@@ -106,7 +106,7 @@ export function useImageProcessor(
                 
                 // Depad Square Logic
                 if (config.enableSquareFill && paddingInfo) {
-                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
+                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
                 }
 
                 if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -221,7 +221,7 @@ export function useImageProcessor(
                 let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
                 
                 if (config.enableSquareFill && paddingInfo) {
-                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo);
+                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
                 }
 
                 if (signal.aborted) return;

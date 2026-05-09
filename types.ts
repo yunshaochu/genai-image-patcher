@@ -103,6 +103,7 @@ export interface AppConfig {
   openaiModel: string;
   openaiStream: boolean; // New: Stream Toggle
   enableSquareFill: boolean; // New: Pad image to 1:1 square before sending
+  squareFillMargin: number; // px: safety margin to trim from each edge after depadding
   
   // Gemini Specifics
   geminiApiKey: string;

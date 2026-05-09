@@ -75,6 +75,7 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiModel: 'gemini-imagen',
   openaiStream: false, 
   enableSquareFill: false, // Default false
+  squareFillMargin: 2, // px default safety margin for square fill depadding
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
@@ -139,6 +140,10 @@ export function useConfig() {
         // Ensure enableSquareFill exists
         if (typeof migratedConfig.enableSquareFill === 'undefined') {
             migratedConfig.enableSquareFill = false;
+        }
+        // Ensure squareFillMargin exists
+        if (typeof migratedConfig.squareFillMargin === 'undefined') {
+            migratedConfig.squareFillMargin = 2;
         }
         
         // Ensure useFullImageMasking exists

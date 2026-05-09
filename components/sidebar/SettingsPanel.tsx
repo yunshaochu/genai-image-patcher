@@ -171,6 +171,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'squareFillDesc')}</span>
                     </div>
                 </label>
+                {config.enableSquareFill && (
+                    <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30">
+                        <label className="flex items-center gap-2 text-[11px]">
+                            <span className="text-skin-muted">安全边距 (px)</span>
+                            <input
+                                type="number"
+                                min={0}
+                                max={20}
+                                value={config.squareFillMargin}
+                                onChange={(e) => onChange('squareFillMargin', Math.max(0, Math.min(20, Number(e.target.value))))}
+                                className="w-14 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
+                            />
+                        </label>
+                    </div>
+                )}
             </div>
 
             <div className="pt-2 border-t border-skin-border/50">
