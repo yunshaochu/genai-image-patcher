@@ -58,7 +58,7 @@ export function useImageProcessor(
         const regionsToProcess = allActiveRegions.filter(r => !r.contextOnly);
         if (regionsToProcess.length === 0) return;
 
-        const imgElement = await loadImage(imageSnapshot.previewUrl);
+        const imgElement = await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
         regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
         setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
 
@@ -143,7 +143,7 @@ export function useImageProcessor(
                             imgElement.naturalHeight,
                             config.fullImageOpaquePercent
                         );
-                        const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const };
+                        const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                         regionsMap.set(region.id, completedRegion);
                     }
 
@@ -225,7 +225,7 @@ export function useImageProcessor(
                 }
 
                 if (signal.aborted) return;
-                const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const };
+                const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 regionsMap.set(region.id, completedRegion);
                 
                 const currentAllRegions = Array.from(regionsMap.values());

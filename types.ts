@@ -17,6 +17,11 @@ export interface Region {
   type: 'rect'; // Extensible for future shapes
   status: 'pending' | 'processing' | 'completed' | 'failed';
   processedImageBase64?: string; // The result from API
+  /** The region dimensions at the time processedImageBase64 was generated (percentages). Used for display/stitch alignment when the green frame is resized. */
+  anchorX?: number;
+  anchorY?: number;
+  anchorWidth?: number;
+  anchorHeight?: number;
   source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
   customPrompt?: string; // Image-specific prompt overrides global prompt
   contextOnly?: boolean; // If true, region is visible context only — not translated or painted
@@ -39,7 +44,9 @@ export interface ImageHistoryState {
 export interface UploadedImage {
   id: string;
   file: File;
-  previewUrl: string;
+  previewUrl: string;       // Display URL (may be compressed in balanced mode)
+  originalUrl: string;      // Original full-resolution URL for API crop (never compressed)
+  thumbnailUrl: string;     // Small thumbnail for gallery
   originalWidth: number;
   originalHeight: number;
   regions: Region[];
@@ -61,6 +68,8 @@ export type Language = 'zh' | 'en';
 
 export type ProcessingMode = 'api' | 'manual';
 
+export type PerformanceMode = 'unlimited' | 'balanced';
+
 export interface AppConfig {
   prompt: string;
   // Execution Mode is now effectively handled by concurrencyLimit
@@ -77,6 +86,9 @@ export interface AppConfig {
 
   // Workflow Mode
   processingMode: ProcessingMode;
+
+  // Performance Mode
+  performanceMode: PerformanceMode;
   
   // Theme & Language
   theme: ThemeType;

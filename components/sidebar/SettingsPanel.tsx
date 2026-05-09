@@ -172,6 +172,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                 </label>
             </div>
+
+            <div className="pt-2 border-t border-skin-border/50">
+                <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'performanceMode')}</label>
+                <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+                    <button 
+                        onClick={() => onChange('performanceMode', 'unlimited')}
+                        className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.performanceMode === 'unlimited' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                    >
+                        {t(lang, 'perfUnlimited')}
+                    </button>
+                    <button 
+                        onClick={() => onChange('performanceMode', 'balanced')}
+                        className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.performanceMode === 'balanced' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                    >
+                        {t(lang, 'perfBalanced')}
+                    </button>
+                </div>
+            </div>
         </div>
     );
 };

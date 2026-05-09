@@ -1,11 +1,11 @@
 
-import { useState, useEffect, useRef } from 'react';
-import { UploadedImage, Region, ImageHistoryState } from '../types';
-import { readFileAsDataURL, loadImage, naturalSortCompare, stitchImage, cropRegion } from '../services/imageUtils';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
+import { readFileAsDataURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail } from '../services/imageUtils';
 
 type ViewMode = 'original' | 'result';
 
-export function useImageManager() {
+export function useImageManager(performanceMode: PerformanceMode) {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
@@ -32,8 +32,19 @@ export function useImageManager() {
 
     for (const file of imageFiles) {
       try {
-        const previewUrl = await readFileAsDataURL(file);
-        const imgEl = await loadImage(previewUrl);
+        const originalUrl = await readFileAsDataURL(file);
+        const imgEl = await loadImage(originalUrl);
+
+        const thumbnailUrl = await generateThumbnail(imgEl);
+
+        let previewUrl = originalUrl;
+        if (performanceMode === 'balanced') {
+          const PREVIEW_MAX_DIM = 2048;
+          const PREVIEW_MAX_BYTES = 1024 * 1024;
+          if (originalUrl.length > PREVIEW_MAX_BYTES) {
+            previewUrl = await compressImage(originalUrl, { maxWidth: PREVIEW_MAX_DIM, maxHeight: PREVIEW_MAX_DIM, quality: 0.8 });
+          }
+        }
 
         const initialState: ImageHistoryState = {
             previewUrl: previewUrl,
@@ -48,6 +59,8 @@ export function useImageManager() {
           id: crypto.randomUUID(),
           file,
           previewUrl,
+          originalUrl,
+          thumbnailUrl,
           originalWidth: imgEl.naturalWidth,
           originalHeight: imgEl.naturalHeight,
           regions: [],
@@ -71,18 +84,11 @@ export function useImageManager() {
     }
   };
 
-  const handleSelectImage = (id: string) => {
+  const handleSelectImage = useCallback((id: string) => {
     setSelectedImageId(id);
     setSelectedRegionId(null);
-    const target = images.find(img => img.id === id);
-    if (target?.regions.some(r => r.status === 'completed')) {
-        // If it has results, default to result view is fine, or keep previous logic.
-        // Let's default to original to avoid confusion.
-        setViewMode('original'); 
-    } else {
-        setViewMode('original');
-    }
-  };
+    setViewMode('original');
+  }, []);
 
   const handleUpdateRegions = (imageId: string, regions: Region[]) => {
     setImages(prev => {
@@ -161,13 +167,14 @@ export function useImageManager() {
                    x: 0, y: 0, width: 100, height: 100,
                    type: 'rect',
                    status: 'completed',
-                   processedImageBase64: base64,
-                   source: 'manual'
-               };
+                    processedImageBase64: base64,
+                    source: 'manual' as const,
+                    anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
+                };
                updatedRegions = [...img.regions, fullRegion];
             } else {
                updatedRegions = img.regions.map(r => 
-                 r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
+                  r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
                );
             }
 

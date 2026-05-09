@@ -365,7 +365,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                       onClick={() => onSelectImage(img.id)}
                     >
                         <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
-                          <img src={img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} />
+                          <img src={img.thumbnailUrl || img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} />
                           
                           {img.isSkipped && (
                             <div className="absolute inset-0 flex items-center justify-center bg-black/20 z-0">

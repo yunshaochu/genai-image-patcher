@@ -5,7 +5,7 @@ import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
 import HelpModal from './components/HelpModal';
-import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, reCropProcessedImage } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -36,7 +36,7 @@ export default function App() {
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage
-  } = useImageManager();
+  } = useImageManager(config.performanceMode);
 
   const {
       processingState,
@@ -123,7 +123,7 @@ export default function App() {
                             targetImg.originalHeight,
                             config.fullImageOpaquePercent
                         );
-                        updatedRegions.push({ ...r, processedImageBase64: crop, status: 'completed' });
+                        updatedRegions.push({ ...r, processedImageBase64: crop, status: 'completed', anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height });
                     } catch (e) {
                         console.error("Failed to extract crop for region", r.id, e);
                         updatedRegions.push({ ...r, status: 'failed' });
@@ -156,19 +156,20 @@ export default function App() {
             
             // Legacy/Alternative Manual Full Image as a new region (fallback)
             if (regionId === 'manual-full-image') {
-               const fullRegion: Region = {
-                   id: crypto.randomUUID(),
-                   x: 0, y: 0, width: 100, height: 100,
-                   type: 'rect',
-                   status: 'completed',
-                   processedImageBase64: base64,
-                   source: 'manual'
-               };
+                const fullRegion: Region = {
+                    id: crypto.randomUUID(),
+                    x: 0, y: 0, width: 100, height: 100,
+                    type: 'rect',
+                    status: 'completed',
+                    processedImageBase64: base64,
+                    source: 'manual' as const,
+                    anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
+                };
                updatedRegions = [...img.regions, fullRegion];
             } else {
-               updatedRegions = img.regions.map(r => 
-                 r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const } : r
-               );
+                updatedRegions = img.regions.map(r => 
+                  r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
+                );
             }
 
             const currentHistory = [...img.history];
@@ -198,14 +199,13 @@ export default function App() {
       })));
   }, [setImages]);
 
-  // --- Regions Update Handler with Auto Stitching ---
+  // --- Regions Update Handler ---
+  // Green frame resize/move no longer re-crops processedImageBase64.
+  // The processed image stays at its anchor size; the green frame acts as a viewport window.
   const onRegionsChanged = (imageId: string, newRegions: Region[]) => {
       // 1. Optimistic Update
       handleUpdateRegions(imageId, newRegions);
 
-      // If Inverted Masking is ON, we don't do complex crop extractions on move, because the result IS the background.
-      // Changing box size in Inverted Mode technically means "Reveal more/less of the Original".
-      // We might need to re-stitch the Inverted Result.
       if (config.useInvertedMasking) {
           const targetImage = images.find(img => img.id === imageId);
           if (targetImage && targetImage.fullAiResultUrl) {
@@ -221,83 +221,23 @@ export default function App() {
       const targetImage = images.find(img => img.id === imageId);
       if (!targetImage) return;
 
-      // 2. Debounce Heavy Process
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      operationVersionRef.current++;
-      const currentVersion = operationVersionRef.current;
 
-      debounceTimerRef.current = setTimeout(async () => {
-          if (operationVersionRef.current !== currentVersion) return;
+      // Brief visual feedback that the region was adjusted
+      setImages(prev => prev.map(img => {
+          if (img.id !== imageId) return img;
+          return {
+              ...img,
+              regions: img.regions.map(r => {
+                  const changed = newRegions.find(nr => nr.id === r.id);
+                  return changed ? { ...r, isRecalculating: true } : r;
+              })
+          };
+      }));
 
-          // Mark recalculating if needed
-          setImages(prev => prev.map(img => {
-              if (img.id !== imageId) return img;
-              return {
-                  ...img,
-                  regions: img.regions.map(r => {
-                      const changed = newRegions.find(nr => nr.id === r.id && nr.status === 'completed' && img.fullAiResultUrl);
-                      return changed ? { ...r, isRecalculating: true } : r;
-                  })
-              };
-          }));
-
-          let hasChanges = false;
-          // Re-crop high quality from full result if moved
-          const updatedRegions = await Promise.all(newRegions.map(async (newRegion) => {
-              if (operationVersionRef.current !== currentVersion) return newRegion;
-              
-              const oldRegion = targetImage.regions.find(r => r.id === newRegion.id);
-              if (newRegion.status === 'completed' && oldRegion) {
-                  const posChanged = 
-                      Math.abs(newRegion.x - oldRegion.x) > 0.001 ||
-                      Math.abs(newRegion.y - oldRegion.y) > 0.001 ||
-                      Math.abs(newRegion.width - oldRegion.width) > 0.001 ||
-                      Math.abs(newRegion.height - oldRegion.height) > 0.001;
-
-                  if (posChanged) {
-                      if (targetImage.fullAiResultUrl) {
-                          hasChanges = true;
-                          try {
-                              const newCrop = await extractCropFromFullImage(
-                                  targetImage.fullAiResultUrl,
-                                  newRegion,
-                                  targetImage.originalWidth,
-                                  targetImage.originalHeight,
-                                  config.fullImageOpaquePercent
-                              );
-                              if (operationVersionRef.current !== currentVersion) return newRegion;
-                              return { ...newRegion, processedImageBase64: newCrop, isRecalculating: false };
-                          } catch (e) {
-                              console.error("Failed to re-extract crop", e);
-                              return { ...newRegion, isRecalculating: false };
-                          }
-                      } else if (oldRegion.processedImageBase64) {
-                          hasChanges = true;
-                          try {
-                              const newCrop = await reCropProcessedImage(
-                                  oldRegion.processedImageBase64,
-                                  { x: oldRegion.x, y: oldRegion.y, width: oldRegion.width, height: oldRegion.height },
-                                  { x: newRegion.x, y: newRegion.y, width: newRegion.width, height: newRegion.height },
-                                  targetImage.originalWidth,
-                                  targetImage.originalHeight
-                              );
-                              if (operationVersionRef.current !== currentVersion) return newRegion;
-                              return { ...newRegion, processedImageBase64: newCrop, isRecalculating: false };
-                          } catch (e) {
-                              console.error("Failed to re-crop processed image", e);
-                              return { ...newRegion, isRecalculating: false };
-                          }
-                      }
-                  }
-              }
-              return { ...newRegion, isRecalculating: false };
-          }));
-
-          if (operationVersionRef.current === currentVersion) {
-              const finalRegions = hasChanges ? updatedRegions : newRegions;
-              // Just update regions, NO AUTO STITCHING (Standard Mode)
-              handleUpdateRegions(imageId, finalRegions);
-          }
+      debounceTimerRef.current = setTimeout(() => {
+          const updatedRegions = newRegions.map(r => ({ ...r, isRecalculating: false }));
+          handleUpdateRegions(imageId, updatedRegions);
           debounceTimerRef.current = null;
       }, 500);
   };
@@ -561,73 +501,26 @@ export default function App() {
           return;
       }
 
+      // Brief visual feedback: set isRecalculating flag, then clear after debounce
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      
-      operationVersionRef.current++;
-      const currentVersion = operationVersionRef.current;
-      
-      debounceTimerRef.current = setTimeout(async () => {
-          if (operationVersionRef.current !== currentVersion) return;
+      setImages(prev => prev.map(i => ({
+          ...i,
+          regions: i.regions.map(r => r.id === regionId ? { ...r, isRecalculating: true } : r)
+      })));
 
-          setImages(prev => prev.map(i => {
-              if (i.id !== imageId) return i;
-              return {
-                  ...i,
-                  regions: i.regions.map(r => r.id === regionId ? { ...r, isRecalculating: true } : r)
-              };
+      debounceTimerRef.current = setTimeout(() => {
+          const finalRegions = img.regions.map(r => ({
+              ...r,
+              x: r.id === regionId ? newX : r.x,
+              y: r.id === regionId ? newY : r.y,
+              width: r.id === regionId ? newW : r.width,
+              height: r.id === regionId ? newH : r.height,
+              isRecalculating: false
           }));
-
-          try {
-              let newCropBase64: string;
-              const newRegionRect = { x: newX as number, y: newY as number, width: newW as number, height: newH as number };
-              
-              if (img.fullAiResultUrl) {
-                  newCropBase64 = await extractCropFromFullImage(
-                      img.fullAiResultUrl,
-                      { ...region, x: newX, y: newY, width: newW, height: newH },
-                      img.originalWidth,
-                      img.originalHeight,
-                      config.fullImageOpaquePercent
-                  );
-              } else if (region.processedImageBase64) {
-                  newCropBase64 = await reCropProcessedImage(
-                      region.processedImageBase64,
-                      { x: region.x, y: region.y, width: region.width, height: region.height },
-                      newRegionRect,
-                      img.originalWidth,
-                      img.originalHeight
-                  );
-              } else {
-                  if (operationVersionRef.current === currentVersion) {
-                      setImages(prev => prev.map(i => ({
-                          ...i,
-                          regions: i.regions.map(r => ({ ...r, isRecalculating: false }))
-                      })));
-                  }
-                  debounceTimerRef.current = null;
-                  return;
-              }
-
-              if (operationVersionRef.current !== currentVersion) return;
-
-              const finalRegions = img.regions.map(r => 
-                r.id === regionId 
-                  ? { ...r, x: newX, y: newY, width: newW, height: newH, processedImageBase64: newCropBase64, isRecalculating: false } 
-                  : { ...r, isRecalculating: false }
-              );
-              
-              handleUpdateRegions(imageId, finalRegions);
-              
-          } catch (e) {
-              console.error("Adjustment processing failed", e);
-              setImages(prev => prev.map(i => ({
-                  ...i,
-                  regions: i.regions.map(r => ({ ...r, isRecalculating: false }))
-              })));
-          }
+          handleUpdateRegions(imageId, finalRegions);
           debounceTimerRef.current = null;
-      }, 500); 
-  }, [images, config.fullImageOpaquePercent, config.useInvertedMasking, handleUpdateRegions, setImages]);
+      }, 500);
+  }, [images, config.useInvertedMasking, handleUpdateRegions, setImages]);
 
   // --- DRAG & DROP ---
   const onDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
@@ -800,6 +693,7 @@ export default function App() {
               ) : (
                   // Standard Mode (Original & Result using EditorCanvas) or Inverted Mode Original
                   <EditorCanvas
+                    key={selectedImage.id}
                     image={selectedImage}
                     onUpdateRegions={(imageId, newRegions) => onRegionsChanged(imageId, newRegions)}
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}

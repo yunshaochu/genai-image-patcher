@@ -6,6 +6,11 @@ export interface PaddingInfo {
     originalHeight: number;
 }
 
+const releaseCanvas = (canvas: HTMLCanvasElement) => {
+    canvas.width = 0;
+    canvas.height = 0;
+};
+
 /**
  * Loads an image from a URL into an HTMLImageElement
  */
@@ -47,8 +52,10 @@ export const padImageToSquare = async (
 
     ctx.drawImage(img, x, y);
 
+    const result = canvas.toDataURL('image/png');
+    releaseCanvas(canvas);
     return {
-        base64: canvas.toDataURL('image/png'),
+        base64: result,
         info: {
             originalWidth: w,
             originalHeight: h
@@ -101,11 +108,13 @@ export const depadImageFromSquare = async (
     
     ctx.drawImage(
         img,
-        startX, startY, contentW, contentH, // Source Crop
-        0, 0, origW, origH                  // Destination Scale
+        startX, startY, contentW, contentH,
+        0, 0, origW, origH
     );
     
-    return canvas.toDataURL('image/png');
+    const result = canvas.toDataURL('image/png');
+    releaseCanvas(canvas);
+    return result;
 };
 
 /**
@@ -131,11 +140,13 @@ export const cropRegion = async (
 
   ctx.drawImage(
     imageElement,
-    x, y, w, h, // Source
-    0, 0, w, h  // Destination
+    x, y, w, h,
+    0, 0, w, h
   );
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -165,11 +176,13 @@ export const createMaskedFullImage = (
   // Draw the specific region from original image onto the white canvas at the same position
   ctx.drawImage(
     imageElement,
-    x, y, w, h, // Source rect
-    x, y, w, h  // Dest rect (same position)
+    x, y, w, h,
+    x, y, w, h
   );
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -199,12 +212,14 @@ export const createMultiMaskedFullImage = (
 
       ctx.drawImage(
         imageElement,
-        x, y, w, h, // Source
-        x, y, w, h  // Dest
+        x, y, w, h,
+        x, y, w, h
       );
   });
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -239,7 +254,9 @@ export const createInvertedMultiMaskedFullImage = (
       ctx.fillRect(x, y, w, h);
   });
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -321,7 +338,9 @@ export const extractCropFromFullImage = async (
       ctx.globalCompositeOperation = 'source-over';
   }
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 
@@ -367,7 +386,10 @@ export const reCropProcessedImage = async (
 
   outCtx.drawImage(fullCanvas, nx, ny, nw, nh, 0, 0, nw, nh);
 
-  return outCanvas.toDataURL('image/png');
+  const result = outCanvas.toDataURL('image/png');
+  releaseCanvas(fullCanvas);
+  releaseCanvas(outCanvas);
+  return result;
 };
 
 /**
@@ -442,7 +464,9 @@ export const renderRegionWithRestore = async (
     ctx.drawImage(maskImg, 0, 0, w, h);
   }
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -478,11 +502,24 @@ export const stitchImage = async (
       const w = (region.width / 100) * baseImg.naturalWidth;
       const h = (region.height / 100) * baseImg.naturalHeight;
 
-      ctx.drawImage(regionImg, x, y, w, h);
+      // Anchor coordinates: the region dimensions at the time processedImage was generated
+      const ax = ((region.anchorX ?? region.x) / 100) * baseImg.naturalWidth;
+      const ay = ((region.anchorY ?? region.y) / 100) * baseImg.naturalHeight;
+      const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
+      const ah = ((region.anchorHeight ?? region.height) / 100) * baseImg.naturalHeight;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      ctx.drawImage(regionImg, ax, ay, aw, ah);
+      ctx.restore();
     }
   }
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 /**
@@ -524,7 +561,9 @@ export const stitchImageInverted = async (
       );
   }
 
-  return canvas.toDataURL('image/png');
+  const result = canvas.toDataURL('image/png');
+  releaseCanvas(canvas);
+  return result;
 };
 
 export const readFileAsDataURL = (file: File): Promise<string> => {
@@ -571,7 +610,22 @@ export const compressImage = async (
   canvas.height = h;
   ctx.drawImage(img, 0, 0, w, h);
 
-  return canvas.toDataURL('image/jpeg', quality);
+  const result = canvas.toDataURL('image/jpeg', quality);
+  releaseCanvas(canvas);
+  return result;
+};
+
+export const generateThumbnail = async (img: HTMLImageElement, maxDim: number = 256): Promise<string> => {
+  const ratio = Math.min(maxDim / img.naturalWidth, maxDim / img.naturalHeight, 1);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.naturalWidth * ratio);
+  canvas.height = Math.round(img.naturalHeight * ratio);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  const result = canvas.toDataURL('image/jpeg', 0.7);
+  releaseCanvas(canvas);
+  return result;
 };
 
 export const fetchImageAsBase64 = async (url: string): Promise<string> => {

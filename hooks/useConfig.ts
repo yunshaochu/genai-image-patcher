@@ -69,6 +69,7 @@ const DEFAULT_CONFIG: AppConfig = {
   theme: 'light',
   language: 'zh',
   provider: 'openai',
+  performanceMode: 'unlimited',
   openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
@@ -172,6 +173,11 @@ export function useConfig() {
         // Ensure sendMaskedContextForTranslation exists
         if (typeof migratedConfig.sendMaskedContextForTranslation === 'undefined') {
             migratedConfig.sendMaskedContextForTranslation = false;
+        }
+
+        // Ensure performanceMode exists
+        if (typeof migratedConfig.performanceMode === 'undefined') {
+            migratedConfig.performanceMode = 'unlimited';
         }
 
         return migratedConfig;
