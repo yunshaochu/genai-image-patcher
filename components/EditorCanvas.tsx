@@ -512,6 +512,37 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
           draggable={false}
         />
 
+        {/* RESULT MODE: Processed image overlays at container level (fixed anchor position, clipped to green frame) */}
+        {!isOriginalMode && image.regions.filter(r => r.status === 'completed' && r.processedImageBase64).map((region) => {
+          const ax = region.anchorX ?? region.x;
+          const ay = region.anchorY ?? region.y;
+          const aw = region.anchorWidth ?? region.width;
+          const ah = region.anchorHeight ?? region.height;
+          const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskBase64;
+          // clip-path inset values = how much to hide from each edge (percentage of the image's own size)
+          const clipTop    = aw > 0 && ah > 0 ? Math.max(0, ((region.y - ay) / ah) * 100) : 0;
+          const clipRight  = aw > 0 && ah > 0 ? Math.max(0, ((ax + aw - region.x - region.width) / aw) * 100) : 0;
+          const clipBottom = aw > 0 && ah > 0 ? Math.max(0, ((ay + ah - region.y - region.height) / ah) * 100) : 0;
+          const clipLeft   = aw > 0 && ah > 0 ? Math.max(0, ((region.x - ax) / aw) * 100) : 0;
+          return (
+            <img
+              key={`overlay-${region.id}`}
+              src={hasRestore ? (restoreCompositedCache[region.id] || region.processedImageBase64) : region.processedImageBase64}
+              className="absolute pointer-events-none select-none"
+              style={{
+                left: `${ax}%`,
+                top: `${ay}%`,
+                width: `${aw}%`,
+                height: `${ah}%`,
+                objectFit: 'fill',
+                clipPath: `inset(${clipTop}% ${clipRight}% ${clipBottom}% ${clipLeft}%)`,
+                zIndex: 5,
+              }}
+              alt=""
+            />
+          );
+        })}
+
         {/* Regions */}
         {image.regions.map((region) => {
           const isSelected = selectedRegionId === region.id && isOriginalMode;
@@ -593,38 +624,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 overflow: (isRestoreActive || !isOriginalMode) ? 'hidden' : 'visible'
               }}
             >
-              {/* RESULT MODE: Show Patched Image through green frame as a viewport window */}
-              {!isOriginalMode && region.status === 'completed' && region.processedImageBase64 && (
-                (() => {
-                  const aw = region.anchorWidth ?? region.width;
-                  const ah = region.anchorHeight ?? region.height;
-                  const ax = region.anchorX ?? region.x;
-                  const ay = region.anchorY ?? region.y;
-                  const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskBase64;
-                  // Use pixel values computed from container dimensions to avoid
-                  // percentage-rounding issues when nested inside the green frame div.
-                  const containerW = image.originalWidth * zoom;
-                  const containerH = image.originalHeight * zoom;
-                  const imgW = (aw / 100) * containerW;
-                  const imgH = (ah / 100) * containerH;
-                  const offsetLeft = ((ax - x) / 100) * containerW;
-                  const offsetTop = ((ay - y) / 100) * containerH;
-                  return (
-                    <img
-                      src={hasRestore ? (restoreCompositedCache[region.id] || region.processedImageBase64) : region.processedImageBase64}
-                      className="pointer-events-none select-none block"
-                      style={{
-                        position: 'absolute',
-                        width: `${imgW}px`,
-                        height: `${imgH}px`,
-                        left: `${offsetLeft}px`,
-                        top: `${offsetTop}px`,
-                      }}
-                      alt=""
-                    />
-                  );
-                })()
-              )}
+              {/* RESULT MODE: Restore box indicators (processed image is rendered at container level above) */}
 
               {/* RESTORE MODE: Overlay on selected region */}
               {isRestoreActive && region.id === restoreSelectedRegionId && (

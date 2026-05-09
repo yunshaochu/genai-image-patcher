@@ -27,7 +27,7 @@ export const loadImage = (url: string): Promise<HTMLImageElement> => {
 /**
  * Pads an image (from base64) to a 1:1 square canvas.
  * The original image is centered.
- * The extra space is transparent (or white if format enforces it, but we use PNG).
+ * The extra space is filled with black.
  */
 export const padImageToSquare = async (
     base64: string
@@ -43,8 +43,8 @@ export const padImageToSquare = async (
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error("Could not get canvas context for padding");
 
-    // Clear canvas (transparent)
-    ctx.clearRect(0, 0, maxDim, maxDim);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, maxDim, maxDim);
 
     // Calculate center position
     const x = (maxDim - w) / 2;
@@ -64,56 +64,125 @@ export const padImageToSquare = async (
 };
 
 /**
- * Extracts the center content from a (potentially resized) square image 
- * and resizes it back to the original dimensions.
+ * Extracts the original content from a square image by detecting black padding
+ * bars added by padImageToSquare. Scans each edge inward to find where the
+ * dark padding ends and content begins, handling AI outputs where content may
+ * have shifted. Falls back to the centered assumption if detection fails.
  */
 export const depadImageFromSquare = async (
     squareBase64: string,
     info: PaddingInfo
 ): Promise<string> => {
     const img = await loadImage(squareBase64);
-    const squareSize = Math.max(img.naturalWidth, img.naturalHeight); // It should be square, but take max just in case
-    
-    // We assume the content is centered and scaled proportionally to fill the square 
-    // in one dimension, matching the logic in padImageToSquare.
-    
-    // Determine the aspect ratio of the original content
-    const origW = info.originalWidth;
-    const origH = info.originalHeight;
-    
-    // Calculate the size of the content *inside* the square image
-    // If origW >= origH, contentWidth = squareSize, contentHeight = squareSize * (origH/origW)
-    // If origH > origW, contentHeight = squareSize, contentWidth = squareSize * (origW/origH)
-    
-    let contentW, contentH;
-    
-    if (origW >= origH) {
-        contentW = squareSize;
-        contentH = squareSize * (origH / origW);
-    } else {
-        contentH = squareSize;
-        contentW = squareSize * (origW / origH);
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+
+    // If original was already square, nothing to depad
+    if (info.originalWidth === info.originalHeight) {
+        return squareBase64;
     }
-    
-    // Calculate start position (centered)
-    const startX = (squareSize - contentW) / 2;
-    const startY = (squareSize - contentH) / 2;
-    
-    // Draw onto a new canvas of ORIGINAL dimensions
-    const canvas = document.createElement('canvas');
-    canvas.width = origW;
-    canvas.height = origH;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error("Could not get canvas context for depadding");
-    
-    ctx.drawImage(
-        img,
-        startX, startY, contentW, contentH,
-        0, 0, origW, origH
-    );
-    
-    const result = canvas.toDataURL('image/png');
-    releaseCanvas(canvas);
+
+    // Draw to canvas to read pixel data
+    const scanCanvas = document.createElement('canvas');
+    scanCanvas.width = w;
+    scanCanvas.height = h;
+    const scanCtx = scanCanvas.getContext('2d');
+    if (!scanCtx) throw new Error("Could not get canvas context for depadding");
+    scanCtx.drawImage(img, 0, 0);
+    const imageData = scanCtx.getImageData(0, 0, w, h);
+    const pixels = imageData.data;
+
+    // A pixel is "dark" if it's close to the #000000 fill we used for padding.
+    // Tolerance handles slight noise from AI encode/decode cycles.
+    const isDark = (r: number, g: number, b: number) => (r + g + b) <= 20;
+
+    // Scan from top: find first row where < 95% of pixels are dark
+    let topCrop = 0;
+    for (let y = 0; y < h; y++) {
+        let darkCount = 0;
+        for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+        }
+        if (darkCount / w < 0.95) break;
+        topCrop = y + 1;
+    }
+
+    // Scan from bottom
+    let bottomCrop = 0;
+    for (let y = h - 1; y >= 0; y--) {
+        let darkCount = 0;
+        for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+        }
+        if (darkCount / w < 0.95) break;
+        bottomCrop = h - y;
+    }
+
+    // Scan from left
+    let leftCrop = 0;
+    for (let x = 0; x < w; x++) {
+        let darkCount = 0;
+        for (let y = 0; y < h; y++) {
+            const i = (y * w + x) * 4;
+            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+        }
+        if (darkCount / h < 0.95) break;
+        leftCrop = x + 1;
+    }
+
+    // Scan from right
+    let rightCrop = 0;
+    for (let x = w - 1; x >= 0; x--) {
+        let darkCount = 0;
+        for (let y = 0; y < h; y++) {
+            const i = (y * w + x) * 4;
+            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+        }
+        if (darkCount / h < 0.95) break;
+        rightCrop = w - x;
+    }
+
+    const contentW = w - leftCrop - rightCrop;
+    const contentH = h - topCrop - bottomCrop;
+
+    const origAspect = info.originalWidth / info.originalHeight;
+    const detectedAspect = contentW / Math.max(contentH, 1);
+    const aspectDrift = Math.abs(detectedAspect - origAspect) / origAspect;
+
+    let sx: number, sy: number, sw: number, sh: number;
+
+    // Use edge-detected bounds if they are plausible
+    if (contentW > 0 && contentH > 0 && aspectDrift < 0.3) {
+        sx = leftCrop;
+        sy = topCrop;
+        sw = contentW;
+        sh = contentH;
+    } else {
+        // Fallback: centered assumption based on original proportions
+        if (info.originalWidth >= info.originalHeight) {
+            sw = w;
+            sh = w * (info.originalHeight / info.originalWidth);
+        } else {
+            sh = h;
+            sw = h * (info.originalWidth / info.originalHeight);
+        }
+        sx = (w - sw) / 2;
+        sy = (h - sh) / 2;
+    }
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = info.originalWidth;
+    outCanvas.height = info.originalHeight;
+    const outCtx = outCanvas.getContext('2d');
+    if (!outCtx) throw new Error("Could not get canvas context for depadding");
+
+    outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
+
+    const result = outCanvas.toDataURL('image/png');
+    releaseCanvas(scanCanvas);
+    releaseCanvas(outCanvas);
     return result;
 };
 
