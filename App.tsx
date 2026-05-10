@@ -185,26 +185,19 @@ export default function App() {
 
   // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
   const handleInteractionStart = useCallback(() => {
-      // 1. Cancel any pending debounce timer
+      // Cancel any pending debounce timer
       if (debounceTimerRef.current) {
           clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
       }
-      // 2. Increment version to invalidate any running async operations
+      // Increment version to invalidate any running async operations
       operationVersionRef.current++;
-      
-      // 3. Clear 'isRecalculating' flags immediately if user starts moving a yellow box
-      setImages(prev => prev.map(img => ({
-          ...img,
-          regions: img.regions.map(r => ({ ...r, isRecalculating: false }))
-      })));
-  }, [setImages]);
+  }, []);
 
   // --- Regions Update Handler ---
   // Green frame resize/move no longer re-crops processedImageBase64.
   // The processed image stays at its anchor size; the green frame acts as a viewport window.
   const onRegionsChanged = (imageId: string, newRegions: Region[]) => {
-      // 1. Optimistic Update
       handleUpdateRegions(imageId, newRegions);
 
       if (config.useInvertedMasking) {
@@ -218,29 +211,6 @@ export default function App() {
           }
           return;
       }
-
-      const targetImage = images.find(img => img.id === imageId);
-      if (!targetImage) return;
-
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-
-      // Brief visual feedback that the region was adjusted
-      setImages(prev => prev.map(img => {
-          if (img.id !== imageId) return img;
-          return {
-              ...img,
-              regions: img.regions.map(r => {
-                  const changed = newRegions.find(nr => nr.id === r.id);
-                  return changed ? { ...r, isRecalculating: true } : r;
-              })
-          };
-      }));
-
-      debounceTimerRef.current = setTimeout(() => {
-          const updatedRegions = newRegions.map(r => ({ ...r, isRecalculating: false }));
-          handleUpdateRegions(imageId, updatedRegions);
-          debounceTimerRef.current = null;
-      }, 500);
   };
 
   // --- Handlers ---
@@ -499,28 +469,7 @@ export default function App() {
               const stitchedUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl!, updatedRegions);
               setImages(prev => prev.map(i => i.id === imageId ? { ...i, finalResultUrl: stitchedUrl } : i));
           }, 200);
-          return;
       }
-
-      // Brief visual feedback: set isRecalculating flag, then clear after debounce
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-      setImages(prev => prev.map(i => ({
-          ...i,
-          regions: i.regions.map(r => r.id === regionId ? { ...r, isRecalculating: true } : r)
-      })));
-
-      debounceTimerRef.current = setTimeout(() => {
-          const finalRegions = img.regions.map(r => ({
-              ...r,
-              x: r.id === regionId ? newX : r.x,
-              y: r.id === regionId ? newY : r.y,
-              width: r.id === regionId ? newW : r.width,
-              height: r.id === regionId ? newH : r.height,
-              isRecalculating: false
-          }));
-          handleUpdateRegions(imageId, finalRegions);
-          debounceTimerRef.current = null;
-      }, 500);
   }, [images, config.useInvertedMasking, handleUpdateRegions, setImages]);
 
   // --- DRAG & DROP ---

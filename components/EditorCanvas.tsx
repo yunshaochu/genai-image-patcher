@@ -75,9 +75,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   // --- Zoom & Pan State ---
   // zoom: scale factor (1 = fit-to-screen, >1 = zoomed in)
   // panX/panY: offset in screen pixels from the "centered" position
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.01); // Start tiny to avoid flash of oversized image
   const [panX, setPanX] = useState(0);
   const [panY, setPanY] = useState(0);
+
+  // Track whether the initial fit-to-screen has been applied
+  const [isZoomReady, setIsZoomReady] = useState(false);
 
   // Viewport dimensions as state (so transform re-renders when viewport resizes)
   const [vpW, setVpW] = useState(0);
@@ -110,6 +113,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
         setPanX(0);
         setPanY(0);
         userZoomedRef.current = false;
+        setIsZoomReady(true);
       });
     });
   }, [calculateFitZoom]);
@@ -679,6 +683,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             transformOrigin: '0 0',
             transform: `translate(${(vpW - imgW * zoom) / 2 + panX}px, ${(vpH - imgH * zoom) / 2 + panY}px) scale(${zoom})`,
             cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default'),
+            visibility: isZoomReady ? 'visible' : 'hidden',
           }}
         >
           {/* Base Image */}
@@ -750,13 +755,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 } else if (region.status === 'failed') {
                     styleClasses = 'border-2 border-rose-500 bg-rose-500/10 z-10';
                 } else if (region.status === 'completed') {
-                    if (region.isRecalculating) {
-                        styleClasses = 'border-2 border-yellow-500 bg-yellow-500/20 animate-pulse z-30';
-                    } else if (isSelected) {
-                        styleClasses = 'border-2 border-emerald-500 bg-emerald-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#10b981] z-30 cursor-move';
-                    } else {
-                        styleClasses = 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer';
-                    }
+                     if (isSelected) {
+                         styleClasses = 'border-2 border-emerald-500 bg-emerald-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#10b981] z-30 cursor-move';
+                     } else {
+                         styleClasses = 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer';
+                     }
                 } else {
                     if (isSelected) {
                         styleClasses = 'border-2 border-skin-primary bg-skin-primary/10 shadow-[0_0_0_1px_rgba(255,255,255,0.5)] z-20 cursor-move';
@@ -772,6 +775,26 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   : 'border-2 border-dashed border-gray-400 bg-gray-400/5 z-10 cursor-pointer hover:border-amber-400/50';
             }
 
+            // Compute the region's screen position to decide if action buttons
+            // should be placed above or below the region. If the top of the
+            // region is too close to the viewport top edge, buttons go below.
+            const getToolbarPlacement = () => {
+              if (!containerRef.current || !viewportRef.current) return 'above';
+              const cRect = containerRef.current.getBoundingClientRect();
+              const vRect = viewportRef.current.getBoundingClientRect();
+              // Region top edge in screen coords
+              const regionScreenTop = cRect.top + (y / 100) * cRect.height;
+              const toolbarScreenHeight = 28; // approx button height
+              const margin = 4; // gap between toolbar and region edge
+              if (regionScreenTop - vRect.top < toolbarScreenHeight + margin) {
+                return 'below';
+              }
+              return 'above';
+            };
+            const toolbarPlacement = (isSelected && !isManipulating && !restoreMode)
+              ? getToolbarPlacement()
+              : 'above';
+            const toolbarGap = 28 * invZoom; // fixed 28 screen-pixel gap between region and toolbar
             const cursorStyle = isRestoreActive ? (region.id === restoreSelectedRegionId ? 'crosshair' : 'pointer') : (isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default');
             const handleBaseStyle = "absolute bg-white border border-skin-primary rounded-full z-30 transition-transform shadow-sm hover:shadow-lg hover:border-skin-primary/80";
             const handleSize = 14;
@@ -881,7 +904,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 )}
 
                 {/* ORIGINAL MODE: Resize Handles */}
-                {isSelected && isEditable && !region.isRecalculating && !restoreMode && (
+                {isSelected && isEditable && !restoreMode && (
                   <>
                     <div className={`${handleBaseStyle} cursor-nw-resize`} style={handleStyle('0%', '0%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'nw')} />
                     <div className={`${handleBaseStyle} cursor-ne-resize`} style={handleStyle('100%', '0%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'ne')} />
@@ -896,13 +919,17 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 )}
 
                 {/* ORIGINAL MODE: Action Buttons */}
-                {isSelected && !isManipulating && !region.isRecalculating && !restoreMode && (
+                {isSelected && !isManipulating && !restoreMode && (
                    <div
                       className="absolute left-1/2 flex gap-1 z-50"
-                      style={{
-                        top: -36 * invZoom,
+                      style={toolbarPlacement === 'above' ? {
+                        top: -toolbarGap,
                         transform: `translateX(-50%) scale(${invZoom})`,
                         transformOrigin: 'bottom center',
+                      } : {
+                        bottom: -toolbarGap,
+                        transform: `translateX(-50%) scale(${invZoom})`,
+                        transformOrigin: 'top center',
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
                    >
@@ -975,10 +1002,9 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 )}
 
                 {/* ORIGINAL MODE: Status Badge */}
-                {isOriginalMode && (region.status !== 'pending' || region.isRecalculating) && !isManipulating && (
+                {isOriginalMode && region.status !== 'pending' && !isManipulating && (
                   <div
                     className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
-                      region.isRecalculating ? 'bg-yellow-100/90 text-yellow-700 border-yellow-200' :
                       region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
                       region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
                       'bg-rose-100/90 text-rose-700 border-rose-200'
@@ -990,7 +1016,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                       transformOrigin: 'top left',
                     }}
                   >
-                    {region.isRecalculating ? 'REFINE' : t(language, `status_${region.status}` as any)}
+                    {t(language, `status_${region.status}` as any)}
                   </div>
                 )}
               </div>

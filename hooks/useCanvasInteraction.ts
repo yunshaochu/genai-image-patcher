@@ -175,12 +175,21 @@ export function useCanvasInteraction(
                     onSelectRegion(newRegion.id); 
                 }
             } else if ((state.type === 'moving' || state.type === 'resizing') && state.currentRect && state.regionId) {
-                const updatedRegions = imageRef.current.regions.map(r => 
-                    r.id === state.regionId 
-                        ? { ...r, ...state.currentRect } as Region
-                        : r
+                // Only update if the region actually changed (avoid no-op updates that trigger unnecessary recalculating)
+                const orig = state.initialRegion;
+                const cur = state.currentRect;
+                const hasChanged = orig && (
+                    orig.x !== cur.x || orig.y !== cur.y ||
+                    orig.width !== cur.width || orig.height !== cur.height
                 );
-                onUpdateRegions(imageRef.current.id, updatedRegions);
+                if (hasChanged) {
+                    const updatedRegions = imageRef.current.regions.map(r => 
+                        r.id === state.regionId 
+                            ? { ...r, ...state.currentRect } as Region
+                            : r
+                    );
+                    onUpdateRegions(imageRef.current.id, updatedRegions);
+                }
             }
             setInteraction({ type: 'idle', startPos: { x: 0, y: 0 } });
         };
