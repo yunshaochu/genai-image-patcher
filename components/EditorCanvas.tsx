@@ -1,5 +1,5 @@
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { UploadedImage, Region, Language, RestoreBox } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
@@ -56,6 +56,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const [zoom, setZoom] = useState(1);
   const isPanning = useRef(false);
   const panStart = useRef({ x: 0, y: 0, scrollLeft: 0, scrollTop: 0 });
+  const mousePosRef = useRef<{ relX: number; relY: number; clientX: number; clientY: number } | null>(null);
 
   const calculateFitZoom = useCallback(() => {
     if (!viewportRef.current || !image.originalWidth) return 1;
@@ -231,20 +232,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   const rect = container.getBoundingClientRect();
                   const relX = (e.clientX - rect.left) / zoom;
                   const relY = (e.clientY - rect.top) / zoom;
-                  setZoom(prev => {
-                      const next = Math.max(0.1, Math.min(10, prev * factor));
-                      requestAnimationFrame(() => {
-                          if (!viewport || !container) return;
-                          const vpRect = viewport.getBoundingClientRect();
-                          const inner = viewport.firstElementChild as HTMLElement;
-                          if (!inner) return;
-                          const offsetX = container.getBoundingClientRect().left - inner.getBoundingClientRect().left;
-                          const offsetY = container.getBoundingClientRect().top - inner.getBoundingClientRect().top;
-                          viewport.scrollLeft = offsetX + relX * next - (e.clientX - vpRect.left);
-                          viewport.scrollTop = offsetY + relY * next - (e.clientY - vpRect.top);
-                      });
-                      return next;
-                  });
+                  mousePosRef.current = { relX, relY, clientX: e.clientX, clientY: e.clientY };
+                  setZoom(prev => Math.max(0.1, Math.min(10, prev * factor)));
               }
           }
       };
@@ -252,6 +241,21 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       viewport.addEventListener('wheel', handleWheel, { passive: false });
       return () => viewport.removeEventListener('wheel', handleWheel);
   }, [restoreMode, zoom]);
+
+  // Adjust scroll position after Ctrl+Wheel zoom to keep cursor point fixed
+  useLayoutEffect(() => {
+    if (mousePosRef.current && containerRef.current && viewportRef.current) {
+      const { relX, relY, clientX, clientY } = mousePosRef.current;
+      const rect = containerRef.current.getBoundingClientRect();
+      const currentX = rect.left + relX * zoom;
+      const currentY = rect.top + relY * zoom;
+      const deltaX = currentX - clientX;
+      const deltaY = currentY - clientY;
+      viewportRef.current.scrollLeft += deltaX;
+      viewportRef.current.scrollTop += deltaY;
+      mousePosRef.current = null;
+    }
+  }, [zoom]);
 
   // Middle-mouse or Alt+Left drag to pan
   useEffect(() => {
@@ -507,15 +511,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
         className="flex-1 overflow-auto"
         style={{ scrollbarWidth: 'thin' }}
       >
-        <div className="flex items-center justify-center" style={{ minWidth: '300%', minHeight: '300%' }}>
+        <div className="min-w-full min-h-full flex items-center justify-center">
+        <div style={{ width: (image.originalWidth || 800) * zoom, height: (image.originalHeight || 600) * zoom, flexShrink: 0 }}>
         <div 
           ref={containerRef}
-          className={`relative transition-all shadow-xl ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
+          className={`relative shadow-xl ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
           onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : handleBackgroundMouseDown}
           style={{ 
             cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default'),
-            width: (image.originalWidth || 800) * zoom,
-            height: (image.originalHeight || 600) * zoom
+            width: (image.originalWidth || 800),
+            height: (image.originalHeight || 600),
+            transform: `scale(${zoom})`,
+            transformOrigin: 'top left',
           }}
         >
         {/* Base Image (Always Visible) */}
@@ -811,6 +818,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
           />
         )}
       </div>
+    </div>
     </div>
       </div>
       {isOriginalMode && !restoreMode && (
