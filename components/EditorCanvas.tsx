@@ -639,6 +639,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const imgW = image.originalWidth || 800;
   const imgH = image.originalHeight || 600;
 
+  // Zoom compensation: inverse scale factor so overlay UI elements maintain
+  // consistent screen-pixel size regardless of zoom level.
+  const invZoom = 1 / zoom;
+
   // Build the combined transform: center the image, then apply pan offset
   // The content div is sized to the image's native dimensions.
   // transform: translate centers the image in the viewport, then panX/panY offset it.
@@ -769,8 +773,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             }
 
             const cursorStyle = isRestoreActive ? (region.id === restoreSelectedRegionId ? 'crosshair' : 'pointer') : (isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default');
-            const handleBaseStyle = "absolute w-3.5 h-3.5 bg-white border border-skin-primary rounded-full z-30 hover:scale-125 transition-transform shadow-sm";
-            const centerTransform = { transform: 'translate(-50%, -50%)' };
+            const handleBaseStyle = "absolute bg-white border border-skin-primary rounded-full z-30 transition-transform shadow-sm hover:shadow-lg hover:border-skin-primary/80";
+            const handleSize = 14;
+            // Resize handles: positioned at percentage points on the region,
+            // then centered with translate(-50%,-50%) and zoom-compensated with scale(1/zoom).
+            // transformOrigin must be center so the position doesn't shift.
+            const handleStyle = (left: string, top: string) => ({
+              left, top,
+              width: handleSize,
+              height: handleSize,
+              transform: `translate(-50%, -50%) scale(${invZoom})`,
+              transformOrigin: 'center',
+            });
 
             return (
               <div
@@ -814,11 +828,27 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                           <div key={box.id} className={`absolute border-2 pointer-events-none ${box.inverse ? 'border-blue-400 bg-blue-400/10' : 'border-rose-400 bg-rose-400/10'}`}
                             style={{ left: `${box.x}%`, top: `${box.y}%`, width: `${box.width}%`, height: `${box.height}%` }}>
                             <button data-restore-handle
-                              className="absolute -top-2 -right-2 w-4 h-4 bg-rose-500 text-white rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto hover:bg-rose-600 z-50"
+                              className="absolute bg-rose-500 text-white rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto hover:bg-rose-600 z-50"
+                              style={{
+                                top: -8 * invZoom,
+                                right: -8 * invZoom,
+                                width: 16 * invZoom,
+                                height: 16 * invZoom,
+                                transform: `scale(${invZoom})`,
+                                transformOrigin: 'top right',
+                              }}
                               onClick={(e) => { e.stopPropagation(); handleDeleteRestoreBox(region.id, box.id); }}
                             >✕</button>
                             <button data-restore-handle
-                              className={`absolute -bottom-2 -right-2 w-4 h-4 rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto z-50 ${box.inverse ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-rose-500 text-white hover:bg-rose-600'}`}
+                              className={`absolute rounded-full flex items-center justify-center text-[8px] leading-none pointer-events-auto z-50 ${box.inverse ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-rose-500 text-white hover:bg-rose-600'}`}
+                              style={{
+                                bottom: -8 * invZoom,
+                                right: -8 * invZoom,
+                                width: 16 * invZoom,
+                                height: 16 * invZoom,
+                                transform: `scale(${invZoom})`,
+                                transformOrigin: 'bottom right',
+                              }}
                               onClick={(e) => { e.stopPropagation(); if (!onUpdateRestoreBoxes) return; const updated = (region.restoreBoxes || []).map(b => b.id === box.id ? { ...b, inverse: !b.inverse } : b); onUpdateRestoreBoxes(region.id, updated); }}
                             >{box.inverse ? '⊡' : '⊞'}</button>
                           </div>
@@ -853,34 +883,39 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 {/* ORIGINAL MODE: Resize Handles */}
                 {isSelected && isEditable && !region.isRecalculating && !restoreMode && (
                   <>
-                    <div className={`${handleBaseStyle} cursor-nw-resize`} style={{ left: '0%', top: '0%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'nw')} />
-                    <div className={`${handleBaseStyle} cursor-ne-resize`} style={{ left: '100%', top: '0%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'ne')} />
-                    <div className={`${handleBaseStyle} cursor-sw-resize`} style={{ left: '0%', top: '100%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'sw')} />
-                    <div className={`${handleBaseStyle} cursor-se-resize`} style={{ left: '100%', top: '100%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'se')} />
+                    <div className={`${handleBaseStyle} cursor-nw-resize`} style={handleStyle('0%', '0%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'nw')} />
+                    <div className={`${handleBaseStyle} cursor-ne-resize`} style={handleStyle('100%', '0%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'ne')} />
+                    <div className={`${handleBaseStyle} cursor-sw-resize`} style={handleStyle('0%', '100%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'sw')} />
+                    <div className={`${handleBaseStyle} cursor-se-resize`} style={handleStyle('100%', '100%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'se')} />
 
-                    <div className={`${handleBaseStyle} cursor-n-resize`} style={{ left: '50%', top: '0%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'n')} />
-                    <div className={`${handleBaseStyle} cursor-s-resize`} style={{ left: '50%', top: '100%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 's')} />
-                    <div className={`${handleBaseStyle} cursor-w-resize`} style={{ left: '0%', top: '50%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'w')} />
-                    <div className={`${handleBaseStyle} cursor-e-resize`} style={{ left: '100%', top: '50%', ...centerTransform }} onMouseDown={(e) => handleResizeMouseDown(e, region, 'e')} />
+                    <div className={`${handleBaseStyle} cursor-n-resize`} style={handleStyle('50%', '0%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'n')} />
+                    <div className={`${handleBaseStyle} cursor-s-resize`} style={handleStyle('50%', '100%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 's')} />
+                    <div className={`${handleBaseStyle} cursor-w-resize`} style={handleStyle('0%', '50%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'w')} />
+                    <div className={`${handleBaseStyle} cursor-e-resize`} style={handleStyle('100%', '50%')} onMouseDown={(e) => handleResizeMouseDown(e, region, 'e')} />
                   </>
                 )}
 
                 {/* ORIGINAL MODE: Action Buttons */}
                 {isSelected && !isManipulating && !region.isRecalculating && !restoreMode && (
                    <div
-                      className="absolute -top-9 left-1/2 -translate-x-1/2 flex gap-1 z-50"
+                      className="absolute left-1/2 flex gap-1 z-50"
+                      style={{
+                        top: -36 * invZoom,
+                        transform: `translateX(-50%) scale(${invZoom})`,
+                        transformOrigin: 'bottom center',
+                      }}
                       onMouseDown={(e) => e.stopPropagation()}
                    >
-                      {!disabled && onOcrRegion && showOcrButton && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOcrRegion(region.id);
-                            }}
-                            className={`w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:shadow-lg transition-all ${region.isOcrLoading ? 'opacity-70 cursor-wait' : ''}`}
-                            title={t(language, 'ocrBtn')}
-                            disabled={region.isOcrLoading}
-                          >
+                       {!disabled && onOcrRegion && showOcrButton && (
+                           <button
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               onOcrRegion(region.id);
+                             }}
+                             className={`w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all ${region.isOcrLoading ? 'opacity-70 cursor-wait' : ''}`}
+                             title={t(language, 'ocrBtn')}
+                             disabled={region.isOcrLoading}
+                           >
                             {region.isOcrLoading ? (
                                <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
                             ) : (
@@ -894,8 +929,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                               e.stopPropagation();
                               onOpenEditor(region.id);
                             }}
-                            className="w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:shadow-lg transition-all"
-                            title="Edit Patch (Brush/Text)"
+                             className="w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all"
+                             title="Edit Patch (Brush/Text)"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
                           </button>
@@ -906,8 +941,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                               e.stopPropagation();
                               resetRegion(region.id);
                             }}
-                            className="w-6 h-6 bg-skin-surface text-skin-text border border-skin-border rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:bg-skin-fill transition-all"
-                            title="Reset / Redo"
+                             className="w-6 h-6 bg-skin-surface text-skin-text border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-skin-fill transition-all"
+                             title="Reset / Redo"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                           </button>
@@ -918,7 +953,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                               e.stopPropagation();
                               toggleContextOnly(region.id);
                             }}
-                            className={`w-6 h-6 border rounded-full flex items-center justify-center shadow-md hover:scale-110 transition-all ${region.contextOnly ? 'bg-amber-100 text-amber-600 border-amber-400' : 'bg-skin-surface text-skin-muted border-skin-border'}`}
+                             className={`w-6 h-6 border rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all ${region.contextOnly ? 'bg-amber-100 text-amber-600 border-amber-400' : 'bg-skin-surface text-skin-muted border-skin-border'}`}
                             title={region.contextOnly ? 'Context Only (click to enable translation)' : 'Mark as Context Only'}
                           >
                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
@@ -930,8 +965,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                               e.stopPropagation();
                               removeRegion(region.id);
                             }}
-                            className="w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center shadow-md hover:scale-110 hover:bg-rose-50 transition-all"
-                            title="Delete Region"
+                             className="w-6 h-6 bg-skin-surface text-rose-500 border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-rose-50 transition-all"
+                             title="Delete Region"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                           </button>
@@ -941,12 +976,20 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
                 {/* ORIGINAL MODE: Status Badge */}
                 {isOriginalMode && (region.status !== 'pending' || region.isRecalculating) && !isManipulating && (
-                  <div className={`absolute top-0.5 left-0.5 text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
-                     region.isRecalculating ? 'bg-yellow-100/90 text-yellow-700 border-yellow-200' :
-                     region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
-                     region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
-                     'bg-rose-100/90 text-rose-700 border-rose-200'
-                  }`}>
+                  <div
+                    className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
+                      region.isRecalculating ? 'bg-yellow-100/90 text-yellow-700 border-yellow-200' :
+                      region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
+                      region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
+                      'bg-rose-100/90 text-rose-700 border-rose-200'
+                    }`}
+                    style={{
+                      top: 2 * invZoom,
+                      left: 2 * invZoom,
+                      transform: `scale(${invZoom})`,
+                      transformOrigin: 'top left',
+                    }}
+                  >
                     {region.isRecalculating ? 'REFINE' : t(language, `status_${region.status}` as any)}
                   </div>
                 )}
