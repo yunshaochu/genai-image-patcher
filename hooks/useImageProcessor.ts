@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -106,7 +106,11 @@ export function useImageProcessor(
                 
                 // Depad Square Logic
                 if (config.enableSquareFill && paddingInfo) {
-                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
+                    if (config.squareFillMode === 'ratio') {
+                        apiResultBase64 = await depadImageByRatio(apiResultBase64, paddingInfo);
+                    } else {
+                        apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
+                    }
                 }
 
                 if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -221,7 +225,11 @@ export function useImageProcessor(
                 let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
                 
                 if (config.enableSquareFill && paddingInfo) {
-                    apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
+                    if (config.squareFillMode === 'ratio') {
+                        apiResultBase64 = await depadImageByRatio(apiResultBase64, paddingInfo);
+                    } else {
+                        apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
+                    }
                 }
 
                 if (signal.aborted) return;

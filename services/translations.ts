@@ -66,7 +66,11 @@ export const translations = {
     customModel: "自定义...",
     modelIdPlaceholder: "输入模型 ID",
     squareFill: "正方形补全 (Square Fill)",
-    squareFillDesc: "发送前将图片填充为 1:1 正方形（防止被强制拉伸），生成后自动裁剪回原比例。适用于返回图被挤压变形的 API。",
+    squareFillDesc: "发送前将图片靠左上角填充为 1:1 正方形（防止被强制拉伸），生成后自动裁剪回原比例。适用于返回图被挤压变形的 API。",
+    squareFillMode: "去黑边方式",
+    squareFillModeRatio: "按比例裁剪",
+    squareFillModeDetect: "检测黑边+安全边距",
+    squareFillMargin: "安全边距 (px)",
     
     // Performance
     performanceMode: "性能模式",
@@ -306,7 +310,11 @@ export const translations = {
     customModel: "Custom...",
     modelIdPlaceholder: "Model ID",
     squareFill: "Square Fill Padding",
-    squareFillDesc: "Pad input image to a 1:1 square (centering content) before sending, then crop the result back. Fixes distortion when API forces square output.",
+    squareFillDesc: "Pad input image to a 1:1 square (anchored top-left) before sending, then crop the result back. Fixes distortion when API forces square output.",
+    squareFillMode: "De-pad mode",
+    squareFillModeRatio: "By ratio",
+    squareFillModeDetect: "Detect + margin",
+    squareFillMargin: "Safety margin (px)",
     
     // Performance
     performanceMode: "Performance Mode",

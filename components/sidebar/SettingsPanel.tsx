@@ -172,18 +172,39 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                 </label>
                 {config.enableSquareFill && (
-                    <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30">
-                        <label className="flex items-center gap-2 text-[11px]">
-                            <span className="text-skin-muted">安全边距 (px)</span>
-                            <input
-                                type="number"
-                                min={0}
-                                max={20}
-                                value={config.squareFillMargin}
-                                onChange={(e) => onChange('squareFillMargin', Math.max(0, Math.min(20, Number(e.target.value))))}
-                                className="w-14 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
-                            />
-                        </label>
+                    <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30 space-y-2">
+                        {/* Mode selector */}
+                        <div className="flex items-center gap-2 text-[11px]">
+                            <span className="text-skin-muted">{t(lang, 'squareFillMode')}</span>
+                            <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border text-[10px]">
+                                <button 
+                                    onClick={() => onChange('squareFillMode', 'ratio')}
+                                    className={`px-2 py-0.5 rounded-sm transition-all ${config.squareFillMode === 'ratio' ? 'bg-skin-surface shadow-sm text-skin-primary font-medium' : 'text-skin-muted hover:text-skin-text'}`}
+                                >
+                                    {t(lang, 'squareFillModeRatio')}
+                                </button>
+                                <button 
+                                    onClick={() => onChange('squareFillMode', 'detect')}
+                                    className={`px-2 py-0.5 rounded-sm transition-all ${config.squareFillMode === 'detect' ? 'bg-skin-surface shadow-sm text-skin-primary font-medium' : 'text-skin-muted hover:text-skin-text'}`}
+                                >
+                                    {t(lang, 'squareFillModeDetect')}
+                                </button>
+                            </div>
+                        </div>
+                        {/* Safety margin — only relevant for detect mode */}
+                        {config.squareFillMode === 'detect' && (
+                            <label className="flex items-center gap-2 text-[11px]">
+                                <span className="text-skin-muted">{t(lang, 'squareFillMargin')}</span>
+                                <input
+                                    type="number"
+                                    min={0}
+                                    max={20}
+                                    value={config.squareFillMargin}
+                                    onChange={(e) => onChange('squareFillMargin', Math.max(0, Math.min(20, Number(e.target.value))))}
+                                    className="w-14 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
+                                />
+                            </label>
+                        )}
                     </div>
                 )}
             </div>

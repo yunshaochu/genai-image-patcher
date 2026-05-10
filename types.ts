@@ -70,6 +70,8 @@ export type ProcessingMode = 'api' | 'manual';
 
 export type PerformanceMode = 'unlimited' | 'balanced';
 
+export type SquareFillMode = 'ratio' | 'detect';
+
 export interface AppConfig {
   prompt: string;
   // Execution Mode is now effectively handled by concurrencyLimit
@@ -103,7 +105,8 @@ export interface AppConfig {
   openaiModel: string;
   openaiStream: boolean; // New: Stream Toggle
   enableSquareFill: boolean; // New: Pad image to 1:1 square before sending
-  squareFillMargin: number; // px: safety margin to trim from each edge after depadding
+  squareFillMargin: number; // px: safety margin to trim from each edge after depadding (only for 'detect' mode)
+  squareFillMode: SquareFillMode; // 'ratio' = crop by proportion, 'detect' = scan dark pixels + margin
   
   // Gemini Specifics
   geminiApiKey: string;

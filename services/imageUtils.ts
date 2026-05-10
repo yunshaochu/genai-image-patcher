@@ -4,6 +4,12 @@ import { Region, UploadedImage, RestoreBox } from '../types';
 export interface PaddingInfo {
     originalWidth: number;
     originalHeight: number;
+    /** Which side(s) received black padding.
+     *  'right'  = image wider than tall → black on the right
+     *  'bottom' = image taller than wide → black on the bottom
+     *  'none'   = already square
+     */
+    paddedSide: 'right' | 'bottom' | 'none';
 }
 
 const releaseCanvas = (canvas: HTMLCanvasElement) => {
@@ -26,8 +32,9 @@ export const loadImage = (url: string): Promise<HTMLImageElement> => {
 
 /**
  * Pads an image (from base64) to a 1:1 square canvas.
- * The original image is centered.
- * The extra space is filled with black.
+ * The original image is anchored at the top-left corner (0,0).
+ * Black padding is added only on the right and/or bottom side,
+ * so the content is always flush with the left and top edges.
  */
 export const padImageToSquare = async (
     base64: string
@@ -43,14 +50,17 @@ export const padImageToSquare = async (
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error("Could not get canvas context for padding");
 
+    // Fill entire canvas black first
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, maxDim, maxDim);
 
-    // Calculate center position
-    const x = (maxDim - w) / 2;
-    const y = (maxDim - h) / 2;
+    // Draw image anchored at top-left (0,0) — padding goes to right/bottom only
+    ctx.drawImage(img, 0, 0);
 
-    ctx.drawImage(img, x, y);
+    // Determine which side got the padding
+    let paddedSide: PaddingInfo['paddedSide'] = 'none';
+    if (w > h) paddedSide = 'bottom';
+    else if (h > w) paddedSide = 'right';
 
     const result = canvas.toDataURL('image/png');
     releaseCanvas(canvas);
@@ -58,16 +68,71 @@ export const padImageToSquare = async (
         base64: result,
         info: {
             originalWidth: w,
-            originalHeight: h
+            originalHeight: h,
+            paddedSide
         }
     };
+};
+
+/**
+ * De-pads by simply cropping the known padding proportion.
+ * Because padImageToSquare anchors content at (0,0), the black padding
+ * is always on the right and/or bottom. We compute the exact crop region
+ * from the original dimensions — no pixel scanning needed.
+ */
+export const depadImageByRatio = async (
+    squareBase64: string,
+    info: PaddingInfo
+): Promise<string> => {
+    // If original was already square, nothing to depad
+    if (info.paddedSide === 'none') {
+        return squareBase64;
+    }
+
+    const img = await loadImage(squareBase64);
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+
+    // Since the image was anchored at (0,0), the original content
+    // occupies the top-left rectangle of (originalWidth × originalHeight).
+    // The API may have returned a different total size, so we calculate
+    // the crop as a proportion of the returned image.
+    let sx: number, sy: number, sw: number, sh: number;
+
+    if (info.paddedSide === 'bottom') {
+        // Original was wider than tall → black padding was on the bottom
+        // Content occupies top portion with height = originalHeight / originalWidth * totalWidth
+        sw = w;
+        sh = w * (info.originalHeight / info.originalWidth);
+        sx = 0;
+        sy = 0;
+    } else {
+        // Original was taller than wide → black padding was on the right
+        // Content occupies left portion with width = originalWidth / originalHeight * totalHeight
+        sh = h;
+        sw = h * (info.originalWidth / info.originalHeight);
+        sx = 0;
+        sy = 0;
+    }
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = info.originalWidth;
+    outCanvas.height = info.originalHeight;
+    const outCtx = outCanvas.getContext('2d');
+    if (!outCtx) throw new Error("Could not get canvas context for depadding");
+
+    outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
+
+    const result = outCanvas.toDataURL('image/png');
+    releaseCanvas(outCanvas);
+    return result;
 };
 
 /**
  * Extracts the original content from a square image by detecting black padding
  * bars added by padImageToSquare. Scans each edge inward to find where the
  * dark padding ends and content begins, handling AI outputs where content may
- * have shifted. Falls back to the centered assumption if detection fails.
+ * have shifted. Falls back to the top-left anchored assumption if detection fails.
  */
 export const depadImageFromSquare = async (
     squareBase64: string,
@@ -168,16 +233,19 @@ export const depadImageFromSquare = async (
         sw = contentW;
         sh = contentH;
     } else {
-        // Fallback: centered assumption based on original proportions
-        if (info.originalWidth >= info.originalHeight) {
+        // Fallback: top-left anchored assumption based on original proportions
+        // (padImageToSquare anchors content at 0,0 — padding is on right/bottom)
+        if (info.paddedSide === 'bottom') {
+            // Wider than tall → black was on the bottom
             sw = w;
             sh = w * (info.originalHeight / info.originalWidth);
         } else {
+            // Taller than wide → black was on the right
             sh = h;
             sw = h * (info.originalWidth / info.originalHeight);
         }
-        sx = (w - sw) / 2;
-        sy = (h - sh) / 2;
+        sx = 0;
+        sy = 0;
     }
 
     const outCanvas = document.createElement('canvas');

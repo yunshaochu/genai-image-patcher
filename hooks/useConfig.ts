@@ -3,15 +3,15 @@ import { useState, useEffect } from 'react';
 import { AppConfig } from '../types';
 
 const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
-const DEFAULT_PROMPT = `0. 使用banana pro
-1. 请用中文翻译替换掉图片里的日文。
+const DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体。
 2. 生成一张只有中文的图
-3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文`;
+3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
+4. 图片大小和分辨率不许变，必须严格维持我发给你的分辨率。这个分辨率对我有用`;
 
-export const TRANSLATION_MODE_IMAGE_PROMPT = `0. 使用banana pro
-1. 请用中文翻译替换掉图片里的日文。
+export const TRANSLATION_MODE_IMAGE_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体。
 2. 生成一张只有中文的图
-3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文`;
+3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
+4. 图片大小和分辨率不许变，必须严格维持我发给你的分辨率。这个分辨率对我有用`;
 
 export const DEFAULT_TRANSLATION_PROMPT = `> **角色设定**：
 > 你是专业的漫画汉化组成员，负责提取文本、定位和翻译。
@@ -75,7 +75,8 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiModel: 'gemini-imagen',
   openaiStream: false, 
   enableSquareFill: false, // Default false
-  squareFillMargin: 2, // px default safety margin for square fill depadding
+  squareFillMargin: 2, // px default safety margin for square fill depadding (detect mode only)
+  squareFillMode: 'ratio', // Default to ratio-based crop (no pixel scanning needed)
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
@@ -144,6 +145,10 @@ export function useConfig() {
         // Ensure squareFillMargin exists
         if (typeof migratedConfig.squareFillMargin === 'undefined') {
             migratedConfig.squareFillMargin = 2;
+        }
+        // Ensure squareFillMode exists
+        if (typeof migratedConfig.squareFillMode === 'undefined') {
+            migratedConfig.squareFillMode = 'ratio';
         }
         
         // Ensure useFullImageMasking exists
