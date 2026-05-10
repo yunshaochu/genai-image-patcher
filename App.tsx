@@ -9,7 +9,7 @@ import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage,
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
-import { useConfig, TRANSLATION_MODE_IMAGE_PROMPT } from './hooks/useConfig';
+import { useConfig, TRANSLATION_MODE_IMAGE_PROMPT, DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT, DEFAULT_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
 
@@ -928,7 +928,22 @@ export default function App() {
                                        type="checkbox" 
                                        className="sr-only peer"
                                        checked={config.sendMaskedContextForTranslation}
-                                       onChange={(e) => updateConfig('sendMaskedContextForTranslation', e.target.checked)}
+                                         onChange={(e) => {
+                                             const enabled = e.target.checked;
+                                             const currentPrompt = config.translationPrompt;
+                                             // Save current prompt to the slot we're leaving
+                                             const oldSlotKey = !enabled ? 'translationPromptWithContext' : 'translationPromptNoContext';
+                                             // Load from the slot we're entering; fall back to system default if empty
+                                             const newSlotKey = enabled ? 'translationPromptWithContext' : 'translationPromptNoContext';
+                                             const cachedPrompt = (config as any)[newSlotKey];
+                                             const newPrompt = cachedPrompt || (enabled ? TRANSLATION_CONTEXT_SYSTEM_PROMPT : DEFAULT_TRANSLATION_PROMPT);
+                                             setConfig(prev => ({
+                                                 ...prev,
+                                                 sendMaskedContextForTranslation: enabled,
+                                                 [oldSlotKey]: currentPrompt,
+                                                 translationPrompt: newPrompt,
+                                             }));
+                                         }}
                                    />
                                    <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
                                </label>
@@ -981,11 +996,19 @@ export default function App() {
                           <div>
                               <div className="flex justify-between items-center mb-1">
                                   <label className="text-[10px] text-skin-muted block">{t(config.language, 'translationPromptLabel')}</label>
-                                  <button 
-                                      onClick={() => updateConfig('translationPrompt', TRANSLATION_MODE_IMAGE_PROMPT)}
-                                      className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
-                                      title={t(config.language, 'resetToDefault')}
-                                  >
+                                    <button 
+                                        onClick={() => {
+                                            const defaultPrompt = config.sendMaskedContextForTranslation ? TRANSLATION_CONTEXT_SYSTEM_PROMPT : DEFAULT_TRANSLATION_PROMPT;
+                                            const slotKey = config.sendMaskedContextForTranslation ? 'translationPromptWithContext' : 'translationPromptNoContext';
+                                            setConfig(prev => ({
+                                                ...prev,
+                                                translationPrompt: defaultPrompt,
+                                                [slotKey]: '',
+                                            }));
+                                        }}
+                                       className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                                       title={t(config.language, 'resetToDefault')}
+                                   >
                                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                                       {t(config.language, 'reset')}
                                   </button>

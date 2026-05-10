@@ -141,6 +141,10 @@ export interface AppConfig {
   translationApiKey: string;
   translationModel: string;
   translationPrompt: string;
+  /** User's custom prompt for translation WITHOUT masked context (cached) */
+  translationPromptNoContext?: string;
+  /** User's custom prompt for translation WITH masked context (cached) */
+  translationPromptWithContext?: string;
 }
 
 export enum ProcessingStep {

@@ -9,6 +9,7 @@ import { Section } from './sidebar/Section';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
+import { DEFAULT_PROMPT } from '../hooks/useConfig';
 
 interface SidebarProps {
   config: AppConfig;
@@ -468,7 +469,17 @@ const Sidebar: React.FC<SidebarProps> = ({
           <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
              <div className="space-y-3">
                <div>
-                  <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'promptGlobalLabel')}</label>
+                   <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center justify-between">
+                     <span>{t(lang, 'promptGlobalLabel')}</span>
+                     <button 
+                       onClick={() => handleConfigChange('prompt', DEFAULT_PROMPT)}
+                       className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                       title={t(lang, 'resetToDefault')}
+                     >
+                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                       {t(lang, 'reset')}
+                     </button>
+                   </label>
                   <textarea 
                     value={config.prompt}
                     onChange={(e) => handleConfigChange('prompt', e.target.value)}
