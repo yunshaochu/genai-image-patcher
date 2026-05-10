@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { UploadedImage, AppConfig, Region } from '../../types';
 import { t } from '../../services/translations';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion } from '../../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, releaseObjectURL } from '../../services/imageUtils';
 
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
@@ -20,11 +20,20 @@ export const FullImageMaskRow: React.FC<{
         const imgEl = await loadImage(image.previewUrl);
         let preview: string;
         if (config.useInvertedMasking) {
-            preview = createInvertedMultiMaskedFullImage(imgEl, image.regions);
+            preview = await createInvertedMultiMaskedFullImage(imgEl, image.regions);
         } else {
-            preview = createMultiMaskedFullImage(imgEl, image.regions);
+            preview = await createMultiMaskedFullImage(imgEl, image.regions);
         }
-        if (active) setMaskedPreview(preview);
+        if (active) {
+          // Release old preview URL before setting new one
+          setMaskedPreview(prev => {
+            if (prev) releaseObjectURL(prev);
+            return preview;
+          });
+        } else {
+          // Component unmounted — release the URL we just created
+          releaseObjectURL(preview);
+        }
       } catch (e) {
         console.error("Failed to create masked preview", e);
       }
@@ -149,8 +158,15 @@ export const ManualPatchRow: React.FC<{
     const generateCrop = async () => {
       try {
         const imgEl = await loadImage(image.previewUrl);
-        const crop = await cropRegion(imgEl, region);
-        if (active) setSourceCrop(crop);
+        const cropUrl = await cropRegion(imgEl, region);
+        if (active) {
+          setSourceCrop(prev => {
+            if (prev) releaseObjectURL(prev);
+            return cropUrl;
+          });
+        } else {
+          releaseObjectURL(cropUrl);
+        }
       } catch (e) {
         console.error("Failed to crop for manual view", e);
       }

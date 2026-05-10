@@ -5,7 +5,7 @@ import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import PatchEditor, { TextObject } from './components/PatchEditor';
 import HelpModal from './components/HelpModal';
-import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -72,12 +72,8 @@ export default function App() {
   const operationVersionRef = useRef<number>(0);
 
   // Custom wrapper for manual patch updates to handle Full Image row special case
-  const handleManualPatchUpdate = (imageId: string, regionId: string, base64: string) => {
-    // We can't do async inside the setImages directly cleanly if we want to run extractCropFromFullImage loop
-    // So we handle the special case outside setImages first if needed, OR we trigger a side effect.
-    
-    // For 'special-full-image-mask', we need to update fullAiResultUrl AND update all regions.
-    // Since extractCropFromFullImage is async, we should handle it here.
+  const handleManualPatchUpdate = (imageId: string, regionId: string, imageDataUrl: string) => {
+    // imageDataUrl is now typically an Object URL (blob:), but may still be base64 from paste
     
     if (regionId === 'special-full-image-mask') {
         const targetImg = images.find(img => img.id === imageId);
@@ -87,38 +83,35 @@ export default function App() {
         (async () => {
             const updatedRegions: Region[] = [];
             
-            // If Inverted Masking, we don't necessarily extract crops for patches (because the result IS the background),
-            // but we might still want to mark them completed.
-            // If Standard Masking, we MUST extract crops.
-            
             if (config.useInvertedMasking) {
-                // Inverted Mode: Just mark all as completed
                 for (const r of targetImg.regions) {
                     updatedRegions.push({ ...r, status: 'completed' });
                 }
-                // Also trigger stitch
-                const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, base64, updatedRegions);
+                const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, imageDataUrl, updatedRegions);
                 
                 setImages(prev => prev.map(img => {
                     if (img.id !== imageId) return img;
                     const currentHistory = [...img.history];
                     if (currentHistory[img.historyIndex]) {
-                       currentHistory[img.historyIndex].fullAiResultUrl = base64;
+                       currentHistory[img.historyIndex].fullAiResultUrl = imageDataUrl;
                     }
+                    // Release old URLs
+                    if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
+                    if (img.finalResultUrl) releaseObjectURL(img.finalResultUrl);
+
                     return { 
                         ...img, 
-                        fullAiResultUrl: base64,
+                        fullAiResultUrl: imageDataUrl,
                         finalResultUrl: stitchedUrl,
                         regions: updatedRegions, 
                         history: currentHistory 
                     };
                 }));
             } else {
-                // Standard Mode: Extract all crops
                 for (const r of targetImg.regions) {
                     try {
                         const crop = await extractCropFromFullImage(
-                            base64, 
+                            imageDataUrl, 
                             r, 
                             targetImg.originalWidth, 
                             targetImg.originalHeight,
@@ -135,11 +128,13 @@ export default function App() {
                     if (img.id !== imageId) return img;
                     const currentHistory = [...img.history];
                     if (currentHistory[img.historyIndex]) {
-                       currentHistory[img.historyIndex].fullAiResultUrl = base64;
+                       currentHistory[img.historyIndex].fullAiResultUrl = imageDataUrl;
                     }
+                    if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
+
                     return { 
                         ...img, 
-                        fullAiResultUrl: base64,
+                        fullAiResultUrl: imageDataUrl,
                         regions: updatedRegions, 
                         history: currentHistory 
                     };
@@ -162,15 +157,19 @@ export default function App() {
                     x: 0, y: 0, width: 100, height: 100,
                     type: 'rect',
                     status: 'completed',
-                    processedImageBase64: base64,
+                    processedImageBase64: imageDataUrl,
                     source: 'manual' as const,
                     anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
                 };
                updatedRegions = [...img.regions, fullRegion];
             } else {
-                updatedRegions = img.regions.map(r => 
-                  r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
-                );
+               // Release old region URL before replacing
+               const oldRegion = img.regions.find(r => r.id === regionId);
+               if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
+
+               updatedRegions = img.regions.map(r => 
+                  r.id === regionId ? { ...r, processedImageBase64: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
+               );
             }
 
             const currentHistory = [...img.history];
@@ -354,8 +353,10 @@ export default function App() {
      ));
      try {
          const imgEl = await loadImage(img.previewUrl);
-         const crop = await cropRegion(imgEl, region);
-         const text = await recognizeText(crop, config);
+         const cropUrl = await cropRegion(imgEl, region);
+         const text = await recognizeText(cropUrl, config);
+         // Release the temporary crop URL after OCR is done
+         releaseObjectURL(cropUrl);
          setImages(prev => prev.map(currentImg => 
             currentImg.id === imageId 
               ? {
@@ -408,6 +409,8 @@ export default function App() {
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
+          // Release the temporary stitch URL after download trigger
+          releaseObjectURL(stitchedUrl);
       } catch (e) {
           console.error("Failed to stitch for download", e);
           setErrorMsg("Failed to generate download image.");
@@ -418,7 +421,6 @@ export default function App() {
   const handleApplyAsOriginalWrapper = async () => {
       if (!selectedImage) return;
       try {
-          // Perform stitch only when applying
           let stitchedUrl: string;
           if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
               stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);

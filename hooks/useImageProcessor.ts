@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo, urlToBase64, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -70,29 +70,34 @@ export function useImageProcessor(
             try {
                 if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
                 
-                // Handle Inverted Masking
-                let inputImageBase64;
+                // Handle Inverted Masking — now returns Object URL
+                let inputImageUrl: string;
                 if (config.useInvertedMasking) {
-                    inputImageBase64 = createInvertedMultiMaskedFullImage(imgElement, allActiveRegions);
+                    inputImageUrl = await createInvertedMultiMaskedFullImage(imgElement, allActiveRegions);
                 } else {
-                    inputImageBase64 = createMultiMaskedFullImage(imgElement, allActiveRegions);
+                    inputImageUrl = await createMultiMaskedFullImage(imgElement, allActiveRegions);
                 }
 
-                // Square Fill Logic
-                let payloadBase64 = inputImageBase64;
+                // Square Fill Logic — returns Object URL
+                let payloadUrl = inputImageUrl;
                 let paddingInfo: PaddingInfo | null = null;
                 if (config.enableSquareFill) {
-                    const padded = await padImageToSquare(inputImageBase64);
-                    payloadBase64 = padded.base64;
+                    const padded = await padImageToSquare(inputImageUrl);
+                    payloadUrl = padded.url;
                     paddingInfo = padded.info;
+                    // Release the non-padded input — we now have the padded version
+                    releaseObjectURL(inputImageUrl);
                 }
 
+                // Convert to base64 ONLY at the API boundary
                 let translationText = '';
                 if (config.enableTranslationMode) {
                    setProcessingState(ProcessingStep.API_CALLING); 
-                   // Use payload (padded or not) for translation too
+                   const payloadBase64 = await urlToBase64(payloadUrl);
                    translationText = await generateTranslation(payloadBase64, config, signal);
+                   // payloadBase64 string is now eligible for GC
                 }
+                
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();
                 if (imageSnapshot.customPrompt) {
@@ -102,22 +107,44 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
+                // Convert to base64 ONLY for API call
+                const payloadBase64ForAPI = await urlToBase64(payloadUrl);
+                let apiResultBase64 = await generateRegionEdit(payloadBase64ForAPI, effectivePrompt, config, signal);
+                // apiResultBase64 is a data:image/... string from the API
                 
-                // Depad Square Logic
+                // Release the payload URL — we're done with it
+                releaseObjectURL(payloadUrl);
+
+                // Convert API base64 result to Object URL for further processing
+                let apiResultUrl: string;
+                if (apiResultBase64.startsWith('data:')) {
+                    // Convert the base64 result to a Blob Object URL to save memory
+                    const [header, data] = apiResultBase64.split(',');
+                    const mimeMatch = header.match(/:(.*?);/);
+                    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+                    const binary = atob(data);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    apiResultUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+                    apiResultBase64 = ''; // Allow GC of the large base64 string
+                } else {
+                    apiResultUrl = apiResultBase64; // Already a URL
+                    apiResultBase64 = '';
+                }
+                
+                // Depad — returns Object URL
                 if (config.enableSquareFill && paddingInfo) {
-                    if (config.squareFillMode === 'ratio') {
-                        apiResultBase64 = await depadImageByRatio(apiResultBase64, paddingInfo);
-                    } else {
-                        apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
-                    }
+                    const depadResultUrl = config.squareFillMode === 'ratio'
+                        ? await depadImageByRatio(apiResultUrl, paddingInfo)
+                        : await depadImageFromSquare(apiResultUrl, paddingInfo, config.squareFillMargin);
+                    releaseObjectURL(apiResultUrl);
+                    apiResultUrl = depadResultUrl;
                 }
 
                 if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
                 if (config.useInvertedMasking) {
-                    // Inverted Mode: The result IS the background.
-                    const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultBase64, regionsToProcess);
+                    const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultUrl, regionsToProcess);
                     regionsToProcess.forEach(r => {
                         regionsMap.set(r.id, { ...r, status: 'completed' as const });
                     });
@@ -126,12 +153,23 @@ export function useImageProcessor(
                     setImages(prev => prev.map(img => {
                         if (img.id !== imageSnapshot.id) return img;
                         const updatedHistory = [...img.history];
-                        if (updatedHistory[img.historyIndex]) {
-                           updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
+                        // Release old fullAiResultUrl in history if present
+                        if (updatedHistory[img.historyIndex]?.fullAiResultUrl) {
+                            releaseObjectURL(updatedHistory[img.historyIndex].fullAiResultUrl);
                         }
+                        if (updatedHistory[img.historyIndex]) {
+                           updatedHistory[img.historyIndex] = {
+                               ...updatedHistory[img.historyIndex],
+                               fullAiResultUrl: apiResultUrl 
+                           };
+                        }
+                        // Release old finalResultUrl
+                        if (img.finalResultUrl) releaseObjectURL(img.finalResultUrl);
+                        if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
+
                         return { 
                             ...img, 
-                            fullAiResultUrl: apiResultBase64, 
+                            fullAiResultUrl: apiResultUrl, 
                             finalResultUrl: stitchedUrl,
                             regions: currentAllRegions, 
                             history: updatedHistory 
@@ -140,14 +178,14 @@ export function useImageProcessor(
                 } else {
                     // Standard Masking Mode
                     for (const region of regionsToProcess) {
-                        const finalRegionImageBase64 = await extractCropFromFullImage(
-                            apiResultBase64, 
+                        const finalRegionImageUrl = await extractCropFromFullImage(
+                            apiResultUrl, 
                             region, 
                             imgElement.naturalWidth, 
                             imgElement.naturalHeight,
                             config.fullImageOpaquePercent
                         );
-                        const completedRegion = { ...region, processedImageBase64: finalRegionImageBase64, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                        const completedRegion = { ...region, processedImageBase64: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                         regionsMap.set(region.id, completedRegion);
                     }
 
@@ -156,10 +194,18 @@ export function useImageProcessor(
                     setImages(prev => prev.map(img => {
                         if (img.id !== imageSnapshot.id) return img;
                         const updatedHistory = [...img.history];
-                        if (updatedHistory[img.historyIndex]) {
-                           updatedHistory[img.historyIndex].fullAiResultUrl = apiResultBase64;
+                        if (updatedHistory[img.historyIndex]?.fullAiResultUrl) {
+                            releaseObjectURL(updatedHistory[img.historyIndex].fullAiResultUrl);
                         }
-                        return { ...img, fullAiResultUrl: apiResultBase64, regions: currentAllRegions, history: updatedHistory };
+                        if (updatedHistory[img.historyIndex]) {
+                           updatedHistory[img.historyIndex] = {
+                               ...updatedHistory[img.historyIndex],
+                               fullAiResultUrl: apiResultUrl 
+                           };
+                        }
+                        if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
+
+                        return { ...img, fullAiResultUrl: apiResultUrl, regions: currentAllRegions, history: updatedHistory };
                     }));
                 }
             } catch (err: any) {
@@ -176,14 +222,15 @@ export function useImageProcessor(
         }
 
         // Pre-generate masked full image as context for translation (compressed, shared across all regions)
-        let maskedContextBase64: string | undefined;
+        let maskedContextUrl: string | undefined;
         if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
             try {
-                const fullMasked = createMultiMaskedFullImage(imgElement, allActiveRegions);
-                maskedContextBase64 = await compressImage(fullMasked, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
+                const fullMaskedUrl = await createMultiMaskedFullImage(imgElement, allActiveRegions);
+                maskedContextUrl = await compressImage(fullMaskedUrl, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
+                releaseObjectURL(fullMaskedUrl);
             } catch (e) {
                 console.warn('Failed to generate masked context image for translation:', e);
-                maskedContextBase64 = undefined;
+                maskedContextUrl = undefined;
             }
         }
 
@@ -191,23 +238,34 @@ export function useImageProcessor(
         const processRegionTask = async (region: Region) => {
             if (signal.aborted) return;
             await globalSemaphore.acquire();
+            // Track URLs created in this task for cleanup on error
+            let croppedUrl: string | undefined;
+            let paddedUrl: string | undefined;
+            let apiResultUrl: string | undefined;
+            
             try {
                 if (signal.aborted) return;
-                const inputImageBase64 = await cropRegion(imgElement, region);
+                croppedUrl = await cropRegion(imgElement, region);
                 
-                let payloadBase64 = inputImageBase64;
+                let payloadUrl = croppedUrl;
                 let paddingInfo: PaddingInfo | null = null;
                 if (config.enableSquareFill) {
-                    const padded = await padImageToSquare(inputImageBase64);
-                    payloadBase64 = padded.base64;
+                    const padded = await padImageToSquare(croppedUrl);
+                    paddedUrl = padded.url;
+                    payloadUrl = paddedUrl;
                     paddingInfo = padded.info;
+                    // Release the non-padded crop — we now have the padded version
+                    releaseObjectURL(croppedUrl);
+                    croppedUrl = undefined;
                 }
 
                 if (signal.aborted) return;
                 let translationText = '';
                 if (config.enableTranslationMode) {
                    setProcessingState(ProcessingStep.API_CALLING); 
-                   translationText = await generateTranslation(payloadBase64, config, signal, maskedContextBase64);
+                   const payloadBase64 = await urlToBase64(payloadUrl);
+                   const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
+                   translationText = await generateTranslation(payloadBase64, config, signal, contextBase64);
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();
@@ -222,19 +280,48 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                let apiResultBase64 = await generateRegionEdit(payloadBase64, effectivePrompt, config, signal);
+                // Convert to base64 ONLY for the API call
+                const payloadBase64ForAPI = await urlToBase64(payloadUrl);
+                let apiResultBase64 = await generateRegionEdit(payloadBase64ForAPI, effectivePrompt, config, signal);
                 
+                // Release payload URL — done with it
+                releaseObjectURL(payloadUrl);
+                if (paddedUrl) paddedUrl = undefined;
+                if (croppedUrl) { releaseObjectURL(croppedUrl); croppedUrl = undefined; }
+
+                // Convert API base64 result to Object URL
+                if (apiResultBase64.startsWith('data:')) {
+                    const [header, data] = apiResultBase64.split(',');
+                    const mimeMatch = header.match(/:(.*?);/);
+                    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+                    const binary = atob(data);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    apiResultUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+                    apiResultBase64 = ''; // Allow GC
+                } else {
+                    apiResultUrl = apiResultBase64;
+                    apiResultBase64 = '';
+                }
+                
+                // Depad
                 if (config.enableSquareFill && paddingInfo) {
-                    if (config.squareFillMode === 'ratio') {
-                        apiResultBase64 = await depadImageByRatio(apiResultBase64, paddingInfo);
-                    } else {
-                        apiResultBase64 = await depadImageFromSquare(apiResultBase64, paddingInfo, config.squareFillMargin);
-                    }
+                    const depadResultUrl = config.squareFillMode === 'ratio'
+                        ? await depadImageByRatio(apiResultUrl, paddingInfo)
+                        : await depadImageFromSquare(apiResultUrl, paddingInfo, config.squareFillMargin);
+                    releaseObjectURL(apiResultUrl);
+                    apiResultUrl = depadResultUrl;
                 }
 
                 if (signal.aborted) return;
-                const completedRegion = { ...region, processedImageBase64: apiResultBase64, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+
+                // Release old region URL before setting new one
+                const oldRegion = regionsMap.get(region.id);
+                if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
+
+                const completedRegion = { ...region, processedImageBase64: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 regionsMap.set(region.id, completedRegion);
+                apiResultUrl = undefined; // Ownership transferred to state
                 
                 const currentAllRegions = Array.from(regionsMap.values());
                 
@@ -244,6 +331,11 @@ export function useImageProcessor(
                 }));
             } catch (err: any) {
                 if (err.name === 'AbortError') return;
+                // Clean up any URLs we created in this task
+                if (apiResultUrl) releaseObjectURL(apiResultUrl);
+                if (paddedUrl) releaseObjectURL(paddedUrl);
+                if (croppedUrl) releaseObjectURL(croppedUrl);
+
                 const failedRegion = { ...region, status: 'failed' as const };
                 regionsMap.set(region.id, failedRegion);
                 setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
@@ -252,6 +344,9 @@ export function useImageProcessor(
             }
         };
         await runWithConcurrency(regionsToProcess, config.concurrencyLimit, processRegionTask, signal, 0);
+
+        // Release shared context URL after all regions are done
+        if (maskedContextUrl) releaseObjectURL(maskedContextUrl);
     };
 
     const handleProcess = async (processAll: boolean) => {

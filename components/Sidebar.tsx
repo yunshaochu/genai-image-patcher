@@ -185,6 +185,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       // Process images sequentially to avoid OOM with many images
       for (const img of imagesToZip) {
         let targetUrl = img.finalResultUrl || img.previewUrl;
+        let needsStitchRelease = false;
         
         const hasPatches = img.regions.some(r => r.status === 'completed');
         if (hasPatches && !img.isSkipped) {
@@ -194,6 +195,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                } else {
                    targetUrl = await stitchImage(img.previewUrl, img.regions);
                }
+               needsStitchRelease = true;
             } catch (e) {
                console.error("Failed to stitch image for zip:", img.file.name, e);
                targetUrl = img.previewUrl;
@@ -202,6 +204,11 @@ const Sidebar: React.FC<SidebarProps> = ({
         
         const response = await fetch(targetUrl);
         const blob = await response.blob();
+        
+        // Release the temporary stitch URL after we've fetched the blob
+        if (needsStitchRelease && targetUrl.startsWith('blob:')) {
+            URL.revokeObjectURL(targetUrl);
+        }
         
         const filename = img.file.name.replace(/\.[^.]+$/, '') + '.png';
         

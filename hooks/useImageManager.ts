@@ -1,7 +1,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
-import { readFileAsDataURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail } from '../services/imageUtils';
+import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
 
 type ViewMode = 'original' | 'result';
 
@@ -16,10 +16,6 @@ export function useImageManager(performanceMode: PerformanceMode) {
 
   // Auto-switch view mode when result is ready
   useEffect(() => {
-    // If we have completed regions, user might want to see result, but we don't force auto-switch anymore 
-    // unless explicit action.
-    
-    // However, if we cleared the result/regions, switch back to original
     if (!selectedImage?.regions.some(r => r.status === 'completed') && viewMode === 'result') {
       setViewMode('original');
     }
@@ -36,18 +32,16 @@ export function useImageManager(performanceMode: PerformanceMode) {
     for (let i = 0; i < imageFiles.length; i++) {
       const file = imageFiles[i];
       try {
-        const originalUrl = await readFileAsDataURL(file);
+        // Use Object URL for the original — NO base64 string in memory
+        const originalUrl = readFileAsObjectURL(file);
         const imgEl = await loadImage(originalUrl);
 
         const thumbnailUrl = await generateThumbnail(imgEl);
 
         let previewUrl = originalUrl;
         if (performanceMode === 'balanced') {
-          const PREVIEW_MAX_DIM = 2048;
-          const PREVIEW_MAX_BYTES = 1024 * 1024;
-          if (originalUrl.length > PREVIEW_MAX_BYTES) {
-            previewUrl = await compressImage(originalUrl, { maxWidth: PREVIEW_MAX_DIM, maxHeight: PREVIEW_MAX_DIM, quality: 0.8 });
-          }
+          // Compress preview: output is now also an Object URL
+          previewUrl = await compressImage(originalUrl, { maxWidth: 2048, maxHeight: 2048, quality: 0.8 });
         }
 
         const initialState: ImageHistoryState = {
@@ -143,6 +137,10 @@ export function useImageManager(performanceMode: PerformanceMode) {
 
   const handleDeleteImage = (imageId: string) => {
     setImages(prev => {
+      // Release Object URLs for the deleted image BEFORE removing from state
+      const deleted = prev.find(img => img.id === imageId);
+      if (deleted) cleanupImageUrls(deleted);
+
       const newImages = prev.filter(img => img.id !== imageId);
       if (selectedImageId === imageId) {
         if (newImages.length > 0) {
@@ -156,12 +154,22 @@ export function useImageManager(performanceMode: PerformanceMode) {
   };
 
   const handleClearAllImages = () => {
+    // Release ALL Object URLs before clearing
+    setImages(prev => {
+      prev.forEach(img => cleanupImageUrls(img));
+      return prev; // Return same ref; the setImages below replaces it
+    });
     setImages([]);
     setSelectedImageId(null);
     setSelectedRegionId(null);
   };
 
   const handleManualPatchUpdate = (imageId: string, regionId: string, base64: string) => {
+    // Convert incoming base64 to Object URL (from paste or PatchEditor save)
+    const objectUrl = base64.startsWith('data:') ? 
+      (() => { const url = URL.createObjectURL(dataURLtoBlob(base64)); return url; })() : 
+      base64;
+
     setImages(prev => {
         return prev.map(img => {
             if (img.id !== imageId) return img;
@@ -173,14 +181,18 @@ export function useImageManager(performanceMode: PerformanceMode) {
                    x: 0, y: 0, width: 100, height: 100,
                    type: 'rect',
                    status: 'completed',
-                    processedImageBase64: base64,
+                    processedImageBase64: objectUrl,
                     source: 'manual' as const,
                     anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
                 };
                updatedRegions = [...img.regions, fullRegion];
             } else {
+               // Release old region URL before replacing
+               const oldRegion = img.regions.find(r => r.id === regionId);
+               if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
+
                updatedRegions = img.regions.map(r => 
-                  r.id === regionId ? { ...r, processedImageBase64: base64, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
+                  r.id === regionId ? { ...r, processedImageBase64: objectUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
                );
             }
 
@@ -192,7 +204,6 @@ export function useImageManager(performanceMode: PerformanceMode) {
             return { ...img, regions: updatedRegions, history: currentHistory };
         });
     });
-    // No auto-stitching
   };
 
   // --- HISTORY ACTIONS ---
@@ -210,9 +221,25 @@ export function useImageManager(performanceMode: PerformanceMode) {
               fullAiResultUrl: undefined 
           };
 
-          const newHistory = img.history.slice(0, img.historyIndex + 1);
+          let newHistory = img.history.slice(0, img.historyIndex + 1);
           newHistory.push(newState);
           
+          // Cap history at MAX_HISTORY_ENTRIES — release URLs for evicted entries
+          while (newHistory.length > MAX_HISTORY_ENTRIES) {
+              const evicted = newHistory.shift();
+              if (evicted) {
+                  releaseObjectURL(evicted.previewUrl);
+                  releaseObjectURL(evicted.fullAiResultUrl);
+                  releaseObjectURL(evicted.finalResultUrl);
+                  evicted.regions.forEach(r => {
+                      releaseObjectURL(r.processedImageBase64);
+                      releaseObjectURL(r.restoreMaskBase64);
+                  });
+              }
+          }
+          
+          const newIndex = Math.min(img.historyIndex + 1, newHistory.length - 1);
+
           return {
               ...img,
               previewUrl: newState.previewUrl,
@@ -220,7 +247,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
               finalResultUrl: undefined,
               fullAiResultUrl: undefined,
               history: newHistory,
-              historyIndex: newHistory.length - 1
+              historyIndex: newIndex
           };
       }));
       setViewMode('original');
@@ -283,10 +310,23 @@ export function useImageManager(performanceMode: PerformanceMode) {
     handleUpdateImagePrompt,
     handleToggleSkip,
     handleDeleteImage,
-    handleClearAllImages,
+    handleClearAllImages, 
     handleManualPatchUpdate,
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage
   };
+}
+
+// Helper: convert data URL to Blob (used for paste/patch editor save)
+function dataURLtoBlob(dataURL: string): Blob {
+  const [header, data] = dataURL.split(',');
+  const mimeMatch = header.match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
 }

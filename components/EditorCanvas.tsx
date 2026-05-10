@@ -346,6 +346,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   // Update composited cache when restore boxes or mask change
   useEffect(() => {
     const updateCache = async () => {
+      // Release old cache Object URLs before building new ones
+      const oldCache = restoreCompositedCache;
+      Object.values(oldCache).forEach(url => {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+      });
+
       const newCache: Record<string, string> = {};
       for (const region of image.regions) {
         if (region.status === 'completed' && region.processedImageBase64) {
@@ -366,6 +372,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       setRestoreCompositedCache(newCache);
     };
     updateCache();
+    // Cleanup on unmount
+    return () => {
+      Object.values(restoreCompositedCache).forEach(url => {
+        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
+      });
+    };
   }, [image.regions]);
 
   // Initialize brush mask canvas when entering brush mode on a selected region

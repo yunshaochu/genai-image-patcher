@@ -12,13 +12,127 @@ export interface PaddingInfo {
     paddedSide: 'right' | 'bottom' | 'none';
 }
 
+// =====================================================================
+// MEMORY MANAGEMENT UTILITIES
+// =====================================================================
+
 const releaseCanvas = (canvas: HTMLCanvasElement) => {
     canvas.width = 0;
     canvas.height = 0;
 };
 
 /**
- * Loads an image from a URL into an HTMLImageElement
+ * Convert a canvas to a Blob Object URL (memory-efficient).
+ * Replaces canvas.toDataURL('image/png') — the resulting Object URL
+ * is a 20-byte pointer instead of a 40-60MB base64 string.
+ * Call URL.revokeObjectURL() when no longer needed.
+ */
+const canvasToObjectURL = (canvas: HTMLCanvasElement, type: string = 'image/png', quality?: number): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (blob) {
+                resolve(URL.createObjectURL(blob));
+            } else {
+                reject(new Error('canvas.toBlob returned null'));
+            }
+        }, type, quality);
+    });
+};
+
+/**
+ * Convert a canvas to a Blob (for API upload without string overhead).
+ */
+const canvasToBlob = (canvas: HTMLCanvasElement, type: string = 'image/png', quality?: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('canvas.toBlob returned null'));
+        }, type, quality);
+    });
+};
+
+/**
+ * Convert an Object URL or Blob URL back to a base64 data URL.
+ * Use this ONLY when an API call requires base64 input.
+ * This is expensive — avoid calling it unnecessarily.
+ */
+export const urlToBase64 = (url: string): Promise<string> => {
+    // Already a base64 data URL — return as-is
+    if (url.startsWith('data:')) return Promise.resolve(url);
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        fetch(url)
+            .then(r => r.blob())
+            .then(blob => reader.readAsDataURL(blob))
+            .catch(reject);
+    });
+};
+
+/**
+ * Convert a base64 data URL to an Object URL (Blob-backed).
+ * The original base64 string can then be set to null for GC.
+ */
+export const base64ToObjectURL = (base64: string): string => {
+    if (base64.startsWith('blob:')) return base64; // Already an Object URL
+    const [header, data] = base64.split(',');
+    const mimeMatch = header.match(/:(.*?);/);
+    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return URL.createObjectURL(new Blob([bytes], { type: mime }));
+};
+
+/**
+ * Release an Object URL. Safe to call on any string (no-op if not a blob URL).
+ */
+export const releaseObjectURL = (url: string | undefined | null) => {
+    if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+    }
+};
+
+/**
+ * Release all Object URLs on an UploadedImage object.
+ * Call this before removing an image from state or when replacing URLs.
+ */
+export const cleanupImageUrls = (img: UploadedImage) => {
+    releaseObjectURL(img.previewUrl);
+    releaseObjectURL(img.originalUrl);
+    releaseObjectURL(img.thumbnailUrl);
+    releaseObjectURL(img.finalResultUrl);
+    releaseObjectURL(img.fullAiResultUrl);
+    img.regions.forEach(r => {
+        releaseObjectURL(r.processedImageBase64);
+        releaseObjectURL(r.restoreMaskBase64);
+    });
+    img.history.forEach(h => {
+        releaseObjectURL(h.previewUrl);
+        releaseObjectURL(h.fullAiResultUrl);
+        releaseObjectURL(h.finalResultUrl);
+        h.regions.forEach(r => {
+            releaseObjectURL(r.processedImageBase64);
+            releaseObjectURL(r.restoreMaskBase64);
+        });
+    });
+};
+
+/**
+ * Maximum number of undo history entries per image.
+ * Each entry stores full image data, so keep this small.
+ */
+export const MAX_HISTORY_ENTRIES = 3;
+
+// =====================================================================
+// IMAGE LOADING
+// =====================================================================
+
+/**
+ * Loads an image from a URL (base64 or Object URL) into an HTMLImageElement.
  */
 export const loadImage = (url: string): Promise<HTMLImageElement> => {
   return new Promise((resolve, reject) => {
@@ -30,16 +144,20 @@ export const loadImage = (url: string): Promise<HTMLImageElement> => {
   });
 };
 
+// =====================================================================
+// CORE IMAGE PROCESSING FUNCTIONS
+// All functions now return Object URLs (blob:) instead of base64 strings.
+// Only convert to base64 at the API boundary (see urlToBase64).
+// =====================================================================
+
 /**
- * Pads an image (from base64) to a 1:1 square canvas.
- * The original image is anchored at the top-left corner (0,0).
- * Black padding is added only on the right and/or bottom side,
- * so the content is always flush with the left and top edges.
+ * Pads an image to a 1:1 square canvas.
+ * Returns an Object URL and padding info.
  */
 export const padImageToSquare = async (
-    base64: string
-): Promise<{ base64: string; info: PaddingInfo }> => {
-    const img = await loadImage(base64);
+    imageUrl: string
+): Promise<{ url: string; info: PaddingInfo }> => {
+    const img = await loadImage(imageUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
     const maxDim = Math.max(w, h);
@@ -50,22 +168,18 @@ export const padImageToSquare = async (
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error("Could not get canvas context for padding");
 
-    // Fill entire canvas black first
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, maxDim, maxDim);
-
-    // Draw image anchored at top-left (0,0) — padding goes to right/bottom only
     ctx.drawImage(img, 0, 0);
 
-    // Determine which side got the padding
     let paddedSide: PaddingInfo['paddedSide'] = 'none';
     if (w > h) paddedSide = 'bottom';
     else if (h > w) paddedSide = 'right';
 
-    const result = canvas.toDataURL('image/png');
+    const result = await canvasToObjectURL(canvas);
     releaseCanvas(canvas);
     return {
-        base64: result,
+        url: result,
         info: {
             originalWidth: w,
             originalHeight: h,
@@ -76,39 +190,27 @@ export const padImageToSquare = async (
 
 /**
  * De-pads by simply cropping the known padding proportion.
- * Because padImageToSquare anchors content at (0,0), the black padding
- * is always on the right and/or bottom. We compute the exact crop region
- * from the original dimensions — no pixel scanning needed.
  */
 export const depadImageByRatio = async (
-    squareBase64: string,
+    squareUrl: string,
     info: PaddingInfo
 ): Promise<string> => {
-    // If original was already square, nothing to depad
     if (info.paddedSide === 'none') {
-        return squareBase64;
+        return squareUrl;
     }
 
-    const img = await loadImage(squareBase64);
+    const img = await loadImage(squareUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
 
-    // Since the image was anchored at (0,0), the original content
-    // occupies the top-left rectangle of (originalWidth × originalHeight).
-    // The API may have returned a different total size, so we calculate
-    // the crop as a proportion of the returned image.
     let sx: number, sy: number, sw: number, sh: number;
 
     if (info.paddedSide === 'bottom') {
-        // Original was wider than tall → black padding was on the bottom
-        // Content occupies top portion with height = originalHeight / originalWidth * totalWidth
         sw = w;
         sh = w * (info.originalHeight / info.originalWidth);
         sx = 0;
         sy = 0;
     } else {
-        // Original was taller than wide → black padding was on the right
-        // Content occupies left portion with width = originalWidth / originalHeight * totalHeight
         sh = h;
         sw = h * (info.originalWidth / info.originalHeight);
         sx = 0;
@@ -123,32 +225,28 @@ export const depadImageByRatio = async (
 
     outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
 
-    const result = outCanvas.toDataURL('image/png');
+    const result = await canvasToObjectURL(outCanvas);
     releaseCanvas(outCanvas);
     return result;
 };
 
 /**
  * Extracts the original content from a square image by detecting black padding
- * bars added by padImageToSquare. Scans each edge inward to find where the
- * dark padding ends and content begins, handling AI outputs where content may
- * have shifted. Falls back to the top-left anchored assumption if detection fails.
+ * bars. Scans each edge inward, falls back to ratio-based if detection fails.
  */
 export const depadImageFromSquare = async (
-    squareBase64: string,
+    squareUrl: string,
     info: PaddingInfo,
     margin: number = 2
 ): Promise<string> => {
-    const img = await loadImage(squareBase64);
+    const img = await loadImage(squareUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
 
-    // If original was already square, nothing to depad
     if (info.originalWidth === info.originalHeight) {
-        return squareBase64;
+        return squareUrl;
     }
 
-    // Draw to canvas to read pixel data
     const scanCanvas = document.createElement('canvas');
     scanCanvas.width = w;
     scanCanvas.height = h;
@@ -158,12 +256,9 @@ export const depadImageFromSquare = async (
     const imageData = scanCtx.getImageData(0, 0, w, h);
     const pixels = imageData.data;
 
-    // A pixel is "dark" if it's close to the #000000 fill we used for padding.
-    // Tolerance handles slight noise from AI encode/decode cycles.
     const isDark = (r: number, g: number, b: number) => (r + g + b) <= 40;
     const ROW_DARK_RATIO = 0.90;
 
-    // Scan from top: find first row where < 95% of pixels are dark
     let topCrop = 0;
     for (let y = 0; y < h; y++) {
         let darkCount = 0;
@@ -175,7 +270,6 @@ export const depadImageFromSquare = async (
         topCrop = y + 1;
     }
 
-    // Scan from bottom
     let bottomCrop = 0;
     for (let y = h - 1; y >= 0; y--) {
         let darkCount = 0;
@@ -187,7 +281,6 @@ export const depadImageFromSquare = async (
         bottomCrop = h - y;
     }
 
-    // Scan from left
     let leftCrop = 0;
     for (let x = 0; x < w; x++) {
         let darkCount = 0;
@@ -199,7 +292,6 @@ export const depadImageFromSquare = async (
         leftCrop = x + 1;
     }
 
-    // Scan from right
     let rightCrop = 0;
     for (let x = w - 1; x >= 0; x--) {
         let darkCount = 0;
@@ -211,7 +303,6 @@ export const depadImageFromSquare = async (
         rightCrop = w - x;
     }
 
-    // Trim safety margin from each side to remove residual dark edge lines
     topCrop = Math.min(topCrop + margin, h);
     bottomCrop = Math.min(bottomCrop + margin, h);
     leftCrop = Math.min(leftCrop + margin, w);
@@ -226,27 +317,25 @@ export const depadImageFromSquare = async (
 
     let sx: number, sy: number, sw: number, sh: number;
 
-    // Use edge-detected bounds if they are plausible
     if (contentW > 0 && contentH > 0 && aspectDrift < 0.3) {
         sx = leftCrop;
         sy = topCrop;
         sw = contentW;
         sh = contentH;
     } else {
-        // Fallback: top-left anchored assumption based on original proportions
-        // (padImageToSquare anchors content at 0,0 — padding is on right/bottom)
         if (info.paddedSide === 'bottom') {
-            // Wider than tall → black was on the bottom
             sw = w;
             sh = w * (info.originalHeight / info.originalWidth);
         } else {
-            // Taller than wide → black was on the right
             sh = h;
             sw = h * (info.originalWidth / info.originalHeight);
         }
         sx = 0;
         sy = 0;
     }
+
+    // Free scan data early — it's the biggest transient allocation
+    releaseCanvas(scanCanvas);
 
     const outCanvas = document.createElement('canvas');
     outCanvas.width = info.originalWidth;
@@ -256,14 +345,14 @@ export const depadImageFromSquare = async (
 
     outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
 
-    const result = outCanvas.toDataURL('image/png');
-    releaseCanvas(scanCanvas);
+    const result = await canvasToObjectURL(outCanvas);
     releaseCanvas(outCanvas);
     return result;
 };
 
 /**
- * Crops a specific region from the original image
+ * Crops a specific region from the original image.
+ * Returns an Object URL.
  */
 export const cropRegion = async (
   imageElement: HTMLImageElement,
@@ -274,7 +363,6 @@ export const cropRegion = async (
   
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // Convert percentage to pixels
   const x = (region.x / 100) * imageElement.naturalWidth;
   const y = (region.y / 100) * imageElement.naturalHeight;
   const w = (region.width / 100) * imageElement.naturalWidth;
@@ -289,66 +377,64 @@ export const cropRegion = async (
     0, 0, w, h
   );
 
-  const result = canvas.toDataURL('image/png');
+  const result = await canvasToObjectURL(canvas);
   releaseCanvas(canvas);
   return result;
 };
 
 /**
- * Creates a full-size image where only the specified region is visible, 
+ * Creates a full-size image where only the specified region is visible,
  * and the rest is masked with white.
+ * Returns an Object URL.
  */
 export const createMaskedFullImage = (
   imageElement: HTMLImageElement,
   region: Region
-): string => {
+): Promise<string> => {
   const canvas = document.createElement('canvas');
   canvas.width = imageElement.naturalWidth;
   canvas.height = imageElement.naturalHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // Fill white
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Calculate coordinates in pixels
   const x = (region.x / 100) * imageElement.naturalWidth;
   const y = (region.y / 100) * imageElement.naturalHeight;
   const w = (region.width / 100) * imageElement.naturalWidth;
   const h = (region.height / 100) * imageElement.naturalHeight;
 
-  // Draw the specific region from original image onto the white canvas at the same position
   ctx.drawImage(
     imageElement,
     x, y, w, h,
     x, y, w, h
   );
 
-  const result = canvas.toDataURL('image/png');
-  releaseCanvas(canvas);
-  return result;
+  return canvasToObjectURL(canvas).then(result => {
+    releaseCanvas(canvas);
+    return result;
+  });
 };
 
 /**
- * Creates a full-size image where ALL specified regions are visible, 
+ * Creates a full-size image where ALL specified regions are visible,
  * and the rest is masked with white.
+ * Returns an Object URL.
  */
 export const createMultiMaskedFullImage = (
   imageElement: HTMLImageElement,
   regions: Region[]
-): string => {
+): Promise<string> => {
   const canvas = document.createElement('canvas');
   canvas.width = imageElement.naturalWidth;
   canvas.height = imageElement.naturalHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // Fill white
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Draw all regions
   regions.forEach(region => {
       const x = (region.x / 100) * imageElement.naturalWidth;
       const y = (region.y / 100) * imageElement.naturalHeight;
@@ -362,33 +448,30 @@ export const createMultiMaskedFullImage = (
       );
   });
 
-  const result = canvas.toDataURL('image/png');
-  releaseCanvas(canvas);
-  return result;
+  return canvasToObjectURL(canvas).then(result => {
+    releaseCanvas(canvas);
+    return result;
+  });
 };
 
 /**
  * REVERSE MASKING MODE:
  * Creates a full-size image where the original background is visible,
  * but the selected regions are masked out (White).
- * This tells the AI: "Here is the context (bg), please fill these white boxes."
- * But since our goal is to REPLACE the background, we might be abusing this.
- * However, based on user request: "Only user circled is blank, others are original".
+ * Returns an Object URL.
  */
 export const createInvertedMultiMaskedFullImage = (
   imageElement: HTMLImageElement,
   regions: Region[]
-): string => {
+): Promise<string> => {
   const canvas = document.createElement('canvas');
   canvas.width = imageElement.naturalWidth;
   canvas.height = imageElement.naturalHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // 1. Draw the Full Original Image
   ctx.drawImage(imageElement, 0, 0);
 
-  // 2. Erase (Fill White) the selected regions
   ctx.fillStyle = '#FFFFFF';
   regions.forEach(region => {
       const x = (region.x / 100) * imageElement.naturalWidth;
@@ -399,37 +482,35 @@ export const createInvertedMultiMaskedFullImage = (
       ctx.fillRect(x, y, w, h);
   });
 
-  const result = canvas.toDataURL('image/png');
-  releaseCanvas(canvas);
-  return result;
+  return canvasToObjectURL(canvas).then(result => {
+    releaseCanvas(canvas);
+    return result;
+  });
 };
 
 /**
- * Extracts the crop corresponding to the region from a full-size returned image
+ * Extracts the crop corresponding to the region from a full-size returned image.
  * Applies feathering (alpha blending) to the edges to ensure seamless stitching.
+ * Returns an Object URL.
  */
 export const extractCropFromFullImage = async (
-  fullImageBase64: string,
+  fullImageUrl: string,
   region: Region,
   originalWidth: number,
   originalHeight: number,
-  opaquePercent: number = 99 // Percentage of the center that remains fully opaque
+  opaquePercent: number = 99
 ): Promise<string> => {
-  const fullImg = await loadImage(fullImageBase64);
+  const fullImg = await loadImage(fullImageUrl);
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // We want the resulting crop to be the size specified by the region percentages
-  // relative to the *original* image size (which is what the stitching expects).
   const w = (region.width / 100) * originalWidth;
   const h = (region.height / 100) * originalHeight;
 
   canvas.width = w;
   canvas.height = h;
 
-  // However, the returned image might have been resized by the AI.
-  // We assume the AI preserves aspect ratio and the region position percentages are still valid relative to the *returned* image size.
   const resultW = fullImg.naturalWidth;
   const resultH = fullImg.naturalHeight;
   
@@ -438,38 +519,27 @@ export const extractCropFromFullImage = async (
   const rw = (region.width / 100) * resultW;
   const rh = (region.height / 100) * resultH;
 
-  // 1. Draw the raw crop
   ctx.drawImage(
     fullImg,
-    rx, ry, rw, rh, // Source from result
-    0, 0, w, h // Dest (original expected dimensions)
+    rx, ry, rw, rh,
+    0, 0, w, h
   );
 
-  // 2. Apply Feathering (Blending Mask) if opaquePercent < 100
-  // This uses 'destination-in' composite operation.
   if (opaquePercent < 100) {
       ctx.globalCompositeOperation = 'destination-in';
 
-      // Calculate the start point of the feathering
-      // If opaquePercent is 99, we keep center 99% opaque.
-      // The remaining 1% is distributed to the edges (0.5% each side).
-      
       const p = Math.max(0, Math.min(100, opaquePercent)) / 100;
       const featherRatio = (1 - p) / 2; 
       
-      // Horizontal Gradient Mask (Left/Right edges)
       const hGrad = ctx.createLinearGradient(0, 0, w, 0);
-      hGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');               // Edge: Transparent
-      hGrad.addColorStop(featherRatio, 'rgba(0, 0, 0, 1)');    // Start of content: Opaque
-      hGrad.addColorStop(1 - featherRatio, 'rgba(0, 0, 0, 1)'); // End of content: Opaque
-      hGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');               // Edge: Transparent
+      hGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+      hGrad.addColorStop(featherRatio, 'rgba(0, 0, 0, 1)');
+      hGrad.addColorStop(1 - featherRatio, 'rgba(0, 0, 0, 1)');
+      hGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
       ctx.fillStyle = hGrad;
       ctx.fillRect(0, 0, w, h);
 
-      // Vertical Gradient Mask (Top/Bottom edges)
-      // Applied ON TOP of the horizontal mask result. Since destination-in acts like an intersection,
-      // this effectively feathers all 4 sides and corners.
       const vGrad = ctx.createLinearGradient(0, 0, 0, h);
       vGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
       vGrad.addColorStop(featherRatio, 'rgba(0, 0, 0, 1)');
@@ -479,31 +549,27 @@ export const extractCropFromFullImage = async (
       ctx.fillStyle = vGrad;
       ctx.fillRect(0, 0, w, h);
 
-      // Reset composite operation
       ctx.globalCompositeOperation = 'source-over';
   }
 
-  const result = canvas.toDataURL('image/png');
+  const result = await canvasToObjectURL(canvas);
   releaseCanvas(canvas);
   return result;
 };
 
 
 /**
- * Re-crops a processed region image when the region has been resized in default mode
- * (i.e., no fullAiResultUrl available).
- * Draws the processed image at its original position on a full-size canvas,
- * then crops the new region from that canvas.
- * Areas outside the original processed region become transparent.
+ * Re-crops a processed region image when the region has been resized.
+ * Returns an Object URL.
  */
 export const reCropProcessedImage = async (
-  processedImageBase64: string,
+  processedImageUrl: string,
   oldRegion: { x: number; y: number; width: number; height: number },
   newRegion: { x: number; y: number; width: number; height: number },
   originalWidth: number,
   originalHeight: number
 ): Promise<string> => {
-  const img = await loadImage(processedImageBase64);
+  const img = await loadImage(processedImageUrl);
 
   const fullCanvas = document.createElement('canvas');
   fullCanvas.width = originalWidth;
@@ -531,29 +597,27 @@ export const reCropProcessedImage = async (
 
   outCtx.drawImage(fullCanvas, nx, ny, nw, nh, 0, 0, nw, nh);
 
-  const result = outCanvas.toDataURL('image/png');
   releaseCanvas(fullCanvas);
+  const result = await canvasToObjectURL(outCanvas);
   releaseCanvas(outCanvas);
   return result;
 };
 
 /**
  * Renders a processed region image with restore boxes applied.
- * Restore boxes make portions of the processed image transparent,
- * allowing the original image to show through when overlaid.
- * Used for both display (EditorCanvas result mode) and stitching.
+ * Returns an Object URL, or the input URL unchanged if no restore operations.
  */
 export const renderRegionWithRestore = async (
-  processedImageBase64: string,
+  processedImageUrl: string,
   restoreBoxes?: RestoreBox[],
-  restoreMaskBase64?: string
+  restoreMaskUrl?: string
 ): Promise<string> => {
   const hasBoxes = restoreBoxes && restoreBoxes.length > 0;
-  const hasMask = !!restoreMaskBase64;
+  const hasMask = !!restoreMaskUrl;
 
-  if (!hasBoxes && !hasMask) return processedImageBase64;
+  if (!hasBoxes && !hasMask) return processedImageUrl;
 
-  const img = await loadImage(processedImageBase64);
+  const img = await loadImage(processedImageUrl);
   const canvas = document.createElement('canvas');
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
@@ -563,7 +627,6 @@ export const renderRegionWithRestore = async (
   const w = canvas.width;
   const h = canvas.height;
 
-  // Apply box restores
   if (hasBoxes) {
     const nonInverse = restoreBoxes!.filter(b => !b.inverse);
     const inverse = restoreBoxes!.filter(b => b.inverse);
@@ -602,20 +665,20 @@ export const renderRegionWithRestore = async (
     ctx.drawImage(img, 0, 0);
   }
 
-  // Apply brush mask (destination-in: mask alpha defines where processed is visible)
   if (hasMask) {
-    const maskImg = await loadImage(restoreMaskBase64!);
+    const maskImg = await loadImage(restoreMaskUrl!);
     ctx.globalCompositeOperation = 'destination-in';
     ctx.drawImage(maskImg, 0, 0, w, h);
   }
 
-  const result = canvas.toDataURL('image/png');
+  const result = await canvasToObjectURL(canvas);
   releaseCanvas(canvas);
   return result;
 };
 
 /**
- * Stitches processed regions back onto the original image
+ * Stitches processed regions back onto the original image.
+ * Returns an Object URL.
  */
 export const stitchImage = async (
   originalImageUrl: string,
@@ -630,24 +693,21 @@ export const stitchImage = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // Draw original
   ctx.drawImage(baseImg, 0, 0);
 
-  // Draw processed regions on top
   for (const region of regions) {
     if (region.processedImageBase64 && region.status === 'completed') {
       const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
-      const displayBase64 = hasRestore
+      const displayUrl = hasRestore
         ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes, region.restoreMaskBase64)
         : region.processedImageBase64;
-      const regionImg = await loadImage(displayBase64);
+      const regionImg = await loadImage(displayUrl);
       
       const x = (region.x / 100) * baseImg.naturalWidth;
       const y = (region.y / 100) * baseImg.naturalHeight;
       const w = (region.width / 100) * baseImg.naturalWidth;
       const h = (region.height / 100) * baseImg.naturalHeight;
 
-      // Anchor coordinates: the region dimensions at the time processedImage was generated
       const ax = ((region.anchorX ?? region.x) / 100) * baseImg.naturalWidth;
       const ay = ((region.anchorY ?? region.y) / 100) * baseImg.naturalHeight;
       const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
@@ -659,10 +719,13 @@ export const stitchImage = async (
       ctx.clip();
       ctx.drawImage(regionImg, ax, ay, aw, ah);
       ctx.restore();
+
+      // Release the temporary restore render if we created one
+      if (hasRestore) releaseObjectURL(displayUrl);
     }
   }
 
-  const result = canvas.toDataURL('image/png');
+  const result = await canvasToObjectURL(canvas);
   releaseCanvas(canvas);
   return result;
 };
@@ -671,7 +734,7 @@ export const stitchImage = async (
  * REVERSE STITCHING:
  * Base is the AI Generated Image (Full).
  * We paste the ORIGINAL image regions on top.
- * This effectively keeps the original characters (regions) but accepts the AI's new background.
+ * Returns an Object URL.
  */
 export const stitchImageInverted = async (
   originalImageUrl: string,
@@ -688,11 +751,8 @@ export const stitchImageInverted = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
-  // 1. Draw AI Result as Base (Background)
-  // Assuming AI output matches original dimensions or we stretch it
   ctx.drawImage(aiImg, 0, 0, canvas.width, canvas.height);
 
-  // 2. Draw Original Regions on top (Keeping them "Original")
   for (const region of regions) {
       const x = (region.x / 100) * originalImg.naturalWidth;
       const y = (region.y / 100) * originalImg.naturalHeight;
@@ -701,15 +761,19 @@ export const stitchImageInverted = async (
 
       ctx.drawImage(
         originalImg,
-        x, y, w, h, // Source from Original
-        x, y, w, h  // Dest on Canvas
+        x, y, w, h,
+        x, y, w, h
       );
   }
 
-  const result = canvas.toDataURL('image/png');
+  const result = await canvasToObjectURL(canvas);
   releaseCanvas(canvas);
   return result;
 };
+
+// =====================================================================
+// FILE I/O UTILITIES
+// =====================================================================
 
 export const readFileAsDataURL = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -720,30 +784,37 @@ export const readFileAsDataURL = (file: File): Promise<string> => {
   });
 };
 
+/**
+ * Read a File as an Object URL (Blob-backed, memory-efficient).
+ * Use this instead of readFileAsDataURL for display purposes.
+ */
+export const readFileAsObjectURL = (file: File): string => {
+    return URL.createObjectURL(file);
+};
+
 // Helper to strip data:image/png;base64, prefix
 export const extractBase64Data = (dataUrl: string): string => {
   return dataUrl.split(',')[1];
 };
 
-// Helper to download an image from a remote URL and convert to Base64 (needed for OpenAI URL responses)
 /**
- * Compresses an image (base64) for use as a lightweight reference/context image.
- * Reduces file size while keeping enough clarity for visual context.
+ * Compresses an image for use as a lightweight reference/context image.
+ * Returns an Object URL (JPEG, small).
  */
 export const compressImage = async (
-  base64: string,
+  imageUrl: string,
   options: { maxWidth?: number; maxHeight?: number; quality?: number } = {}
 ): Promise<string> => {
   const { maxWidth = 1024, maxHeight = 1024, quality = 0.7 } = options;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  if (!ctx) return base64;
+  if (!ctx) return imageUrl;
 
-  const img = await loadImage(base64);
+  const img = await loadImage(imageUrl);
   let w = img.naturalWidth;
   let h = img.naturalHeight;
 
-  if (w === 0 || h === 0) return base64;
+  if (w === 0 || h === 0) return imageUrl;
 
   if (w > maxWidth || h > maxHeight) {
     const ratio = Math.min(maxWidth / w, maxHeight / h);
@@ -755,7 +826,7 @@ export const compressImage = async (
   canvas.height = h;
   ctx.drawImage(img, 0, 0, w, h);
 
-  const result = canvas.toDataURL('image/jpeg', quality);
+  const result = await canvasToObjectURL(canvas, 'image/jpeg', quality);
   releaseCanvas(canvas);
   return result;
 };
@@ -768,7 +839,7 @@ export const generateThumbnail = async (img: HTMLImageElement, maxDim: number = 
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  const result = canvas.toDataURL('image/jpeg', 0.7);
+  const result = await canvasToObjectURL(canvas, 'image/jpeg', 0.7);
   releaseCanvas(canvas);
   return result;
 };
@@ -785,7 +856,6 @@ export const fetchImageAsBase64 = async (url: string): Promise<string> => {
     });
   } catch (e) {
     console.error("Failed to fetch image from URL via proxy/cors", e);
-    // Fallback: Return the URL itself if it can be used in an <img> tag directly
     return url;
   }
 };

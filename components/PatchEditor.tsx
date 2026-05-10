@@ -5,6 +5,16 @@ import { Language } from '../types';
 import { t } from '../services/translations';
 import { loadImage } from '../services/imageUtils';
 
+// Helper: canvas → Object URL (blob-backed, memory-efficient)
+const canvasToObjectURL = (canvas: HTMLCanvasElement, type: string = 'image/png', quality?: number): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (blob) resolve(URL.createObjectURL(blob));
+            else reject(new Error('canvas.toBlob returned null'));
+        }, type, quality);
+    });
+};
+
 export interface TextObject {
   id: string;
   x: number;
@@ -194,18 +204,25 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
     const currentImageData = ctx.getImageData(0, 0, w, h);
     const currentTextObjects = textObjectsOverride ? [...textObjectsOverride] : [...textObjects];
 
+    const PATCH_EDITOR_MAX_HISTORY = 10;
+
     setHistory(prev => {
       // If we are in the middle of history, discard future states
       const newHistory = prev.slice(0, historyIndex + 1);
-      // Limit history size to 30 steps to prevent memory issues
-      if (newHistory.length > 30) {
-         newHistory.shift(); 
+      // Limit history size to prevent memory issues
+      // Each entry holds a raw ImageData buffer (width*height*4 bytes), so keep this small.
+      while (newHistory.length >= PATCH_EDITOR_MAX_HISTORY) {
+         // Null out the ImageData of the evicted entry to help GC
+         const evicted = newHistory.shift();
+         if (evicted?.imageData) {
+           evicted.imageData = null;
+         }
       }
       return [...newHistory, { imageData: currentImageData, textObjects: currentTextObjects }];
     });
 
     setHistoryIndex(prev => {
-       const newLen = prev + 1 > 30 ? 30 : prev + 1; // Correct index logic if we shifted (approximate)
+       if (prev + 1 >= PATCH_EDITOR_MAX_HISTORY) return PATCH_EDITOR_MAX_HISTORY - 1;
        return prev + 1; 
     });
   }, [textObjects, historyIndex]);
@@ -490,7 +507,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
   }, [isDraggingText, selectedTextId, recordHistory]);
 
   // --- Compositing & Saving ---
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!baseCanvasRef.current || !drawingCanvasRef.current) return;
     
     // 1. Create a composite canvas
@@ -612,8 +629,8 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
        ctx.restore();
     });
     
-    const finalBase64 = canvas.toDataURL('image/png');
-    onSave(finalBase64);
+    const finalObjectURL = await canvasToObjectURL(canvas);
+    onSave(finalObjectURL);
   };
 
   return (
