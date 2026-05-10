@@ -10,6 +10,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
   const selectedImage = images.find((img) => img.id === selectedImageId);
 
@@ -25,12 +26,15 @@ export function useImageManager(performanceMode: PerformanceMode) {
   }, [selectedImage?.regions, viewMode]);
 
   const addImageFiles = async (fileList: File[]) => {
-    const newImages: UploadedImage[] = [];
     const imageFiles = fileList.filter(f => f.type.startsWith('image/') && !f.name.startsWith('.'));
     
     if (imageFiles.length === 0) return;
 
-    for (const file of imageFiles) {
+    setUploadProgress({ current: 0, total: imageFiles.length });
+    const newImages: UploadedImage[] = [];
+
+    for (let i = 0; i < imageFiles.length; i++) {
+      const file = imageFiles[i];
       try {
         const originalUrl = await readFileAsDataURL(file);
         const imgEl = await loadImage(originalUrl);
@@ -71,6 +75,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
       } catch (e) {
         console.error("Failed to load image", file.name, e);
       }
+      setUploadProgress({ current: i + 1, total: imageFiles.length });
     }
 
     if (newImages.length > 0) {
@@ -82,6 +87,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
          handleSelectImage(newImages[0].id);
       }
     }
+    setUploadProgress(null);
   };
 
   const handleSelectImage = useCallback((id: string) => {
@@ -270,6 +276,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
     viewMode,
     setViewMode,
     addImageFiles,
+    uploadProgress,
     handleSelectImage,
     handleUpdateRegions,
     handleUpdateRegionPrompt,

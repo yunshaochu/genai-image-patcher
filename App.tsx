@@ -26,6 +26,7 @@ export default function App() {
     viewMode,
     setViewMode,
     addImageFiles,
+    uploadProgress,
     handleSelectImage,
     handleUpdateRegions,
     handleUpdateRegionPrompt,
@@ -585,7 +586,8 @@ export default function App() {
         onOpenGlobalSettings={() => setShowGlobalSettings(true)}
         onOpenHelp={() => setShowHelp(true)}
         showEditor={showEditor} 
-        onApplyAsOriginal={handleApplyAsOriginalWrapper} 
+        onApplyAsOriginal={handleApplyAsOriginalWrapper}
+        uploadProgress={uploadProgress}
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">

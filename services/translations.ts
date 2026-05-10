@@ -10,6 +10,7 @@ export const translations = {
     uploadFiles: "上传文件",
     uploadFolder: "上传文件夹",
     dropToUpload: "松开鼠标即可上传图片",
+    uploadingProgress: "正在加载图片 {current}/{total}...",
     
     // Gallery
     galleryTitle: "图库",
@@ -254,6 +255,7 @@ export const translations = {
     uploadFiles: "Files",
     uploadFolder: "Folder",
     dropToUpload: "Release to upload images",
+    uploadingProgress: "Loading images {current}/{total}...",
     
     // Gallery
     galleryTitle: "Gallery",

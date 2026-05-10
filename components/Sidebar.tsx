@@ -38,6 +38,7 @@ interface SidebarProps {
   showEditor: boolean;
   onApplyAsOriginal: () => void;
   onUpdateImagePrompt?: (imageId: string, prompt: string) => void; 
+  uploadProgress?: { current: number; total: number } | null;
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
@@ -76,7 +77,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenHelp,
   showEditor,
   onApplyAsOriginal,
-  onUpdateImagePrompt
+  onUpdateImagePrompt,
+  uploadProgress
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -325,9 +327,24 @@ const Sidebar: React.FC<SidebarProps> = ({
                   <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
                   <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFolder')}</span>
                </label>
-           </div>
+            </div>
 
-           {images.length > 0 ? (
+            {uploadProgress && uploadProgress.total > 0 && (
+              <div className="mb-2 animate-in fade-in slide-in-from-top-1">
+                <div className="flex justify-between text-[10px] text-skin-muted font-bold mb-1">
+                  <span>{t(lang, 'uploadingProgress', { current: uploadProgress.current, total: uploadProgress.total })}</span>
+                  <span>{Math.round((uploadProgress.current / uploadProgress.total) * 100)}%</span>
+                </div>
+                <div className="h-1.5 w-full bg-skin-fill rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-skin-primary rounded-full transition-all duration-300 ease-out"
+                    style={{ width: `${(uploadProgress.current / uploadProgress.total) * 100}%` }}
+                  ></div>
+                </div>
+              </div>
+            )}
+
+            {images.length > 0 ? (
              <div className="space-y-2">
                 <div className="flex gap-2">
                     <button 
