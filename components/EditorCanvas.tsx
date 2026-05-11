@@ -106,12 +106,16 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const spaceHeldRef = useRef(false);
 
   // --- Fit-to-screen calculation ---
+  // Subtract padding so the fitted image is slightly smaller than the viewport,
+  // leaving room for region action buttons (toolbar) to be visible even when
+  // a region sits at the image edge.
+  const FIT_PADDING = 80; // px — enough for toolbar buttons (24px) + gap (12px)
   const calculateFitZoom = useCallback(() => {
     if (!viewportRef.current || !image.originalWidth) return 1;
-    const vw = viewportRef.current.clientWidth;
-    const vh = viewportRef.current.clientHeight;
+    const vw = viewportRef.current.clientWidth - FIT_PADDING;
+    const vh = viewportRef.current.clientHeight - FIT_PADDING;
     if (vw <= 0 || vh <= 0) return 1;
-    // fit zoom: scale image to fit within viewport, but never exceed 1 (don't upscale small images)
+    // fit zoom: scale image to fit within viewport (minus padding), but never exceed 1
     return Math.min(vw / image.originalWidth, vh / image.originalHeight, 1);
   }, [image.originalWidth, image.originalHeight]);
 
@@ -830,8 +834,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               const vRect = viewportRef.current.getBoundingClientRect();
               // Region top edge in screen coords
               const regionScreenTop = cRect.top + (y / 100) * cRect.height;
-              const toolbarScreenHeight = 28; // approx button height
-              const margin = 4; // gap between toolbar and region edge
+              const toolbarScreenHeight = 24; // button height (w-6 h-6)
+              const margin = 2; // small extra margin for flipping decision
               if (regionScreenTop - vRect.top < toolbarScreenHeight + margin) {
                 return 'below';
               }
@@ -840,7 +844,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             const toolbarPlacement = (isSelected && !isManipulating && !restoreMode)
               ? getToolbarPlacement()
               : 'above';
-            const toolbarGap = 28 * invZoom; // fixed 28 screen-pixel gap between region and toolbar
+            const toolbarGap = 12 * invZoom; // fixed 12 screen-pixel gap between region and toolbar
             const cursorStyle = isRestoreActive ? (region.id === restoreSelectedRegionId ? 'crosshair' : 'pointer') : (isEditable ? (interaction.type === 'moving' ? 'grabbing' : 'move') : 'default');
             const handleBaseStyle = "absolute bg-white border border-skin-primary rounded-full z-30 transition-transform shadow-sm hover:shadow-lg hover:border-skin-primary/80";
             const handleSize = 14;
