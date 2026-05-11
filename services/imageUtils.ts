@@ -881,6 +881,91 @@ export const compressImage = async (
   return result;
 };
 
+/**
+ * Compress to a target file size by binary-searching WebP quality.
+ * Pixel dimensions are preserved (clarity > size), unless `maxDimension`
+ * caps the longest edge. If the source is already small enough at the
+ * high-quality probe (0.92), returns that without further work.
+ *
+ * Returns an Object URL. On environments without WebP encoder support,
+ * falls back to JPEG.
+ */
+export const compressImageToTargetSize = async (
+  imageUrl: string,
+  options: { targetSizeKB: number; maxDimension?: number; mimeType?: 'image/webp' | 'image/jpeg' }
+): Promise<string> => {
+  const { targetSizeKB, maxDimension, mimeType = 'image/webp' } = options;
+  const targetBytes = Math.max(1, targetSizeKB) * 1024;
+
+  const img = await loadImage(imageUrl);
+  let w = img.naturalWidth;
+  let h = img.naturalHeight;
+  if (w === 0 || h === 0) return imageUrl;
+
+  if (maxDimension && (w > maxDimension || h > maxDimension)) {
+    const ratio = Math.min(maxDimension / w, maxDimension / h);
+    w = Math.round(w * ratio);
+    h = Math.round(h * ratio);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return imageUrl;
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const encode = async (quality: number, type: string): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob && blob.size > 0) resolve(blob);
+        else reject(new Error('toBlob returned empty blob'));
+      }, type, quality);
+    });
+  };
+
+  // Probe at high quality first. WebP at 0.92 is visually near-lossless
+  // for photo/manga content but already much smaller than PNG. If it fits,
+  // skip the binary search entirely — common case for region-level crops.
+  let activeType = mimeType;
+  let probe: Blob;
+  try {
+    probe = await encode(0.92, activeType);
+  } catch {
+    // WebP encoder missing → fall back to JPEG and re-probe.
+    activeType = 'image/jpeg';
+    probe = await encode(0.92, activeType);
+  }
+  if (probe.size <= targetBytes) {
+    const url = URL.createObjectURL(probe);
+    releaseCanvas(canvas);
+    return url;
+  }
+
+  // Binary search quality in [0.05, 0.92]. 6 iterations → ~0.014 precision.
+  // Track best-under (preferred) and best-over (fallback for tiny targets).
+  let lo = 0.05;
+  let hi = 0.92;
+  let bestUnder: Blob | null = null;
+  let bestOver: Blob = probe;
+  for (let i = 0; i < 6; i++) {
+    const mid = (lo + hi) / 2;
+    const blob = await encode(mid, activeType);
+    if (blob.size <= targetBytes) {
+      bestUnder = blob;
+      lo = mid;
+    } else {
+      bestOver = blob;
+      hi = mid;
+    }
+  }
+
+  const finalBlob = bestUnder ?? bestOver;
+  const url = URL.createObjectURL(finalBlob);
+  releaseCanvas(canvas);
+  return url;
+};
+
 export const generateThumbnail = async (img: HTMLImageElement, maxDim: number = 256): Promise<string> => {
   const ratio = Math.min(maxDim / img.naturalWidth, maxDim / img.naturalHeight, 1);
   const canvas = document.createElement('canvas');

@@ -144,6 +144,15 @@ export interface AppConfig {
   translationPromptNoContext?: string;
   /** User's custom prompt for translation WITH masked context (cached) */
   translationPromptWithContext?: string;
+
+  /** When true, images sent to translation/redraw APIs are re-encoded to WebP
+   *  at a target file size (binary search on quality). Preserves pixel
+   *  dimensions — no resampling. When false, raw originals are sent. */
+  enableAiPayloadCompression: boolean;
+  /** Target size in KB for the translation API payload + context image. */
+  aiPayloadTranslationTargetKB: number;
+  /** Target size in KB for the redraw (image edit) API payload. */
+  aiPayloadRedrawTargetKB: number;
 }
 
 export enum ProcessingStep {

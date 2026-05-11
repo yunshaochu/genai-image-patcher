@@ -194,6 +194,13 @@ export const translations = {
     resetToDefault: "恢复默认提示词",
     close: "关闭",
 
+    // AI Payload Compression
+    aiPayloadCompression: "压缩发送给 AI 的图片",
+    aiPayloadCompressionDesc: "用 WebP 重新编码后再发送给翻译/重绘 API，节省 token。像素尺寸不变，只降画质命中目标体积。关掉则发送原图。",
+    aiPayloadTranslationTargetKB: "翻译图目标体积 (KB)",
+    aiPayloadRedrawTargetKB: "重绘图目标体积 (KB)",
+    aiPayloadTargetKBHint: "更小 = 更省 token、画质略降；更大 = 更清晰、token 多",
+
     // --- HELP CONTENT ---
     helpTitle: "使用手册 & 技巧",
     
@@ -439,6 +446,13 @@ export const translations = {
     reset: "Reset",
     resetToDefault: "Reset to Default",
     close: "Close",
+
+    // AI Payload Compression
+    aiPayloadCompression: "Compress images sent to AI",
+    aiPayloadCompressionDesc: "Re-encode payloads as WebP at a target file size before sending to translation/redraw APIs. Pixel dimensions are preserved — only quality is reduced. Off = send originals.",
+    aiPayloadTranslationTargetKB: "Translation payload target (KB)",
+    aiPayloadRedrawTargetKB: "Redraw payload target (KB)",
+    aiPayloadTargetKBHint: "Smaller = fewer tokens, lower quality; larger = sharper, more tokens",
 
     // --- HELP CONTENT ---
     helpTitle: "Guide & Tricks",

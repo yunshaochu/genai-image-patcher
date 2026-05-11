@@ -1,7 +1,7 @@
 
 import { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -99,17 +99,36 @@ export function useImageProcessor(
                     releaseObjectURL(inputImageUrl);
                 }
 
-                // Convert to base64 ONCE at the API boundary, reuse across translation + edit calls.
-                let payloadBase64: string | null = null;
-                const getPayloadBase64 = async () => {
-                    if (payloadBase64 == null) payloadBase64 = await urlToBase64(payloadUrl);
-                    return payloadBase64;
+                // Compress for AI payload — separate encodings for translation
+                // (smaller target, token-efficient) and redraw (larger target,
+                // preserves dims for the stitch/depad workflow). Both keep pixel
+                // dimensions, so masking/depadding math is unaffected.
+                let translationPayloadUrl = payloadUrl;
+                let redrawPayloadUrl = payloadUrl;
+                if (config.enableAiPayloadCompression) {
+                    redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
+                    translationPayloadUrl = config.enableTranslationMode
+                        ? await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB })
+                        : redrawPayloadUrl;
+                    releaseObjectURL(payloadUrl);
+                }
+
+                // Convert to base64 lazily; each API call uses its own compressed payload.
+                let translationBase64: string | null = null;
+                let redrawBase64: string | null = null;
+                const getTranslationBase64 = async () => {
+                    if (translationBase64 == null) translationBase64 = await urlToBase64(translationPayloadUrl);
+                    return translationBase64;
+                };
+                const getRedrawBase64 = async () => {
+                    if (redrawBase64 == null) redrawBase64 = await urlToBase64(redrawPayloadUrl);
+                    return redrawBase64;
                 };
 
                 let translationText = '';
                 if (config.enableTranslationMode) {
                    setProcessingState(ProcessingStep.API_CALLING);
-                   translationText = await generateTranslation(await getPayloadBase64(), config, signal);
+                   translationText = await generateTranslation(await getTranslationBase64(), config, signal);
                 }
 
                 setProcessingState(ProcessingStep.API_CALLING);
@@ -121,12 +140,14 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                let apiResultBase64 = await generateRegionEdit(await getPayloadBase64(), effectivePrompt, config, signal);
-                payloadBase64 = null; // release reference; let the big string GC
+                let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
+                translationBase64 = null;
+                redrawBase64 = null;
                 // apiResultBase64 is a data:image/... string from the API
-                
-                // Release the payload URL — we're done with it
-                releaseObjectURL(payloadUrl);
+
+                // Release the payload URLs — we're done with them
+                if (translationPayloadUrl !== redrawPayloadUrl) releaseObjectURL(translationPayloadUrl);
+                releaseObjectURL(redrawPayloadUrl);
 
                 // Convert API base64 result to Object URL for further processing
                 let apiResultUrl: string;
@@ -231,8 +252,12 @@ export function useImageProcessor(
             try {
                 // Same mask-canvas size concern as the useFullImageMasking branch.
                 const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, allActiveRegions);
-                maskedContextUrl = await compressImage(fullMaskedUrl, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
-                releaseObjectURL(fullMaskedUrl);
+                if (config.enableAiPayloadCompression) {
+                    maskedContextUrl = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                    releaseObjectURL(fullMaskedUrl);
+                } else {
+                    maskedContextUrl = fullMaskedUrl;
+                }
             } catch (e) {
                 console.warn('Failed to generate masked context image for translation:', e);
                 maskedContextUrl = undefined;
@@ -246,12 +271,14 @@ export function useImageProcessor(
             // Track URLs created in this task for cleanup on error
             let croppedUrl: string | undefined;
             let paddedUrl: string | undefined;
+            let translationPayloadUrl: string | undefined;
+            let redrawPayloadUrl: string | undefined;
             let apiResultUrl: string | undefined;
-            
+
             try {
                 if (signal.aborted) return;
                 croppedUrl = await cropRegion(imgElement, region);
-                
+
                 let payloadUrl = croppedUrl;
                 let paddingInfo: PaddingInfo | null = null;
                 if (config.enableSquareFill) {
@@ -266,18 +293,44 @@ export function useImageProcessor(
 
                 if (signal.aborted) return;
 
-                // Convert to base64 ONCE at the API boundary, reuse across translation + edit calls.
-                let payloadBase64: string | null = null;
-                const getPayloadBase64 = async () => {
-                    if (payloadBase64 == null) payloadBase64 = await urlToBase64(payloadUrl);
-                    return payloadBase64;
+                // Compress for AI payload — separate encodings for translation
+                // (smaller target) and redraw (larger target). Per-region crops
+                // are often already under both targets, in which case the WebP
+                // encoder short-circuits at the 0.92 probe.
+                let translationActiveUrl = payloadUrl;
+                let redrawActiveUrl = payloadUrl;
+                if (config.enableAiPayloadCompression) {
+                    redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
+                    redrawActiveUrl = redrawPayloadUrl;
+                    if (config.enableTranslationMode) {
+                        translationPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        translationActiveUrl = translationPayloadUrl;
+                    } else {
+                        translationActiveUrl = redrawPayloadUrl;
+                    }
+                    // Original (cropped/padded) no longer needed
+                    releaseObjectURL(payloadUrl);
+                    if (paddedUrl) paddedUrl = undefined;
+                    if (croppedUrl) { releaseObjectURL(croppedUrl); croppedUrl = undefined; }
+                }
+
+                // Convert to base64 lazily; each API call uses its own compressed payload.
+                let translationBase64: string | null = null;
+                let redrawBase64: string | null = null;
+                const getTranslationBase64 = async () => {
+                    if (translationBase64 == null) translationBase64 = await urlToBase64(translationActiveUrl);
+                    return translationBase64;
+                };
+                const getRedrawBase64 = async () => {
+                    if (redrawBase64 == null) redrawBase64 = await urlToBase64(redrawActiveUrl);
+                    return redrawBase64;
                 };
 
                 let translationText = '';
                 if (config.enableTranslationMode) {
                    setProcessingState(ProcessingStep.API_CALLING);
                    const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                   translationText = await generateTranslation(await getPayloadBase64(), config, signal, contextBase64);
+                   translationText = await generateTranslation(await getTranslationBase64(), config, signal, contextBase64);
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();
@@ -292,13 +345,25 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                let apiResultBase64 = await generateRegionEdit(await getPayloadBase64(), effectivePrompt, config, signal);
-                payloadBase64 = null; // release reference; let the big string GC
-                
-                // Release payload URL — done with it
-                releaseObjectURL(payloadUrl);
-                if (paddedUrl) paddedUrl = undefined;
-                if (croppedUrl) { releaseObjectURL(croppedUrl); croppedUrl = undefined; }
+                let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
+                translationBase64 = null; // release reference; let the big string GC
+                redrawBase64 = null;
+
+                // Release payload URLs — done with them
+                if (translationPayloadUrl && translationPayloadUrl !== redrawPayloadUrl) {
+                    releaseObjectURL(translationPayloadUrl);
+                    translationPayloadUrl = undefined;
+                }
+                if (redrawPayloadUrl) {
+                    releaseObjectURL(redrawPayloadUrl);
+                    redrawPayloadUrl = undefined;
+                }
+                if (!config.enableAiPayloadCompression) {
+                    // payloadUrl was the original cropped/padded URL, not yet released
+                    releaseObjectURL(payloadUrl);
+                    if (paddedUrl) paddedUrl = undefined;
+                    if (croppedUrl) { releaseObjectURL(croppedUrl); croppedUrl = undefined; }
+                }
 
                 // Convert API base64 result to Object URL
                 if (apiResultBase64.startsWith('data:')) {
@@ -335,6 +400,8 @@ export function useImageProcessor(
                 if (err.name === 'AbortError') return;
                 // Clean up any URLs we created in this task
                 if (apiResultUrl) releaseObjectURL(apiResultUrl);
+                if (translationPayloadUrl && translationPayloadUrl !== redrawPayloadUrl) releaseObjectURL(translationPayloadUrl);
+                if (redrawPayloadUrl) releaseObjectURL(redrawPayloadUrl);
                 if (paddedUrl) releaseObjectURL(paddedUrl);
                 if (croppedUrl) releaseObjectURL(croppedUrl);
 

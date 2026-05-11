@@ -111,6 +111,11 @@ const DEFAULT_CONFIG: AppConfig = {
   translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   translationPromptNoContext: '',
   translationPromptWithContext: '',
+
+  // AI Payload Compression Defaults
+  enableAiPayloadCompression: true,
+  aiPayloadTranslationTargetKB: 500,
+  aiPayloadRedrawTargetKB: 1500,
 };
 
 export function useConfig() {
@@ -198,6 +203,17 @@ export function useConfig() {
         // Ensure performanceMode exists
         if (typeof migratedConfig.performanceMode === 'undefined') {
             migratedConfig.performanceMode = 'unlimited';
+        }
+
+        // Ensure AI payload compression settings exist
+        if (typeof migratedConfig.enableAiPayloadCompression === 'undefined') {
+            migratedConfig.enableAiPayloadCompression = true;
+        }
+        if (typeof migratedConfig.aiPayloadTranslationTargetKB === 'undefined') {
+            migratedConfig.aiPayloadTranslationTargetKB = 500;
+        }
+        if (typeof migratedConfig.aiPayloadRedrawTargetKB === 'undefined') {
+            migratedConfig.aiPayloadRedrawTargetKB = 1500;
         }
 
         return migratedConfig;

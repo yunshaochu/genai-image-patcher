@@ -173,6 +173,50 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                   )}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
                       <div>
+                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'aiPayloadCompression')}</div>
+                          <div className="text-xs text-skin-muted max-w-[220px]">{t(config.language, 'aiPayloadCompressionDesc')}</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="sr-only peer"
+                            checked={config.enableAiPayloadCompression}
+                            onChange={(e) => updateConfig('enableAiPayloadCompression', e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
+                      </label>
+                  </div>
+                  {config.enableAiPayloadCompression && (
+                      <div className="pl-4 border-l-2 border-skin-border space-y-3 mt-2 animate-in fade-in slide-in-from-top-1">
+                          <div>
+                              <label className="text-[10px] uppercase font-bold text-skin-muted block mb-1">{t(config.language, 'aiPayloadTranslationTargetKB')}</label>
+                              <div className="relative">
+                                  <input
+                                      type="number" min="50" max="10000" step="50"
+                                      value={config.aiPayloadTranslationTargetKB}
+                                      onChange={(e) => updateConfig('aiPayloadTranslationTargetKB', Math.max(50, Math.min(10000, Number(e.target.value) || 500)))}
+                                      className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 pr-10"
+                                  />
+                                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-skin-muted pointer-events-none">KB</span>
+                              </div>
+                          </div>
+                          <div>
+                              <label className="text-[10px] uppercase font-bold text-skin-muted block mb-1">{t(config.language, 'aiPayloadRedrawTargetKB')}</label>
+                              <div className="relative">
+                                  <input
+                                      type="number" min="100" max="20000" step="100"
+                                      value={config.aiPayloadRedrawTargetKB}
+                                      onChange={(e) => updateConfig('aiPayloadRedrawTargetKB', Math.max(100, Math.min(20000, Number(e.target.value) || 1500)))}
+                                      className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 pr-10"
+                                  />
+                                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-skin-muted pointer-events-none">KB</span>
+                              </div>
+                          </div>
+                          <p className="text-[10px] text-skin-muted leading-tight">{t(config.language, 'aiPayloadTargetKBHint')}</p>
+                      </div>
+                  )}
+                  <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
+                      <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableTranslationMode')}</div>
                           <div className="text-xs text-skin-muted max-w-[200px]">{t(config.language, 'enableTranslationModeDesc')}</div>
                       </div>

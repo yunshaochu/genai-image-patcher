@@ -1,4 +1,21 @@
-@import "tailwindcss";
+/* ──────────────────────────────────────────────────────────────
+ * Tailwind v4 source scanning — EXPLICIT ALLOWLIST
+ *
+ * `source(none)` disables Tailwind's default project-wide auto-scan.
+ * Only the paths listed via `@source` below are watched for class names.
+ *
+ * Why: without this, Tailwind scans every file in the project root
+ * (including bug.txt, *.md, etc.), so any save triggers a CSS rebuild
+ * → Vite HMR → full page reload.
+ *
+ * ⚠️ If you start using Tailwind classes somewhere NEW (e.g. a `.ts`
+ * file with template strings, a third-party component in node_modules,
+ * an .mdx doc), ADD ITS PATH HERE — otherwise those classes will be
+ * stripped from the built CSS and your styles silently break.
+ * ────────────────────────────────────────────────────────────── */
+@import "tailwindcss" source(none);
+@source "./**/*.tsx";
+@source "./index.html";
 
 @theme {
   --color-skin-fill: var(--color-fill);
