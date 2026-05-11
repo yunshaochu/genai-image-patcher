@@ -726,11 +726,23 @@ export const stitchImage = async (
       const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
       const ah = ((region.anchorHeight ?? region.height) / 100) * baseImg.naturalHeight;
 
+      // Match CSS `object-fit: contain; object-position: center` used by EditorCanvas overlay.
+      // Without this, pasted patches whose aspect ratio differs from the anchor box get
+      // stretched to fill aw×ah. AI-generated patches already match the anchor aspect, so
+      // this branch is a no-op for them.
+      const srcW = regionImg.naturalWidth;
+      const srcH = regionImg.naturalHeight;
+      const fitScale = srcW > 0 && srcH > 0 ? Math.min(aw / srcW, ah / srcH) : 1;
+      const drawW = srcW * fitScale;
+      const drawH = srcH * fitScale;
+      const drawX = ax + (aw - drawW) / 2;
+      const drawY = ay + (ah - drawH) / 2;
+
       ctx.save();
       ctx.beginPath();
       ctx.rect(x, y, w, h);
       ctx.clip();
-      ctx.drawImage(regionImg, ax, ay, aw, ah);
+      ctx.drawImage(regionImg, drawX, drawY, drawW, drawH);
       ctx.restore();
 
       // Release the temporary restore render if we created one
