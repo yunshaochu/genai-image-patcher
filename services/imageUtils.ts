@@ -120,16 +120,16 @@ export const cleanupImageUrls = (img: UploadedImage) => {
     releaseObjectURL(img.finalResultUrl);
     releaseObjectURL(img.fullAiResultUrl);
     img.regions.forEach(r => {
-        releaseObjectURL(r.processedImageBase64);
-        releaseObjectURL(r.restoreMaskBase64);
+        releaseObjectURL(r.processedImageUrl);
+        releaseObjectURL(r.restoreMaskUrl);
     });
     img.history.forEach(h => {
         releaseObjectURL(h.previewUrl);
         releaseObjectURL(h.fullAiResultUrl);
         releaseObjectURL(h.finalResultUrl);
         h.regions.forEach(r => {
-            releaseObjectURL(r.processedImageBase64);
-            releaseObjectURL(r.restoreMaskBase64);
+            releaseObjectURL(r.processedImageUrl);
+            releaseObjectURL(r.restoreMaskUrl);
         });
     });
 };
@@ -728,15 +728,15 @@ export const stitchImage = async (
 
   ctx.drawImage(baseImg, 0, 0);
 
-  const eligible = regions.filter(r => r.processedImageBase64 && r.status === 'completed');
+  const eligible = regions.filter(r => r.processedImageUrl && r.status === 'completed');
 
   // Parallel: produce each region's displayUrl (optional restore render) and decode the
   // patch image. With N regions this collapses 2N sequential async waits into one barrier.
   const prepared = await Promise.all(eligible.map(async region => {
-    const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
+    const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskUrl;
     const displayUrl = hasRestore
-      ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes, region.restoreMaskBase64)
-      : region.processedImageBase64;
+      ? await renderRegionWithRestore(region.processedImageUrl, region.restoreBoxes, region.restoreMaskUrl)
+      : region.processedImageUrl;
     const regionImg = await loadImage(displayUrl);
     return { region, displayUrl, regionImg, hasRestore };
   }));

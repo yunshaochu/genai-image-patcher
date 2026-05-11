@@ -24,7 +24,8 @@ export default function App() {
   
   const {
     images,
-    setImages,
+    updateImage,
+    updateAllImages,
     selectedImage,
     selectedImageId,
     selectedRegionId,
@@ -54,7 +55,7 @@ export default function App() {
       handleProcess,
       handleStop,
       handleAutoDetect
-  } = useImageProcessor(images, setImages, config, selectedImage);
+  } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage);
 
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -93,8 +94,7 @@ export default function App() {
                 }
                 const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, imageDataUrl, updatedRegions);
                 
-                setImages(prev => prev.map(img => {
-                    if (img.id !== imageId) return img;
+                updateImage(imageId, img => {
                     const currentHistory = [...img.history];
                     if (currentHistory[img.historyIndex]) {
                        currentHistory[img.historyIndex].fullAiResultUrl = imageDataUrl;
@@ -103,14 +103,14 @@ export default function App() {
                     if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
                     if (img.finalResultUrl) releaseObjectURL(img.finalResultUrl);
 
-                    return { 
-                        ...img, 
+                    return {
+                        ...img,
                         fullAiResultUrl: imageDataUrl,
                         finalResultUrl: stitchedUrl,
-                        regions: updatedRegions, 
-                        history: currentHistory 
+                        regions: updatedRegions,
+                        history: currentHistory
                     };
-                }));
+                });
             } else {
                 for (const r of targetImg.regions) {
                     try {
@@ -121,70 +121,65 @@ export default function App() {
                             targetImg.originalHeight,
                             config.fullImageOpaquePercent
                         );
-                        updatedRegions.push({ ...r, processedImageBase64: crop, status: 'completed', anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height });
+                        updatedRegions.push({ ...r, processedImageUrl: crop, status: 'completed', anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height });
                     } catch (e) {
                         console.error("Failed to extract crop for region", r.id, e);
                         updatedRegions.push({ ...r, status: 'failed' });
                     }
                 }
                 
-                setImages(prev => prev.map(img => {
-                    if (img.id !== imageId) return img;
+                updateImage(imageId, img => {
                     const currentHistory = [...img.history];
                     if (currentHistory[img.historyIndex]) {
                        currentHistory[img.historyIndex].fullAiResultUrl = imageDataUrl;
                     }
                     if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
 
-                    return { 
-                        ...img, 
+                    return {
+                        ...img,
                         fullAiResultUrl: imageDataUrl,
-                        regions: updatedRegions, 
-                        history: currentHistory 
+                        regions: updatedRegions,
+                        history: currentHistory
                     };
-                }));
+                });
             }
         })();
         return;
     }
 
-    setImages(prev => {
-        return prev.map(img => {
-            if (img.id !== imageId) return img;
-            
-            let updatedRegions: Region[];
-            
-            // Legacy/Alternative Manual Full Image as a new region (fallback)
-            if (regionId === 'manual-full-image') {
-                const fullRegion: Region = {
-                    id: crypto.randomUUID(),
-                    x: 0, y: 0, width: 100, height: 100,
-                    type: 'rect',
-                    status: 'completed',
-                    processedImageBase64: imageDataUrl,
-                    source: 'manual' as const,
-                    anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
-                };
-               updatedRegions = [...img.regions, fullRegion];
-            } else {
-               // Release old region URL before replacing
-               const oldRegion = img.regions.find(r => r.id === regionId);
-               if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
+    updateImage(imageId, img => {
+        let updatedRegions: Region[];
 
-               updatedRegions = img.regions.map(r => 
-                  r.id === regionId ? { ...r, processedImageBase64: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
-               );
-            }
+        // Legacy/Alternative Manual Full Image as a new region (fallback)
+        if (regionId === 'manual-full-image') {
+            const fullRegion: Region = {
+                id: crypto.randomUUID(),
+                x: 0, y: 0, width: 100, height: 100,
+                type: 'rect',
+                status: 'completed',
+                processedImageUrl: imageDataUrl,
+                source: 'manual' as const,
+                anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
+            };
+           updatedRegions = [...img.regions, fullRegion];
+        } else {
+           // Release old region URL before replacing
+           const oldRegion = img.regions.find(r => r.id === regionId);
+           if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
 
-            const currentHistory = [...img.history];
-            if (currentHistory[img.historyIndex]) {
-                currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
-            }
+           updatedRegions = img.regions.map(r =>
+              r.id === regionId ? { ...r, processedImageUrl: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
+           );
+        }
 
-            return { ...img, regions: updatedRegions, history: currentHistory };
-        });
+        const currentHistory = [...img.history];
+        if (currentHistory[img.historyIndex]) {
+            currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
+        }
+
+        return { ...img, regions: updatedRegions, history: currentHistory };
     });
-  }, [images, config.useInvertedMasking, config.fullImageOpaquePercent, setImages]);
+  }, [images, config.useInvertedMasking, config.fullImageOpaquePercent, updateImage]);
 
   // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
   const handleInteractionStart = useCallback(() => {
@@ -196,7 +191,7 @@ export default function App() {
   }, []);
 
   // --- Regions Update Handler ---
-  // Green frame resize/move no longer re-crops processedImageBase64.
+  // Green frame resize/move no longer re-crops processedImageUrl.
   // The processed image stays at its anchor size; the green frame acts as a viewport window.
   const onRegionsChanged = useCallback((imageId: string, newRegions: Region[]) => {
       handleUpdateRegions(imageId, newRegions);
@@ -207,12 +202,12 @@ export default function App() {
               if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
               debounceTimerRef.current = setTimeout(async () => {
                   const stitchedUrl = await stitchImageInverted(targetImage.previewUrl, targetImage.fullAiResultUrl!, newRegions);
-                  setImages(prev => prev.map(img => img.id === imageId ? { ...img, finalResultUrl: stitchedUrl } : img));
+                  updateImage(imageId, img => ({ ...img, finalResultUrl: stitchedUrl }));
               }, 200);
           }
           return;
       }
-  }, [handleUpdateRegions, config.useInvertedMasking, images, setImages]);
+  }, [handleUpdateRegions, config.useInvertedMasking, images, updateImage]);
 
   // --- Handlers ---
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -312,7 +307,7 @@ export default function App() {
 
       const region = img.regions.find(r => r.id === regionId);
       if (!region) return;
-      let startBase64 = region.processedImageBase64;
+      let startBase64 = region.processedImageUrl;
       if (!startBase64) {
          const imgEl = await loadImage(img.previewUrl);
          startBase64 = await cropRegion(imgEl, region);
@@ -347,55 +342,43 @@ export default function App() {
      const img = images.find(i => i.id === imageId);
      const region = img?.regions.find(r => r.id === regionId);
      if (!img || !region) return;
-     setImages(prev => prev.map(currentImg =>
-         currentImg.id === imageId
-           ? {
-               ...currentImg,
-               regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: true } : r)
-             }
-           : currentImg
-     ));
+     updateImage(imageId, currentImg => ({
+         ...currentImg,
+         regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: true } : r)
+     }));
      try {
          const imgEl = await loadImage(img.previewUrl);
          const cropUrl = await cropRegion(imgEl, region);
          const text = await recognizeText(cropUrl, config);
          // Release the temporary crop URL after OCR is done
          releaseObjectURL(cropUrl);
-         setImages(prev => prev.map(currentImg =>
-            currentImg.id === imageId
-              ? {
-                  ...currentImg,
-                  regions: currentImg.regions.map(r => r.id === regionId ? { ...r, ocrText: text, isOcrLoading: false } : r)
-                }
-              : currentImg
-         ));
+         updateImage(imageId, currentImg => ({
+             ...currentImg,
+             regions: currentImg.regions.map(r => r.id === regionId ? { ...r, ocrText: text, isOcrLoading: false } : r)
+         }));
      } catch (e: any) {
          setErrorMsg("OCR Error: " + e.message);
-         setImages(prev => prev.map(currentImg =>
-            currentImg.id === imageId
-              ? {
-                  ...currentImg,
-                  regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: false } : r)
-                }
-              : currentImg
-         ));
+         updateImage(imageId, currentImg => ({
+             ...currentImg,
+             regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: false } : r)
+         }));
      }
-  }, [images, config, setImages, setErrorMsg]);
+  }, [images, config, updateImage, setErrorMsg]);
 
   // --- RESTORE BOXES HANDLER ---
   const handleUpdateRestoreBoxes = useCallback((regionId: string, boxes: RestoreBox[]) => {
-      setImages(prev => prev.map(img => ({
+      updateAllImages(img => ({
           ...img,
           regions: img.regions.map(r => r.id === regionId ? { ...r, restoreBoxes: boxes } : r)
-      })));
-  }, [setImages]);
+      }));
+  }, [updateAllImages]);
 
   const handleUpdateRestoreMask = useCallback((regionId: string, maskBase64: string | null) => {
-      setImages(prev => prev.map(img => ({
+      updateAllImages(img => ({
           ...img,
-          regions: img.regions.map(r => r.id === regionId ? { ...r, restoreMaskBase64: maskBase64 || undefined } : r)
-      })));
-  }, [setImages]);
+          regions: img.regions.map(r => r.id === regionId ? { ...r, restoreMaskUrl: maskBase64 || undefined } : r)
+      }));
+  }, [updateAllImages]);
 
   // ON-DEMAND STITCHING for Download
   const handleDownload = useCallback(async () => {
@@ -475,10 +458,10 @@ export default function App() {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = setTimeout(async () => {
               const stitchedUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl!, updatedRegions);
-              setImages(prev => prev.map(i => i.id === imageId ? { ...i, finalResultUrl: stitchedUrl } : i));
+              updateImage(imageId, i => ({ ...i, finalResultUrl: stitchedUrl }));
           }, 200);
       }
-  }, [images, config.useInvertedMasking, handleUpdateRegions, setImages]);
+  }, [images, config.useInvertedMasking, handleUpdateRegions, updateImage]);
 
   // --- DRAG & DROP ---
   const onDragEnter = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
@@ -614,15 +597,12 @@ export default function App() {
                       <button
                         onClick={() => {
                           if (!restoreSelectedRegionId || !selectedImage) return;
-                          setImages(prev => prev.map(img => {
-                            if (img.id !== selectedImage.id) return img;
-                            return {
+                          updateImage(selectedImage.id, img => ({
                               ...img,
                               regions: img.regions.map(r => {
                                 if (r.id !== restoreSelectedRegionId) return r;
-                                return { ...r, restoreBoxes: undefined, restoreMaskBase64: undefined };
+                                return { ...r, restoreBoxes: undefined, restoreMaskUrl: undefined };
                               })
-                            };
                           }));
                         }}
                         className="px-2 py-1 text-[10px] font-bold bg-rose-500/80 text-white rounded border border-rose-500 hover:bg-rose-500 disabled:opacity-30"

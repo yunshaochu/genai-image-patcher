@@ -258,8 +258,8 @@ export const ManualPatchRow: React.FC<{
                onPaste={handlePaste}
                title={t(lang, 'pasteHint')}
              >
-                {region.processedImageBase64 ? (
-                  <img src={region.processedImageBase64} className="w-full h-full object-contain" />
+                {region.processedImageUrl ? (
+                  <img src={region.processedImageUrl} className="w-full h-full object-contain" />
                 ) : (
                   <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
                 )}

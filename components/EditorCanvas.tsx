@@ -363,8 +363,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   // stays stable unless the restore-relevant data actually changes.
   const restoreSignature = useMemo(
     () => image.regions
-      .filter(r => r.status === 'completed' && r.processedImageBase64)
-      .map(r => `${r.id}|${r.processedImageBase64}|${r.restoreMaskBase64 || ''}|${(r.restoreBoxes || []).length}`)
+      .filter(r => r.status === 'completed' && r.processedImageUrl)
+      .map(r => `${r.id}|${r.processedImageUrl}|${r.restoreMaskUrl || ''}|${(r.restoreBoxes || []).length}`)
       .join('||'),
     [image.regions]
   );
@@ -376,14 +376,14 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       const oldCache = restoreCompositedCacheRef.current;
       const newCache: Record<string, string> = {};
       for (const region of image.regions) {
-        if (region.status === 'completed' && region.processedImageBase64) {
-          const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
+        if (region.status === 'completed' && region.processedImageUrl) {
+          const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskUrl;
           if (hasRestore) {
             try {
               newCache[region.id] = await renderRegionWithRestore(
-                region.processedImageBase64,
+                region.processedImageUrl,
                 region.restoreBoxes,
-                region.restoreMaskBase64
+                region.restoreMaskUrl
               );
             } catch (e) {
               console.error('Failed to render restore for region', region.id, e);
@@ -421,10 +421,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       return;
     }
     const region = image.regions.find(r => r.id === restoreSelectedRegionId);
-    if (!region || !region.processedImageBase64) return;
+    if (!region || !region.processedImageUrl) return;
 
     const initMask = async () => {
-      const img = await loadImage(region.processedImageBase64!);
+      const img = await loadImage(region.processedImageUrl!);
       const w = img.naturalWidth;
       const h = img.naturalHeight;
       const maskCanvas = document.createElement('canvas');
@@ -432,8 +432,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       maskCanvas.height = h;
       const mctx = maskCanvas.getContext('2d');
       if (!mctx) return;
-      if (region.restoreMaskBase64) {
-        const maskImg = await loadImage(region.restoreMaskBase64);
+      if (region.restoreMaskUrl) {
+        const maskImg = await loadImage(region.restoreMaskUrl);
         mctx.drawImage(maskImg, 0, 0);
       } else {
         mctx.fillStyle = 'white';
@@ -502,7 +502,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     if (disabled) return;
     const newRegions = image.regions.map((r) => {
       if (r.id === regionId) {
-        return { ...r, status: 'pending', processedImageBase64: undefined, restoreBoxes: undefined } as Region;
+        return { ...r, status: 'pending', processedImageUrl: undefined, restoreBoxes: undefined } as Region;
       }
       return r;
     });
@@ -742,12 +742,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
           />
 
           {/* RESULT MODE: Processed image overlays */}
-          {!isOriginalMode && image.regions.filter(r => r.status === 'completed' && r.processedImageBase64).map((region) => {
+          {!isOriginalMode && image.regions.filter(r => r.status === 'completed' && r.processedImageUrl).map((region) => {
             const ax = region.anchorX ?? region.x;
             const ay = region.anchorY ?? region.y;
             const aw = region.anchorWidth ?? region.width;
             const ah = region.anchorHeight ?? region.height;
-            const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskBase64;
+            const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskUrl;
             const clipTop    = aw > 0 && ah > 0 ? Math.max(0, ((region.y - ay) / ah) * 100) : 0;
             const clipRight  = aw > 0 && ah > 0 ? Math.max(0, ((ax + aw - region.x - region.width) / aw) * 100) : 0;
             const clipBottom = aw > 0 && ah > 0 ? Math.max(0, ((ay + ah - region.y - region.height) / ah) * 100) : 0;
@@ -755,7 +755,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             return (
               <img
                 key={`overlay-${region.id}`}
-                src={hasRestore ? (restoreCompositedCacheRef.current[region.id] || region.processedImageBase64) : region.processedImageBase64}
+                src={hasRestore ? (restoreCompositedCacheRef.current[region.id] || region.processedImageUrl) : region.processedImageUrl}
                 className="absolute pointer-events-none select-none"
                 style={{
                   left: `${ax}%`,

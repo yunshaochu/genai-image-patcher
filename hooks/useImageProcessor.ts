@@ -1,5 +1,5 @@
 
-import React, { useState, useRef } from 'react';
+import { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -8,8 +8,9 @@ import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 
 export function useImageProcessor(
-    images: UploadedImage[], 
-    setImages: React.Dispatch<React.SetStateAction<UploadedImage[]>>,
+    images: UploadedImage[],
+    updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
+    updateAllImages: (updater: (img: UploadedImage) => UploadedImage) => void,
     config: AppConfig,
     selectedImage: UploadedImage | undefined
 ) {
@@ -23,10 +24,10 @@ export function useImageProcessor(
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
         }
-        setImages(prev => prev.map(img => ({
+        updateAllImages(img => ({
             ...img,
             regions: img.regions.map(r => r.status === 'processing' ? { ...r, status: 'pending' } : r)
-        })));
+        }));
         setProcessingState(ProcessingStep.IDLE);
         setErrorMsg(t(config.language, 'stopped_by_user'));
     };
@@ -49,9 +50,7 @@ export function useImageProcessor(
             };
             initialRegions = [fullRegion];
             regionsMap.set(fullRegion.id, fullRegion);
-            setImages(prev => prev.map(img => 
-                img.id === imageSnapshot.id ? { ...img, regions: initialRegions } : img
-            ));
+            updateImage(imageSnapshot.id, img => ({ ...img, regions: initialRegions }));
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
@@ -68,7 +67,7 @@ export function useImageProcessor(
             ? await loadImage(imageSnapshot.previewUrl)
             : imgElement;
         regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
-        setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
+        updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
 
         if (signal.aborted) return;
         setProcessingState(ProcessingStep.CROPPING);
@@ -157,8 +156,7 @@ export function useImageProcessor(
                     });
                     const currentAllRegions = Array.from(regionsMap.values());
 
-                    setImages(prev => prev.map(img => {
-                        if (img.id !== imageSnapshot.id) return img;
+                    updateImage(imageSnapshot.id, img => {
                         const updatedHistory = [...img.history];
                         // Release old fullAiResultUrl in history if present
                         if (updatedHistory[img.historyIndex]?.fullAiResultUrl) {
@@ -167,21 +165,21 @@ export function useImageProcessor(
                         if (updatedHistory[img.historyIndex]) {
                            updatedHistory[img.historyIndex] = {
                                ...updatedHistory[img.historyIndex],
-                               fullAiResultUrl: apiResultUrl 
+                               fullAiResultUrl: apiResultUrl
                            };
                         }
                         // Release old finalResultUrl
                         if (img.finalResultUrl) releaseObjectURL(img.finalResultUrl);
                         if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
 
-                        return { 
-                            ...img, 
-                            fullAiResultUrl: apiResultUrl, 
+                        return {
+                            ...img,
+                            fullAiResultUrl: apiResultUrl,
                             finalResultUrl: stitchedUrl,
-                            regions: currentAllRegions, 
-                            history: updatedHistory 
+                            regions: currentAllRegions,
+                            history: updatedHistory
                         };
-                    }));
+                    });
                 } else {
                     // Standard Masking Mode
                     for (const region of regionsToProcess) {
@@ -192,14 +190,13 @@ export function useImageProcessor(
                             maskImg.naturalHeight,
                             config.fullImageOpaquePercent
                         );
-                        const completedRegion = { ...region, processedImageBase64: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                        const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                         regionsMap.set(region.id, completedRegion);
                     }
 
                     const currentAllRegions = Array.from(regionsMap.values());
                     
-                    setImages(prev => prev.map(img => {
-                        if (img.id !== imageSnapshot.id) return img;
+                    updateImage(imageSnapshot.id, img => {
                         const updatedHistory = [...img.history];
                         if (updatedHistory[img.historyIndex]?.fullAiResultUrl) {
                             releaseObjectURL(updatedHistory[img.historyIndex].fullAiResultUrl);
@@ -207,20 +204,20 @@ export function useImageProcessor(
                         if (updatedHistory[img.historyIndex]) {
                            updatedHistory[img.historyIndex] = {
                                ...updatedHistory[img.historyIndex],
-                               fullAiResultUrl: apiResultUrl 
+                               fullAiResultUrl: apiResultUrl
                            };
                         }
                         if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
 
                         return { ...img, fullAiResultUrl: apiResultUrl, regions: currentAllRegions, history: updatedHistory };
-                    }));
+                    });
                 }
             } catch (err: any) {
                 if (err.name !== 'AbortError') {
                     regionsToProcess.forEach(r => {
                         regionsMap.set(r.id, { ...r, status: 'failed' as const });
                     });
-                    setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
+                    updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
                 }
             } finally {
                 globalSemaphore.release();
@@ -325,18 +322,15 @@ export function useImageProcessor(
 
                 // Release old region URL before setting new one
                 const oldRegion = regionsMap.get(region.id);
-                if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
+                if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
 
-                const completedRegion = { ...region, processedImageBase64: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                const completedRegion = { ...region, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 regionsMap.set(region.id, completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
                 
                 const currentAllRegions = Array.from(regionsMap.values());
                 
-                setImages(prev => prev.map(img => {
-                    if (img.id !== imageSnapshot.id) return img;
-                    return { ...img, regions: currentAllRegions };
-                }));
+                updateImage(imageSnapshot.id, img => ({ ...img, regions: currentAllRegions }));
             } catch (err: any) {
                 if (err.name === 'AbortError') return;
                 // Clean up any URLs we created in this task
@@ -346,7 +340,7 @@ export function useImageProcessor(
 
                 const failedRegion = { ...region, status: 'failed' as const };
                 regionsMap.set(region.id, failedRegion);
-                setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
+                updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
             } finally {
                 globalSemaphore.release();
             }
@@ -413,11 +407,7 @@ export function useImageProcessor(
                try {
                    const newRegions = await detectBubbles(img.previewUrl, config);
                    if (newRegions.length > 0) {
-                       setImages(prev => prev.map(currentImg => 
-                           currentImg.id === img.id 
-                              ? { ...currentImg, regions: [...currentImg.regions, ...newRegions] }
-                              : currentImg
-                       ));
+                       updateImage(img.id, currentImg => ({ ...currentImg, regions: [...currentImg.regions, ...newRegions] }));
                    }
                } catch (e: any) {
                    console.error(`Detection failed for ${img.file.name}:`, e);

@@ -5,16 +5,67 @@ import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, 
 
 type ViewMode = 'original' | 'result';
 
+// Normalized store: byId for O(1) lookups, order for stable iteration.
+// Replaces the previous setImages(prev => prev.map(...)) pattern that did O(N)
+// reference copies on every single-region change.
+type ImageStore = {
+  byId: Record<string, UploadedImage>;
+  order: string[];
+};
+
+const EMPTY_STORE: ImageStore = { byId: {}, order: [] };
+
 export function useImageManager(performanceMode: PerformanceMode) {
-  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [store, setStore] = useState<ImageStore>(EMPTY_STORE);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
-  const selectedImage = useMemo(
-    () => images.find((img) => img.id === selectedImageId),
-    [images, selectedImageId]
+  // Derived array view for consumers that iterate (renderers, batch ops).
+  // useMemo so consumers' useEffect deps remain stable across renders that
+  // don't actually touch image data.
+  const images = useMemo<UploadedImage[]>(
+    () => store.order.map((id) => store.byId[id]).filter(Boolean),
+    [store]
+  );
+
+  // O(1) selected image lookup — was O(N) Array.prototype.find before.
+  const selectedImage = selectedImageId ? store.byId[selectedImageId] : undefined;
+
+  // -------------------- Normalized mutation helpers --------------------
+
+  /** Update a single image by id. If `updater` returns the same reference,
+   * the store is not changed (cheap no-op). */
+  const updateImage = useCallback(
+    (id: string, updater: (img: UploadedImage) => UploadedImage) => {
+      setStore((s) => {
+        const prev = s.byId[id];
+        if (!prev) return s;
+        const next = updater(prev);
+        if (next === prev) return s;
+        return { byId: { ...s.byId, [id]: next }, order: s.order };
+      });
+    },
+    []
+  );
+
+  /** Apply `updater` to every image. */
+  const updateAllImages = useCallback(
+    (updater: (img: UploadedImage) => UploadedImage) => {
+      setStore((s) => {
+        const newById: Record<string, UploadedImage> = {};
+        let changed = false;
+        for (const id of s.order) {
+          const prev = s.byId[id];
+          const next = updater(prev);
+          if (next !== prev) changed = true;
+          newById[id] = next;
+        }
+        return changed ? { byId: newById, order: s.order } : s;
+      });
+    },
+    []
   );
 
   // ---------------- Standard-mode stitch result cache ----------------
@@ -27,13 +78,13 @@ export function useImageManager(performanceMode: PerformanceMode) {
   const computeStitchSignature = (image: UploadedImage): string => {
     const parts: string[] = [image.previewUrl];
     for (const r of image.regions) {
-      if (r.status !== 'completed' || !r.processedImageBase64) continue;
+      if (r.status !== 'completed' || !r.processedImageUrl) continue;
       parts.push(
         r.id,
-        r.processedImageBase64,
+        r.processedImageUrl,
         `${r.x},${r.y},${r.width},${r.height}`,
         `${r.anchorX ?? r.x},${r.anchorY ?? r.y},${r.anchorWidth ?? r.width},${r.anchorHeight ?? r.height}`,
-        r.restoreMaskBase64 || '',
+        r.restoreMaskUrl || '',
         // restoreBoxes is small (a handful of rects); JSON.stringify is cheap here.
         r.restoreBoxes ? JSON.stringify(r.restoreBoxes) : ''
       );
@@ -70,7 +121,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
 
   const addImageFiles = async (fileList: File[]) => {
     const imageFiles = fileList.filter(f => f.type.startsWith('image/') && !f.name.startsWith('.'));
-    
+
     if (imageFiles.length === 0) return;
 
     setUploadProgress({ current: 0, total: imageFiles.length });
@@ -120,12 +171,18 @@ export function useImageManager(performanceMode: PerformanceMode) {
     }
 
     if (newImages.length > 0) {
-      setImages((prev) => {
-        const updated = [...prev, ...newImages];
-        return updated.sort(naturalSortCompare);
+      let firstAddedId: string | null = null;
+      setStore((s) => {
+        const mergedById: Record<string, UploadedImage> = { ...s.byId };
+        for (const img of newImages) mergedById[img.id] = img;
+        const merged: UploadedImage[] = [...s.order.map((id) => s.byId[id]), ...newImages];
+        merged.sort(naturalSortCompare);
+        const newOrder = merged.map((m) => m.id);
+        return { byId: mergedById, order: newOrder };
       });
-      if (!selectedImageId) {
-         handleSelectImage(newImages[0].id);
+      firstAddedId = newImages[0].id;
+      if (!selectedImageId && firstAddedId) {
+        handleSelectImage(firstAddedId);
       }
     }
     setUploadProgress(null);
@@ -137,173 +194,152 @@ export function useImageManager(performanceMode: PerformanceMode) {
     setViewMode('original');
   }, []);
 
-  const handleUpdateRegions = (imageId: string, regions: Region[]) => {
-    setImages(prev => {
-        const nextState = prev.map(img => {
-          if (img.id !== imageId) return img;
-          const updated = { ...img, regions };
-          const currentHistory = [...updated.history];
-          if (currentHistory[updated.historyIndex]) {
-              currentHistory[updated.historyIndex] = {
-                  ...currentHistory[updated.historyIndex],
-                  regions: regions
-              };
-          }
-          return { ...updated, history: currentHistory };
-        });
-        
-        return nextState;
-    });
-  };
-
-  const handleUpdateRegionPrompt = (imageId: string, regionId: string, prompt: string) => {
-    setImages(prev => prev.map(img => {
-      if (img.id !== imageId) return img;
-      const newRegions = img.regions.map(r => r.id === regionId ? { ...r, customPrompt: prompt } : r);
-      
+  const handleUpdateRegions = useCallback((imageId: string, regions: Region[]) => {
+    updateImage(imageId, (img) => {
       const currentHistory = [...img.history];
       if (currentHistory[img.historyIndex]) {
-          currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: newRegions };
+        currentHistory[img.historyIndex] = {
+          ...currentHistory[img.historyIndex],
+          regions: regions,
+        };
+      }
+      return { ...img, regions, history: currentHistory };
+    });
+  }, [updateImage]);
+
+  const handleUpdateRegionPrompt = useCallback((imageId: string, regionId: string, prompt: string) => {
+    updateImage(imageId, (img) => {
+      const newRegions = img.regions.map((r) => (r.id === regionId ? { ...r, customPrompt: prompt } : r));
+      const currentHistory = [...img.history];
+      if (currentHistory[img.historyIndex]) {
+        currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: newRegions };
       }
       return { ...img, regions: newRegions, history: currentHistory };
-    }));
-  };
+    });
+  }, [updateImage]);
 
-  const handleUpdateImagePrompt = (imageId: string, prompt: string) => {
-      setImages(prev => prev.map(img => {
-          if (img.id !== imageId) return img;
-          return { ...img, customPrompt: prompt };
-      }));
-  };
+  const handleUpdateImagePrompt = useCallback((imageId: string, prompt: string) => {
+    updateImage(imageId, (img) => ({ ...img, customPrompt: prompt }));
+  }, [updateImage]);
 
-  const handleToggleSkip = (imageId: string) => {
-    setImages(prev => prev.map(img =>
-        img.id === imageId ? { ...img, isSkipped: !img.isSkipped } : img
-    ));
-  };
+  const handleToggleSkip = useCallback((imageId: string) => {
+    updateImage(imageId, (img) => ({ ...img, isSkipped: !img.isSkipped }));
+  }, [updateImage]);
 
-  const handleDeleteImage = (imageId: string) => {
-    setImages(prev => {
-      // Release Object URLs for the deleted image BEFORE removing from state
-      const deleted = prev.find(img => img.id === imageId);
-      if (deleted) cleanupImageUrls(deleted);
+  const handleDeleteImage = useCallback((imageId: string) => {
+    setStore((s) => {
+      const deleted = s.byId[imageId];
+      if (!deleted) return s;
+      cleanupImageUrls(deleted);
       evictStitchCache(imageId);
 
-      const newImages = prev.filter(img => img.id !== imageId);
-      if (selectedImageId === imageId) {
-        if (newImages.length > 0) {
-          setSelectedImageId(newImages[0].id);
-        } else {
-          setSelectedImageId(null);
-        }
-      }
-      return newImages;
-    });
-  };
+      const newById = { ...s.byId };
+      delete newById[imageId];
+      const newOrder = s.order.filter((id) => id !== imageId);
 
-  const handleClearAllImages = () => {
-    // Release ALL Object URLs before clearing
-    setImages(prev => {
-      prev.forEach(img => cleanupImageUrls(img));
-      return prev; // Return same ref; the setImages below replaces it
+      if (selectedImageId === imageId) {
+        setSelectedImageId(newOrder[0] ?? null);
+      }
+      return { byId: newById, order: newOrder };
     });
-    stitchCacheRef.current.forEach(v => releaseObjectURL(v.url));
+  }, [selectedImageId]);
+
+  const handleClearAllImages = useCallback(() => {
+    setStore((s) => {
+      for (const id of s.order) cleanupImageUrls(s.byId[id]);
+      return EMPTY_STORE;
+    });
+    stitchCacheRef.current.forEach((v) => releaseObjectURL(v.url));
     stitchCacheRef.current.clear();
-    setImages([]);
     setSelectedImageId(null);
     setSelectedRegionId(null);
-  };
+  }, []);
 
   // --- HISTORY ACTIONS ---
 
-  const handleApplyResultAsOriginal = (imageId: string, stitchedUrl: string) => {
-      setImages(prev => prev.map(img => {
-          if (img.id !== imageId) return img;
+  const handleApplyResultAsOriginal = useCallback((imageId: string, stitchedUrl: string) => {
+    updateImage(imageId, (img) => {
+      const newState: ImageHistoryState = {
+        previewUrl: stitchedUrl,
+        regions: [],
+        finalResultUrl: undefined,
+        width: img.originalWidth,
+        height: img.originalHeight,
+        fullAiResultUrl: undefined,
+      };
 
-          const newState: ImageHistoryState = {
-              previewUrl: stitchedUrl,
-              regions: [],
-              finalResultUrl: undefined,
-              width: img.originalWidth,
-              height: img.originalHeight,
-              fullAiResultUrl: undefined 
-          };
+      const newHistory = img.history.slice(0, img.historyIndex + 1);
+      newHistory.push(newState);
 
-          let newHistory = img.history.slice(0, img.historyIndex + 1);
-          newHistory.push(newState);
-          
-          // Cap history at MAX_HISTORY_ENTRIES — release URLs for evicted entries
-          while (newHistory.length > MAX_HISTORY_ENTRIES) {
-              const evicted = newHistory.shift();
-              if (evicted) {
-                  releaseObjectURL(evicted.previewUrl);
-                  releaseObjectURL(evicted.fullAiResultUrl);
-                  releaseObjectURL(evicted.finalResultUrl);
-                  evicted.regions.forEach(r => {
-                      releaseObjectURL(r.processedImageBase64);
-                      releaseObjectURL(r.restoreMaskBase64);
-                  });
-              }
-          }
-          
-          const newIndex = Math.min(img.historyIndex + 1, newHistory.length - 1);
+      while (newHistory.length > MAX_HISTORY_ENTRIES) {
+        const evicted = newHistory.shift();
+        if (evicted) {
+          releaseObjectURL(evicted.previewUrl);
+          releaseObjectURL(evicted.fullAiResultUrl);
+          releaseObjectURL(evicted.finalResultUrl);
+          evicted.regions.forEach((r) => {
+            releaseObjectURL(r.processedImageUrl);
+            releaseObjectURL(r.restoreMaskUrl);
+          });
+        }
+      }
 
-          return {
-              ...img,
-              previewUrl: newState.previewUrl,
-              regions: newState.regions,
-              finalResultUrl: undefined,
-              fullAiResultUrl: undefined,
-              history: newHistory,
-              historyIndex: newIndex
-          };
-      }));
-      setViewMode('original');
-  };
+      const newIndex = Math.min(img.historyIndex + 1, newHistory.length - 1);
 
-  const handleUndoImage = (imageId: string) => {
-      setImages(prev => prev.map(img => {
-          if (img.id !== imageId || img.historyIndex <= 0) return img;
+      return {
+        ...img,
+        previewUrl: newState.previewUrl,
+        regions: newState.regions,
+        finalResultUrl: undefined,
+        fullAiResultUrl: undefined,
+        history: newHistory,
+        historyIndex: newIndex,
+      };
+    });
+    setViewMode('original');
+  }, [updateImage]);
 
-          const newIndex = img.historyIndex - 1;
-          const prevState = img.history[newIndex];
+  const handleUndoImage = useCallback((imageId: string) => {
+    updateImage(imageId, (img) => {
+      if (img.historyIndex <= 0) return img;
+      const newIndex = img.historyIndex - 1;
+      const prevState = img.history[newIndex];
+      return {
+        ...img,
+        previewUrl: prevState.previewUrl,
+        regions: prevState.regions,
+        originalWidth: prevState.width,
+        originalHeight: prevState.height,
+        finalResultUrl: prevState.finalResultUrl,
+        fullAiResultUrl: prevState.fullAiResultUrl,
+        historyIndex: newIndex,
+      };
+    });
+  }, [updateImage]);
 
-          return {
-              ...img,
-              previewUrl: prevState.previewUrl,
-              regions: prevState.regions,
-              originalWidth: prevState.width,
-              originalHeight: prevState.height,
-              finalResultUrl: prevState.finalResultUrl,
-              fullAiResultUrl: prevState.fullAiResultUrl,
-              historyIndex: newIndex
-          };
-      }));
-  };
-
-  const handleRedoImage = (imageId: string) => {
-      setImages(prev => prev.map(img => {
-          if (img.id !== imageId || img.historyIndex >= img.history.length - 1) return img;
-
-          const newIndex = img.historyIndex + 1;
-          const nextState = img.history[newIndex];
-
-          return {
-              ...img,
-              previewUrl: nextState.previewUrl,
-              regions: nextState.regions,
-              originalWidth: nextState.width,
-              originalHeight: nextState.height,
-              finalResultUrl: nextState.finalResultUrl,
-              fullAiResultUrl: nextState.fullAiResultUrl,
-              historyIndex: newIndex
-          };
-      }));
-  };
+  const handleRedoImage = useCallback((imageId: string) => {
+    updateImage(imageId, (img) => {
+      if (img.historyIndex >= img.history.length - 1) return img;
+      const newIndex = img.historyIndex + 1;
+      const nextState = img.history[newIndex];
+      return {
+        ...img,
+        previewUrl: nextState.previewUrl,
+        regions: nextState.regions,
+        originalWidth: nextState.width,
+        originalHeight: nextState.height,
+        finalResultUrl: nextState.finalResultUrl,
+        fullAiResultUrl: nextState.fullAiResultUrl,
+        historyIndex: newIndex,
+      };
+    });
+  }, [updateImage]);
 
   return {
     images,
-    setImages,
+    imagesById: store.byId,
+    updateImage,
+    updateAllImages,
     selectedImage,
     selectedImageId,
     selectedRegionId,

@@ -16,8 +16,8 @@ export interface Region {
   height: number; // Percentage 0-100
   type: 'rect'; // Extensible for future shapes
   status: 'pending' | 'processing' | 'completed' | 'failed';
-  processedImageBase64?: string; // The result from API
-  /** The region dimensions at the time processedImageBase64 was generated (percentages). Used for display/stitch alignment when the green frame is resized. */
+  processedImageUrl?: string; // Object URL of the API-generated patch
+  /** The region dimensions at the time processedImageUrl was generated (percentages). Used for display/stitch alignment when the green frame is resized. */
   anchorX?: number;
   anchorY?: number;
   anchorWidth?: number;
@@ -28,7 +28,7 @@ export interface Region {
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
-  restoreMaskBase64?: string; // Brush-based restore mask (涂抹还原), alpha=1=processed, 0=original
+  restoreMaskUrl?: string; // Brush-based restore mask Object URL (涂抹还原), alpha=1=processed, 0=original
 }
 
 export interface ImageHistoryState {
