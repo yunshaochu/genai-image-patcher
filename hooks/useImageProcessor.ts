@@ -7,6 +7,34 @@ import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils
 import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 
+/**
+ * Sentinel string that marks the start of a cached translation block inside
+ * `region.customPrompt`. Anything BEFORE this line is treated as the user's
+ * own instructions; anything AFTER is reused as the cached translation
+ * result (skipping the translation API on subsequent runs).
+ *
+ * To force a re-translation, the user can delete this line (or the whole
+ * customPrompt) in the sidebar textarea.
+ */
+const TRANSLATION_CACHE_MARKER = '以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：';
+
+const splitTranslationCache = (prompt?: string): { userPart: string; cached: string | null } => {
+    if (!prompt) return { userPart: '', cached: null };
+    const idx = prompt.indexOf(TRANSLATION_CACHE_MARKER);
+    if (idx < 0) return { userPart: prompt.trim(), cached: null };
+    const cached = prompt.slice(idx + TRANSLATION_CACHE_MARKER.length).trim();
+    return {
+        userPart: prompt.slice(0, idx).trim(),
+        cached: cached.length > 0 ? cached : null,
+    };
+};
+
+const writeTranslationCache = (userPart: string, translation: string): string => {
+    return userPart
+        ? `${userPart}\n\n${TRANSLATION_CACHE_MARKER}\n${translation}`
+        : `${TRANSLATION_CACHE_MARKER}\n${translation}`;
+};
+
 export function useImageProcessor(
     images: UploadedImage[],
     updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
@@ -126,19 +154,35 @@ export function useImageProcessor(
                 };
 
                 let translationText = '';
+                // Split image-level customPrompt the same way region.customPrompt is split:
+                // userPart = user-written instructions (overrides global prompt in this mode),
+                // cached = prior translation block (if any). Reused → skip translation API.
+                const { userPart: imageUserPart, cached: imageCachedTranslation } = splitTranslationCache(imageSnapshot.customPrompt);
                 if (config.enableTranslationMode) {
-                   setProcessingState(ProcessingStep.API_CALLING);
-                   translationText = await generateTranslation(await getTranslationBase64(), config, signal);
+                   if (imageCachedTranslation) {
+                       translationText = imageCachedTranslation;
+                   } else {
+                       setProcessingState(ProcessingStep.API_CALLING);
+                       translationText = await generateTranslation(await getTranslationBase64(), config, signal);
+
+                       // Persist translation back into image.customPrompt for reuse next run.
+                       if (translationText) {
+                           const newImagePrompt = writeTranslationCache(imageUserPart, translationText);
+                           updateImage(imageSnapshot.id, img => ({ ...img, customPrompt: newImagePrompt }));
+                       }
+                   }
                 }
 
                 setProcessingState(ProcessingStep.API_CALLING);
-                let basePrompt = config.prompt.trim();
-                if (imageSnapshot.customPrompt) {
-                   basePrompt = imageSnapshot.customPrompt.trim();
+                // Global prompt is ALWAYS the base — image/region customPrompts append to it,
+                // never replace it. Keeps the global prompt's contract (size/resolution rules,
+                // style guides etc.) effective regardless of per-image overrides.
+                let effectivePrompt = config.prompt.trim();
+                if (imageUserPart) {
+                   effectivePrompt += ` ${imageUserPart}`;
                 }
-                let effectivePrompt = basePrompt;
                 if (translationText) {
-                    effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
+                    effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
                 translationBase64 = null;
@@ -327,23 +371,50 @@ export function useImageProcessor(
                 };
 
                 let translationText = '';
+                // Pre-split customPrompt up front: userPart = user instructions,
+                // cached = prior translation block (if any). Reused both for the
+                // cache-skip check and for rebuilding the prompt below.
+                const { userPart: userCustomPrompt, cached: cachedTranslation } = splitTranslationCache(region.customPrompt);
                 if (config.enableTranslationMode) {
-                   setProcessingState(ProcessingStep.API_CALLING);
-                   const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                   translationText = await generateTranslation(await getTranslationBase64(), config, signal, contextBase64);
+                   if (cachedTranslation) {
+                       translationText = cachedTranslation;
+                   } else {
+                       setProcessingState(ProcessingStep.API_CALLING);
+                       const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
+                       translationText = await generateTranslation(await getTranslationBase64(), config, signal, contextBase64);
+
+                       // Persist the translation back into region.customPrompt so the
+                       // textarea reflects the cached value and next run reuses it.
+                       if (translationText) {
+                           const newCustomPrompt = writeTranslationCache(userCustomPrompt, translationText);
+                           const current = regionsMap.get(region.id);
+                           if (current) regionsMap.set(region.id, { ...current, customPrompt: newCustomPrompt });
+                           updateImage(imageSnapshot.id, img => ({
+                               ...img,
+                               regions: img.regions.map(r =>
+                                   r.id === region.id ? { ...r, customPrompt: newCustomPrompt } : r
+                               )
+                           }));
+                       }
+                   }
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
+                // Global prompt is ALWAYS the base. image.customPrompt (when present in the
+                // "no-regions auto-full-image" path) appends to it instead of replacing.
                 let basePrompt = config.prompt.trim();
                 if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
-                   basePrompt = imageSnapshot.customPrompt.trim();
+                   const { userPart: imgUserPart } = splitTranslationCache(imageSnapshot.customPrompt);
+                   if (imgUserPart) basePrompt += ` ${imgUserPart}`;
                 }
-                const regionSpecificPrompt = region.customPrompt ? region.customPrompt.trim() : '';
+                // Use ONLY the user-written portion here; translation is appended
+                // separately so the format stays identical whether translation came
+                // from the cache or a fresh API call.
                 let effectivePrompt = basePrompt;
-                if (regionSpecificPrompt) {
-                    effectivePrompt += ` ${regionSpecificPrompt}`;
+                if (userCustomPrompt) {
+                    effectivePrompt += ` ${userCustomPrompt}`;
                 }
                 if (translationText) {
-                    effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
+                    effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
                 translationBase64 = null; // release reference; let the big string GC
@@ -389,7 +460,12 @@ export function useImageProcessor(
                 const oldRegion = regionsMap.get(region.id);
                 if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
 
-                const completedRegion = { ...region, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                // Base the completed region on the LATEST regionsMap entry (which may
+                // already include the cached translation written into customPrompt
+                // earlier in this task). Spreading the original `region` snapshot here
+                // would silently overwrite that update.
+                const baseRegion = regionsMap.get(region.id) ?? region;
+                const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 regionsMap.set(region.id, completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
                 
