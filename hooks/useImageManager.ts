@@ -17,6 +17,50 @@ export function useImageManager(performanceMode: PerformanceMode) {
     [images, selectedImageId]
   );
 
+  // ---------------- Standard-mode stitch result cache ----------------
+  // handleDownload / handleApplyAsOriginalWrapper / handleDownloadAllZip used to
+  // re-run stitchImage on every click. Cache by signature so repeated downloads
+  // of the same state are instant. Inverted mode already keeps finalResultUrl
+  // eagerly on the image, so this cache only covers standard mode.
+  const stitchCacheRef = useRef<Map<string, { signature: string; url: string }>>(new Map());
+
+  const computeStitchSignature = (image: UploadedImage): string => {
+    const parts: string[] = [image.previewUrl];
+    for (const r of image.regions) {
+      if (r.status !== 'completed' || !r.processedImageBase64) continue;
+      parts.push(
+        r.id,
+        r.processedImageBase64,
+        `${r.x},${r.y},${r.width},${r.height}`,
+        `${r.anchorX ?? r.x},${r.anchorY ?? r.y},${r.anchorWidth ?? r.width},${r.anchorHeight ?? r.height}`,
+        r.restoreMaskBase64 || '',
+        // restoreBoxes is small (a handful of rects); JSON.stringify is cheap here.
+        r.restoreBoxes ? JSON.stringify(r.restoreBoxes) : ''
+      );
+    }
+    return parts.join('|');
+  };
+
+  const evictStitchCache = (imageId: string) => {
+    const cached = stitchCacheRef.current.get(imageId);
+    if (cached) {
+      releaseObjectURL(cached.url);
+      stitchCacheRef.current.delete(imageId);
+    }
+  };
+
+  const getStitchedUrl = useCallback(async (image: UploadedImage): Promise<string> => {
+    const signature = computeStitchSignature(image);
+    const cached = stitchCacheRef.current.get(image.id);
+    if (cached && cached.signature === signature) {
+      return cached.url;
+    }
+    const url = await stitchImage(image.previewUrl, image.regions);
+    if (cached) releaseObjectURL(cached.url);
+    stitchCacheRef.current.set(image.id, { signature, url });
+    return url;
+  }, []);
+
   // Auto-switch view mode when result is ready
   useEffect(() => {
     if (!selectedImage?.regions.some(r => r.status === 'completed') && viewMode === 'result') {
@@ -143,6 +187,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
       // Release Object URLs for the deleted image BEFORE removing from state
       const deleted = prev.find(img => img.id === imageId);
       if (deleted) cleanupImageUrls(deleted);
+      evictStitchCache(imageId);
 
       const newImages = prev.filter(img => img.id !== imageId);
       if (selectedImageId === imageId) {
@@ -162,6 +207,8 @@ export function useImageManager(performanceMode: PerformanceMode) {
       prev.forEach(img => cleanupImageUrls(img));
       return prev; // Return same ref; the setImages below replaces it
     });
+    stitchCacheRef.current.forEach(v => releaseObjectURL(v.url));
+    stitchCacheRef.current.clear();
     setImages([]);
     setSelectedImageId(null);
     setSelectedRegionId(null);
@@ -274,6 +321,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
     handleClearAllImages,
     handleApplyResultAsOriginal,
     handleUndoImage,
-    handleRedoImage
+    handleRedoImage,
+    getStitchedUrl
   };
 }

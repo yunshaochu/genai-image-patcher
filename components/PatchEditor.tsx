@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
 import { Language } from '../types';
 import { t } from '../services/translations';
-import { loadImage } from '../services/imageUtils';
+import { loadImage, releaseObjectURL } from '../services/imageUtils';
 
 // Helper: canvas → Object URL (blob-backed, memory-efficient)
 const canvasToObjectURL = (canvas: HTMLCanvasElement, type: string = 'image/png', quality?: number): Promise<string> => {
@@ -44,8 +44,11 @@ interface PatchEditorProps {
 type Tool = 'brush' | 'text';
 
 // History State Structure
+// Stores the drawing layer as a Blob Object URL instead of raw ImageData.
+// A 2000×3000 ImageData snapshot is ~24 MB; the equivalent PNG-encoded blob
+// is typically a few hundred KB. 10 history entries dropped from ~240 MB to <5 MB.
 interface HistoryState {
-  imageData: ImageData | null;
+  url: string | null;
   textObjects: TextObject[];
 }
 
@@ -66,6 +69,9 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const isHistoryProcessing = useRef(false); // Prevents recursive updates during undo/redo
+  // Mirror history into a ref so cleanup can revoke URLs without stale closures.
+  const historyRef = useRef<HistoryState[]>([]);
+  useEffect(() => { historyRef.current = history; }, [history]);
 
   // Brush State
   const [brushSize, setBrushSize] = useState(15);
@@ -195,68 +201,70 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
 
   // --- History Logic ---
 
-  // Capture current state and push to history stack
-  const recordHistory = useCallback((textObjectsOverride?: TextObject[]) => {
+  // Capture current state and push to history stack.
+  // Async because canvas.toBlob is async; callers fire-and-forget.
+  const recordHistory = useCallback(async (textObjectsOverride?: TextObject[]) => {
     if (!drawingCanvasRef.current) return;
-    
-    const ctx = drawingCanvasRef.current.getContext('2d');
-    if (!ctx) return;
 
     const w = drawingCanvasRef.current.width;
     const h = drawingCanvasRef.current.height;
-    
+
     if (w === 0 || h === 0) return;
 
-    const currentImageData = ctx.getImageData(0, 0, w, h);
+    const url = await canvasToObjectURL(drawingCanvasRef.current);
     const currentTextObjects = textObjectsOverride ? [...textObjectsOverride] : [...textObjects];
 
     const PATCH_EDITOR_MAX_HISTORY = 10;
 
     setHistory(prev => {
-      // If we are in the middle of history, discard future states
-      const newHistory = prev.slice(0, historyIndex + 1);
-      // Limit history size to prevent memory issues
-      // Each entry holds a raw ImageData buffer (width*height*4 bytes), so keep this small.
-      while (newHistory.length >= PATCH_EDITOR_MAX_HISTORY) {
-         // Null out the ImageData of the evicted entry to help GC
-         const evicted = newHistory.shift();
-         if (evicted?.imageData) {
-           evicted.imageData = null;
-         }
+      // If we are in the middle of history, discard future states (and revoke their URLs).
+      const truncated = prev.slice(0, historyIndex + 1);
+      for (let i = historyIndex + 1; i < prev.length; i++) {
+        releaseObjectURL(prev[i].url);
       }
-      return [...newHistory, { imageData: currentImageData, textObjects: currentTextObjects }];
+      // Limit history size to prevent memory issues — revoke evicted URLs.
+      while (truncated.length >= PATCH_EDITOR_MAX_HISTORY) {
+         const evicted = truncated.shift();
+         if (evicted) releaseObjectURL(evicted.url);
+      }
+      return [...truncated, { url, textObjects: currentTextObjects }];
     });
 
     setHistoryIndex(prev => {
        if (prev + 1 >= PATCH_EDITOR_MAX_HISTORY) return PATCH_EDITOR_MAX_HISTORY - 1;
-       return prev + 1; 
+       return prev + 1;
     });
   }, [textObjects, historyIndex]);
 
-  const restoreState = useCallback((state: HistoryState) => {
-    if (!drawingCanvasRef.current || !state.imageData) return;
-    
+  const restoreState = useCallback(async (state: HistoryState) => {
+    if (!drawingCanvasRef.current || !state.url) return;
+
     isHistoryProcessing.current = true;
-    
-    // Restore Canvas
-    const ctx = drawingCanvasRef.current.getContext('2d');
-    if (ctx) {
-      ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
-      ctx.putImageData(state.imageData, 0, 0);
+
+    try {
+      // Restore Canvas: decode the stored blob and redraw it.
+      const img = await loadImage(state.url);
+      const canvas = drawingCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+      }
+
+      // Restore Text
+      setTextObjects(state.textObjects);
+
+      // Reset Selection if the selected object no longer exists
+      setSelectedTextId(prevId => {
+          if (prevId && !state.textObjects.find(t => t.id === prevId)) {
+              return null;
+          }
+          return prevId;
+      });
+    } finally {
+      isHistoryProcessing.current = false;
     }
-
-    // Restore Text
-    setTextObjects(state.textObjects);
-    
-    // Reset Selection if the selected object no longer exists
-    setSelectedTextId(prevId => {
-        if (prevId && !state.textObjects.find(t => t.id === prevId)) {
-            return null;
-        }
-        return prevId;
-    });
-
-    isHistoryProcessing.current = false;
   }, []);
 
   const handleUndo = useCallback(() => {
@@ -302,23 +310,19 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
         const w = img.naturalWidth;
         const h = img.naturalHeight;
         setImgDims({ w, h });
-        
+
         baseCanvasRef.current.width = w;
         baseCanvasRef.current.height = h;
         drawingCanvasRef.current.width = w;
         drawingCanvasRef.current.height = h;
-        
+
         const ctx = baseCanvasRef.current.getContext('2d');
         ctx?.drawImage(img, 0, 0);
-        
-        // Record Initial State (Empty)
-        const blankCtx = drawingCanvasRef.current.getContext('2d');
-        if (blankCtx) {
-           const initialData = blankCtx.getImageData(0, 0, w, h);
-           // Initialize history with initialTextObjects passed from props
-           setHistory([{ imageData: initialData, textObjects: initialTextObjects || [] }]);
-           setHistoryIndex(0);
-        }
+
+        // Record Initial State (blank drawing layer) as a Blob URL.
+        const initialUrl = await canvasToObjectURL(drawingCanvasRef.current);
+        setHistory([{ url: initialUrl, textObjects: initialTextObjects || [] }]);
+        setHistoryIndex(0);
 
         // Auto Fit on load
         const fitScale = calculateFitZoom(w, h);
@@ -326,6 +330,11 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
       }
     };
     init();
+    // Cleanup: revoke all history URLs when imageBase64 changes or component unmounts.
+    return () => {
+      historyRef.current.forEach(h => releaseObjectURL(h.url));
+      historyRef.current = [];
+    };
   }, [imageBase64, calculateFitZoom, initialTextObjects]);
 
   // --- Brush Logic ---

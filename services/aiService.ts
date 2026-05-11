@@ -283,41 +283,57 @@ const generateOpenAIImage = async (
     let content = '';
 
     if (isStream && response.body) {
-        // Handle Streaming Response
+        // Handle Streaming Response.
+        // SSE chunks can split a single `data: {...}` line mid-JSON; the previous
+        // line-at-a-time parse swallowed those as JSON errors and lost tokens.
+        // Buffer raw bytes, only emit fully \n-terminated lines, flush the tail.
         const reader = response.body.getReader();
         const decoder = new TextDecoder("utf-8");
+        let buffer = '';
         let done = false;
+
+        const processLine = (line: string): string | undefined => {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) return;
+            const dataStr = trimmed.slice(6);
+            if (dataStr === '[DONE]') return;
+            try {
+                const json = JSON.parse(dataStr);
+
+                // Check for custom images in stream (support for non-standard proxies)
+                if (json.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
+                    return json.choices[0].message.images[0].image_url.url;
+                }
+
+                const deltaContent = json.choices?.[0]?.delta?.content || '';
+                content += deltaContent;
+            } catch (e) {
+                console.warn("Stream parsing error", e);
+            }
+        };
 
         while (!done) {
             const { value, done: readerDone } = await reader.read();
             done = readerDone;
 
             if (value) {
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n');
-
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('data: ')) {
-                        const dataStr = trimmed.slice(6);
-                        if (dataStr === '[DONE]') continue;
-
-                        try {
-                            const json = JSON.parse(dataStr);
-
-                            // Check for custom images in stream (support for non-standard proxies)
-                            if (json.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
-                                return json.choices[0].message.images[0].image_url.url;
-                            }
-
-                            const deltaContent = json.choices?.[0]?.delta?.content || '';
-                            content += deltaContent;
-                        } catch (e) {
-                            console.warn("Stream parsing error", e);
-                        }
-                    }
-                }
+                buffer += decoder.decode(value, { stream: true });
             }
+
+            let newlineIdx: number;
+            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+                const line = buffer.slice(0, newlineIdx);
+                buffer = buffer.slice(newlineIdx + 1);
+                const earlyImage = processLine(line);
+                if (earlyImage) return earlyImage;
+            }
+        }
+
+        // Flush decoder and any trailing partial line that lacked a final \n.
+        const tail = buffer + decoder.decode();
+        if (tail.length > 0) {
+            const earlyImage = processLine(tail);
+            if (earlyImage) return earlyImage;
         }
     } else {
         // Handle Normal Response

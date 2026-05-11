@@ -1,10 +1,9 @@
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import PatchEditor, { TextObject } from './components/PatchEditor';
-import HelpModal from './components/HelpModal';
+import type { TextObject } from './components/PatchEditor';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
@@ -12,6 +11,12 @@ import { t } from './services/translations';
 import { useConfig, TRANSLATION_MODE_IMAGE_PROMPT, DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT, DEFAULT_PROMPT } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
+
+// Heavy components: only loaded when user opens the editor / help dialog.
+// PatchEditor pulls in ~1000 lines of canvas/text-rendering logic that is
+// useless before the user clicks "edit patch".
+const PatchEditor = lazy(() => import('./components/PatchEditor'));
+const HelpModal = lazy(() => import('./components/HelpModal'));
 
 export default function App() {
   const { config, setConfig } = useConfig();
@@ -33,10 +38,11 @@ export default function App() {
     handleUpdateImagePrompt,
     handleToggleSkip,
     handleDeleteImage,
-    handleClearAllImages, 
+    handleClearAllImages,
     handleApplyResultAsOriginal,
     handleUndoImage,
-    handleRedoImage
+    handleRedoImage,
+    getStitchedUrl
   } = useImageManager(config.performanceMode);
 
   const {
@@ -400,10 +406,12 @@ export default function App() {
       if (!selectedImage) return;
       try {
           let stitchedUrl: string;
+          let isCached = false;
           if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
               stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);
           } else {
-              stitchedUrl = await stitchImage(selectedImage.previewUrl, selectedImage.regions);
+              stitchedUrl = await getStitchedUrl(selectedImage);
+              isCached = true;
           }
           const link = document.createElement('a');
           link.href = stitchedUrl;
@@ -411,13 +419,13 @@ export default function App() {
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
-          // Release the temporary stitch URL after download trigger
-          releaseObjectURL(stitchedUrl);
+          // Only release if we created the URL here; cached URLs are owned by useImageManager.
+          if (!isCached) releaseObjectURL(stitchedUrl);
       } catch (e) {
           console.error("Failed to stitch for download", e);
           setErrorMsg("Failed to generate download image.");
       }
-  }, [selectedImage, config.useInvertedMasking, setErrorMsg]);
+  }, [selectedImage, config.useInvertedMasking, getStitchedUrl, setErrorMsg]);
 
   // ON-DEMAND STITCHING for Apply
   const handleApplyAsOriginalWrapper = useCallback(async () => {
@@ -555,9 +563,10 @@ export default function App() {
         onOcrRegion={handleOcrRegion}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
-        showEditor={showEditor} 
+        showEditor={showEditor}
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
         uploadProgress={uploadProgress}
+        getStitchedUrl={getStitchedUrl}
       />
       
       <main className="flex-1 relative bg-checkerboard flex flex-col">
@@ -709,14 +718,16 @@ export default function App() {
       </main>
       
       {editingRegion && (
-         <PatchEditor 
-            imageBase64={editingRegion.startBase64}
-            onSave={handleEditorSave}
-            onCancel={() => setEditingRegion(null)}
-            language={config.language}
-            initialTextObjects={editingRegion.initialTextObjects}
-            defaultVertical={config.enableVerticalTextDefault}
-         />
+         <Suspense fallback={null}>
+            <PatchEditor
+                imageBase64={editingRegion.startBase64}
+                onSave={handleEditorSave}
+                onCancel={() => setEditingRegion(null)}
+                language={config.language}
+                initialTextObjects={editingRegion.initialTextObjects}
+                defaultVertical={config.enableVerticalTextDefault}
+            />
+         </Suspense>
       )}
 
       {showGlobalSettings && (
@@ -1004,7 +1015,9 @@ export default function App() {
         </div>
       )}
       {showHelp && (
-          <HelpModal onClose={() => setShowHelp(false)} language={config.language} />
+          <Suspense fallback={null}>
+              <HelpModal onClose={() => setShowHelp(false)} language={config.language} />
+          </Suspense>
       )}
       {isDragging && (
         <div className="absolute inset-0 z-50 bg-skin-fill/80 backdrop-blur-sm flex items-center justify-center animate-in fade-in duration-200 pointer-events-none">

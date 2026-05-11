@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
-import { stitchImage, stitchImageInverted } from '../services/imageUtils';
+import { stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 import { Section } from './sidebar/Section';
@@ -37,8 +37,10 @@ interface SidebarProps {
   onOpenHelp: () => void;
   showEditor: boolean;
   onApplyAsOriginal: () => void;
-  onUpdateImagePrompt?: (imageId: string, prompt: string) => void; 
+  onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
   uploadProgress?: { current: number; total: number } | null;
+  /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
+  getStitchedUrl: (image: UploadedImage) => Promise<string>;
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
@@ -78,7 +80,8 @@ const Sidebar: React.FC<SidebarProps> = ({
   showEditor,
   onApplyAsOriginal,
   onUpdateImagePrompt,
-  uploadProgress
+  uploadProgress,
+  getStitchedUrl
 }) => {
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
@@ -186,26 +189,27 @@ const Sidebar: React.FC<SidebarProps> = ({
       for (const img of imagesToZip) {
         let targetUrl = img.finalResultUrl || img.previewUrl;
         let needsStitchRelease = false;
-        
+
         const hasPatches = img.regions.some(r => r.status === 'completed');
         if (hasPatches && !img.isSkipped) {
             try {
                if (config.useInvertedMasking && img.fullAiResultUrl) {
                    targetUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl, img.regions);
+                   needsStitchRelease = true;
                } else {
-                   targetUrl = await stitchImage(img.previewUrl, img.regions);
+                   // Cached: useImageManager owns the URL across repeated zip calls.
+                   targetUrl = await getStitchedUrl(img);
                }
-               needsStitchRelease = true;
             } catch (e) {
                console.error("Failed to stitch image for zip:", img.file.name, e);
                targetUrl = img.previewUrl;
             }
         }
-        
+
         const response = await fetch(targetUrl);
         const blob = await response.blob();
-        
-        // Release the temporary stitch URL after we've fetched the blob
+
+        // Only release URLs we created ourselves; cached URLs are owned by useImageManager.
         if (needsStitchRelease && targetUrl.startsWith('blob:')) {
             URL.revokeObjectURL(targetUrl);
         }

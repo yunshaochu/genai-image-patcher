@@ -267,53 +267,73 @@ export const depadImageFromSquare = async (
     if (!scanCtx) throw new Error("Could not get canvas context for depadding");
     scanCtx.drawImage(img, 0, 0);
     const imageData = scanCtx.getImageData(0, 0, w, h);
-    const pixels = imageData.data;
+    // Read the pixel buffer as 32-bit words: one read per pixel instead of four,
+    // and skips the (y*w+x)*4 stride arithmetic. Little-endian byte order means
+    // the low byte of the word is R, then G, then B, then A.
+    const pixels32 = new Uint32Array(imageData.data.buffer);
 
-    const isDark = (r: number, g: number, b: number) => (r + g + b) <= 40;
+    // Sum-of-channels <= 40 → effectively black (the padding we draw is #000000).
+    const isDarkPx = (px: number) =>
+        ((px & 0xFF) + ((px >>> 8) & 0xFF) + ((px >>> 16) & 0xFF)) <= 40;
+
+    // Stride only within each row/column scan — keep outer loops exact so the
+    // detected boundary is pixel-accurate (the margin adjustment is small).
+    // Inner stride of 4 means ~4× fewer reads for a tight ratio check.
+    const INNER_STRIDE = 4;
     const ROW_DARK_RATIO = 0.90;
 
     let topCrop = 0;
-    for (let y = 0; y < h; y++) {
-        let darkCount = 0;
-        for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+    {
+        const samples = Math.ceil(w / INNER_STRIDE);
+        for (let y = 0; y < h; y++) {
+            let darkCount = 0;
+            const rowOffset = y * w;
+            for (let x = 0; x < w; x += INNER_STRIDE) {
+                if (isDarkPx(pixels32[rowOffset + x])) darkCount++;
+            }
+            if (darkCount / samples < ROW_DARK_RATIO) break;
+            topCrop = y + 1;
         }
-        if (darkCount / w < ROW_DARK_RATIO) break;
-        topCrop = y + 1;
     }
 
     let bottomCrop = 0;
-    for (let y = h - 1; y >= 0; y--) {
-        let darkCount = 0;
-        for (let x = 0; x < w; x++) {
-            const i = (y * w + x) * 4;
-            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+    {
+        const samples = Math.ceil(w / INNER_STRIDE);
+        for (let y = h - 1; y >= 0; y--) {
+            let darkCount = 0;
+            const rowOffset = y * w;
+            for (let x = 0; x < w; x += INNER_STRIDE) {
+                if (isDarkPx(pixels32[rowOffset + x])) darkCount++;
+            }
+            if (darkCount / samples < ROW_DARK_RATIO) break;
+            bottomCrop = h - y;
         }
-        if (darkCount / w < ROW_DARK_RATIO) break;
-        bottomCrop = h - y;
     }
 
     let leftCrop = 0;
-    for (let x = 0; x < w; x++) {
-        let darkCount = 0;
-        for (let y = 0; y < h; y++) {
-            const i = (y * w + x) * 4;
-            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+    {
+        const samples = Math.ceil(h / INNER_STRIDE);
+        for (let x = 0; x < w; x++) {
+            let darkCount = 0;
+            for (let y = 0; y < h; y += INNER_STRIDE) {
+                if (isDarkPx(pixels32[y * w + x])) darkCount++;
+            }
+            if (darkCount / samples < ROW_DARK_RATIO) break;
+            leftCrop = x + 1;
         }
-        if (darkCount / h < ROW_DARK_RATIO) break;
-        leftCrop = x + 1;
     }
 
     let rightCrop = 0;
-    for (let x = w - 1; x >= 0; x--) {
-        let darkCount = 0;
-        for (let y = 0; y < h; y++) {
-            const i = (y * w + x) * 4;
-            if (isDark(pixels[i], pixels[i + 1], pixels[i + 2])) darkCount++;
+    {
+        const samples = Math.ceil(h / INNER_STRIDE);
+        for (let x = w - 1; x >= 0; x--) {
+            let darkCount = 0;
+            for (let y = 0; y < h; y += INNER_STRIDE) {
+                if (isDarkPx(pixels32[y * w + x])) darkCount++;
+            }
+            if (darkCount / samples < ROW_DARK_RATIO) break;
+            rightCrop = w - x;
         }
-        if (darkCount / h < ROW_DARK_RATIO) break;
-        rightCrop = w - x;
     }
 
     topCrop = Math.min(topCrop + margin, h);
@@ -708,46 +728,51 @@ export const stitchImage = async (
 
   ctx.drawImage(baseImg, 0, 0);
 
-  for (const region of regions) {
-    if (region.processedImageBase64 && region.status === 'completed') {
-      const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
-      const displayUrl = hasRestore
-        ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes, region.restoreMaskBase64)
-        : region.processedImageBase64;
-      const regionImg = await loadImage(displayUrl);
-      
-      const x = (region.x / 100) * baseImg.naturalWidth;
-      const y = (region.y / 100) * baseImg.naturalHeight;
-      const w = (region.width / 100) * baseImg.naturalWidth;
-      const h = (region.height / 100) * baseImg.naturalHeight;
+  const eligible = regions.filter(r => r.processedImageBase64 && r.status === 'completed');
 
-      const ax = ((region.anchorX ?? region.x) / 100) * baseImg.naturalWidth;
-      const ay = ((region.anchorY ?? region.y) / 100) * baseImg.naturalHeight;
-      const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
-      const ah = ((region.anchorHeight ?? region.height) / 100) * baseImg.naturalHeight;
+  // Parallel: produce each region's displayUrl (optional restore render) and decode the
+  // patch image. With N regions this collapses 2N sequential async waits into one barrier.
+  const prepared = await Promise.all(eligible.map(async region => {
+    const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || !!region.restoreMaskBase64;
+    const displayUrl = hasRestore
+      ? await renderRegionWithRestore(region.processedImageBase64, region.restoreBoxes, region.restoreMaskBase64)
+      : region.processedImageBase64;
+    const regionImg = await loadImage(displayUrl);
+    return { region, displayUrl, regionImg, hasRestore };
+  }));
 
-      // Match CSS `object-fit: contain; object-position: center` used by EditorCanvas overlay.
-      // Without this, pasted patches whose aspect ratio differs from the anchor box get
-      // stretched to fill aw×ah. AI-generated patches already match the anchor aspect, so
-      // this branch is a no-op for them.
-      const srcW = regionImg.naturalWidth;
-      const srcH = regionImg.naturalHeight;
-      const fitScale = srcW > 0 && srcH > 0 ? Math.min(aw / srcW, ah / srcH) : 1;
-      const drawW = srcW * fitScale;
-      const drawH = srcH * fitScale;
-      const drawX = ax + (aw - drawW) / 2;
-      const drawY = ay + (ah - drawH) / 2;
+  // Serial draw to preserve z-order and clip state.
+  for (const { region, displayUrl, regionImg, hasRestore } of prepared) {
+    const x = (region.x / 100) * baseImg.naturalWidth;
+    const y = (region.y / 100) * baseImg.naturalHeight;
+    const w = (region.width / 100) * baseImg.naturalWidth;
+    const h = (region.height / 100) * baseImg.naturalHeight;
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x, y, w, h);
-      ctx.clip();
-      ctx.drawImage(regionImg, drawX, drawY, drawW, drawH);
-      ctx.restore();
+    const ax = ((region.anchorX ?? region.x) / 100) * baseImg.naturalWidth;
+    const ay = ((region.anchorY ?? region.y) / 100) * baseImg.naturalHeight;
+    const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
+    const ah = ((region.anchorHeight ?? region.height) / 100) * baseImg.naturalHeight;
 
-      // Release the temporary restore render if we created one
-      if (hasRestore) releaseObjectURL(displayUrl);
-    }
+    // Match CSS `object-fit: contain; object-position: center` used by EditorCanvas overlay.
+    // Without this, pasted patches whose aspect ratio differs from the anchor box get
+    // stretched to fill aw×ah. AI-generated patches already match the anchor aspect, so
+    // this branch is a no-op for them.
+    const srcW = regionImg.naturalWidth;
+    const srcH = regionImg.naturalHeight;
+    const fitScale = srcW > 0 && srcH > 0 ? Math.min(aw / srcW, ah / srcH) : 1;
+    const drawW = srcW * fitScale;
+    const drawH = srcH * fitScale;
+    const drawX = ax + (aw - drawW) / 2;
+    const drawY = ay + (ah - drawH) / 2;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.drawImage(regionImg, drawX, drawY, drawW, drawH);
+    ctx.restore();
+
+    if (hasRestore) releaseObjectURL(displayUrl);
   }
 
   const result = await canvasToObjectURL(canvas);
