@@ -159,19 +159,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
             {/* Common Options */}
             <div className="pt-2 border-t border-skin-border/50">
-                <label className="flex items-start gap-2 cursor-pointer group">
-                    <input 
-                        type="checkbox" 
-                        checked={config.enableSquareFill}
-                        onChange={(e) => onChange('enableSquareFill', e.target.checked)}
-                        className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                    />
-                    <div>
-                        <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
-                        <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'squareFillDesc')}</span>
-                    </div>
-                </label>
-                {config.enableSquareFill && (
+                {/* squareFill is meaningless when inverted masking is active: padding gets undone
+                    immediately after the API call. Disable the toggle and grey it out. */}
+                {(() => {
+                    const squareFillDisabled = !!config.useInvertedMasking;
+                    return (
+                        <label className={`flex items-start gap-2 group ${squareFillDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                               title={squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : undefined}>
+                            <input
+                                type="checkbox"
+                                checked={config.enableSquareFill && !squareFillDisabled}
+                                disabled={squareFillDisabled}
+                                onChange={(e) => onChange('enableSquareFill', e.target.checked)}
+                                className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary disabled:opacity-50"
+                            />
+                            <div>
+                                <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
+                                <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">
+                                    {squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : t(lang, 'squareFillDesc')}
+                                </span>
+                            </div>
+                        </label>
+                    );
+                })()}
+                {config.enableSquareFill && !config.useInvertedMasking && (
                     <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30 space-y-2">
                         {/* Mode selector */}
                         <div className="flex items-center gap-2 text-[11px]">

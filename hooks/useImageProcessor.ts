@@ -59,6 +59,14 @@ export function useImageProcessor(
         if (regionsToProcess.length === 0) return;
 
         const imgElement = await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
+        // The mask canvas is created at the source image resolution. Using the
+        // original (e.g. 6000x8000) burns ~190MB of canvas memory; the preview
+        // is already capped at 2048 in balanced mode, so prefer it for mask
+        // input. cropRegion / single-region path keeps imgElement at full res
+        // so per-region crops sent to the API stay sharp.
+        const maskImg = imageSnapshot.previewUrl && imageSnapshot.previewUrl !== imageSnapshot.originalUrl
+            ? await loadImage(imageSnapshot.previewUrl)
+            : imgElement;
         regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
         setImages(prev => prev.map(img => img.id !== imageSnapshot.id ? img : { ...img, regions: Array.from(regionsMap.values()) }));
 
@@ -73,15 +81,18 @@ export function useImageProcessor(
                 // Handle Inverted Masking — now returns Object URL
                 let inputImageUrl: string;
                 if (config.useInvertedMasking) {
-                    inputImageUrl = await createInvertedMultiMaskedFullImage(imgElement, allActiveRegions);
+                    inputImageUrl = await createInvertedMultiMaskedFullImage(maskImg, allActiveRegions);
                 } else {
-                    inputImageUrl = await createMultiMaskedFullImage(imgElement, allActiveRegions);
+                    inputImageUrl = await createMultiMaskedFullImage(maskImg, allActiveRegions);
                 }
 
-                // Square Fill Logic — returns Object URL
+                // Square Fill Logic — returns Object URL.
+                // Inverted masking already outputs a full-image patch, so padding+depad
+                // is a no-op round trip that just wastes tokens / time. Skip it.
                 let payloadUrl = inputImageUrl;
                 let paddingInfo: PaddingInfo | null = null;
-                if (config.enableSquareFill) {
+                const useSquareFill = config.enableSquareFill && !config.useInvertedMasking;
+                if (useSquareFill) {
                     const padded = await padImageToSquare(inputImageUrl);
                     payloadUrl = padded.url;
                     paddingInfo = padded.info;
@@ -129,7 +140,7 @@ export function useImageProcessor(
                 }
                 
                 // Depad — returns Object URL
-                if (config.enableSquareFill && paddingInfo) {
+                if (useSquareFill && paddingInfo) {
                     const depadResultUrl = config.squareFillMode === 'ratio'
                         ? await depadImageByRatio(apiResultUrl, paddingInfo)
                         : await depadImageFromSquare(apiResultUrl, paddingInfo, config.squareFillMargin);
@@ -175,10 +186,10 @@ export function useImageProcessor(
                     // Standard Masking Mode
                     for (const region of regionsToProcess) {
                         const finalRegionImageUrl = await extractCropFromFullImage(
-                            apiResultUrl, 
-                            region, 
-                            imgElement.naturalWidth, 
-                            imgElement.naturalHeight,
+                            apiResultUrl,
+                            region,
+                            maskImg.naturalWidth,
+                            maskImg.naturalHeight,
                             config.fullImageOpaquePercent
                         );
                         const completedRegion = { ...region, processedImageBase64: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
@@ -221,7 +232,8 @@ export function useImageProcessor(
         let maskedContextUrl: string | undefined;
         if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
             try {
-                const fullMaskedUrl = await createMultiMaskedFullImage(imgElement, allActiveRegions);
+                // Same mask-canvas size concern as the useFullImageMasking branch.
+                const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, allActiveRegions);
                 maskedContextUrl = await compressImage(fullMaskedUrl, { maxWidth: 1024, maxHeight: 1024, quality: 0.7 });
                 releaseObjectURL(fullMaskedUrl);
             } catch (e) {

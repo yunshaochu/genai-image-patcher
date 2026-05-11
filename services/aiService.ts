@@ -53,10 +53,20 @@ export const fetchOpenAIModels = async (
 };
 
 /**
- * Wrapper function to handle retries and timeouts
+ * Wrapper function to handle retries and timeouts.
+ *
+ * The previous implementation used Promise.race(timeout, op), which only
+ * rejected the wrapper promise — the underlying fetch / SDK call kept running
+ * to completion. That leaked sockets and (on slow networks) led to phantom
+ * retries hitting the server while the user thought the request was cancelled.
+ *
+ * Now we create a per-attempt AbortController that aborts on either the
+ * outer cancel signal or the timeout, and pass its signal to the operation.
+ * Callers (fetch in the OpenAI path, SDK httpOptions.timeout in the Gemini
+ * path) are responsible for honouring that signal so the request really stops.
  */
 async function executeWithRetry<T>(
-  operation: () => Promise<T>,
+  operation: (opSignal: AbortSignal) => Promise<T>,
   timeoutMs: number = 60000,
   maxRetries: number = 0,
   signal?: AbortSignal
@@ -68,42 +78,41 @@ async function executeWithRetry<T>(
       throw new DOMException('Aborted', 'AbortError');
     }
 
-    try {
-      // Race the operation against a timeout
-      // Note: We cannot easily cancel the underlying operation (like a fetch) just with a promise race,
-      // but we can reject the wrapper promise to let the UI proceed/fail.
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        const id = setTimeout(() => {
-          clearTimeout(id);
-          reject(new Error(`Operation timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-        
-        // If signal aborts while waiting for timeout
-        signal?.addEventListener('abort', () => {
-             clearTimeout(id);
-             reject(new DOMException('Aborted', 'AbortError'));
-        });
-      });
+    const controller = new AbortController();
+    let timedOut = false;
+    const onOuterAbort = () => controller.abort();
+    if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
 
-      return await Promise.race([
-        operation(),
-        timeoutPromise
-      ]);
+    try {
+      return await operation(controller.signal);
     } catch (error: any) {
        lastError = error;
-       
-       // Don't retry if aborted
-       if (signal?.aborted || error.name === 'AbortError') {
-           throw error;
+
+       // Outer-cancel: never retry, propagate the abort.
+       if (signal?.aborted) {
+           throw new DOMException('Aborted', 'AbortError');
        }
 
-       const isTimeout = error.message && error.message.includes('timed out');
+       // If our timeout fired, normalise the error so the caller / logs can
+       // distinguish "we cancelled it" from "the server returned an error".
+       if (timedOut) {
+           lastError = new Error(`Operation timed out after ${timeoutMs}ms`);
+       }
+
+       const isTimeout = timedOut || (error?.message?.includes?.('timed out') ?? false);
        console.warn(`Attempt ${attempt + 1} failed (Timeout: ${isTimeout}):`, error);
 
        if (attempt < maxRetries) {
          // Wait a bit before retrying (1s)
          await new Promise(r => setTimeout(r, 1000));
        }
+    } finally {
+       clearTimeout(timeoutId);
+       if (signal) signal.removeEventListener('abort', onOuterAbort);
     }
   }
 
@@ -112,13 +121,18 @@ async function executeWithRetry<T>(
 
 /**
  * Handles communication with Gemini API (Native Google SDK)
+ *
+ * `signal` is honoured pre/post-call (the SDK does not expose AbortSignal
+ * yet), and `timeoutMs` is forwarded as httpOptions.timeout so the SDK can
+ * actually cancel the underlying HTTP request when our wrapper times out.
  */
 const generateGeminiImage = async (
   imageBase64: string,
   prompt: string,
   modelName: string,
   apiKey: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  timeoutMs?: number
 ): Promise<string> => {
   // Allow custom API Key from settings, fallback to env var
   const finalApiKey = apiKey || process.env.API_KEY;
@@ -126,6 +140,8 @@ const generateGeminiImage = async (
   if (!finalApiKey) {
       throw new Error("Gemini API Key is missing. Please set it in Settings.");
   }
+
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
   const ai = new GoogleGenAI({ apiKey: finalApiKey });
 
@@ -143,7 +159,10 @@ const generateGeminiImage = async (
               { text: prompt },
             ],
           },
+          ...(timeoutMs ? { config: { httpOptions: { timeout: timeoutMs } } } : {}),
         });
+
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
         if (response.candidates && response.candidates.length > 0) {
           const candidate = response.candidates[0];
@@ -463,20 +482,20 @@ export const generateRegionEdit = async (
   signal?: AbortSignal
 ): Promise<string> => {
 
-  const worker = async () => {
-    if (config.provider === 'openai') {
-      if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
-      return generateOpenAIImage(imageBase64, prompt, config, signal);
-    } else {
-      // Pass the user-configured key
-      return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey, signal);
-    }
-  };
-
-  // Wrap the worker in the retry/timeout logic
   // Default to 60s timeout and 0 retries if not configured (backwards compat)
   const timeout = config.apiTimeout || 60000;
   const retries = config.maxRetries ?? 0;
+
+  // The wrapper hands us a per-attempt signal that aborts on outer cancel
+  // OR the timeout — forward it down to fetch / SDK so they actually stop.
+  const worker = async (opSignal: AbortSignal) => {
+    if (config.provider === 'openai') {
+      if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
+      return generateOpenAIImage(imageBase64, prompt, config, opSignal);
+    } else {
+      return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey, opSignal, timeout);
+    }
+  };
 
   return executeWithRetry(worker, timeout, retries, signal);
 };
