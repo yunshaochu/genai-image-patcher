@@ -209,7 +209,14 @@ export function useConfig() {
   });
 
   useEffect(() => {
-    localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+      } catch (e) {
+        console.error("Failed to persist config", e);
+      }
+    }, 300);
+    return () => clearTimeout(t);
   }, [config]);
 
   useEffect(() => {

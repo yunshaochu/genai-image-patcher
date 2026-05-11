@@ -1,6 +1,6 @@
 
 
-import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
 import { Language } from '../types';
 import { t } from '../services/translations';
 import { loadImage } from '../services/imageUtils';
@@ -71,7 +71,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
   const [brushSize, setBrushSize] = useState(15);
   const [brushColor, setBrushColor] = useState('#ffffff');
   const [isDrawing, setIsDrawing] = useState(false);
-  
+
   // Text State
   const [textObjects, setTextObjects] = useState<TextObject[]>(initialTextObjects || []);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
@@ -79,6 +79,12 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
   const dragOffset = useRef({ x: 0, y: 0 });
   const didTextMove = useRef(false);
   const isHoveringSelectedTextRef = useRef(false); // Track hover state for wheel conflict resolution
+
+  // O(1) access to the currently selected text object — saves N×K find() calls per render in the toolbar.
+  const selectedText = useMemo(
+    () => textObjects.find(t => t.id === selectedTextId) || null,
+    [textObjects, selectedTextId]
+  );
 
   // Mouse Wheel Zoom Reference
   const mousePosRef = useRef<{ relX: number; relY: number; clientX: number; clientY: number } | null>(null);
@@ -763,7 +769,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                            <textarea 
                               className="w-full p-2 text-xs border border-skin-border rounded-md bg-skin-fill text-skin-text"
                               rows={3}
-                              value={textObjects.find(t => t.id === selectedTextId)?.text || ''}
+                              value={selectedText?.text || ''}
                               onChange={(e) => updateSelectedText({ text: e.target.value })}
                               onBlur={() => recordHistory()} // Save history on blur
                            />
@@ -774,7 +780,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                               <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(language, 'editor_text_size')}</label>
                               <input 
                                 type="number" min="8" max="200" 
-                                value={textObjects.find(t => t.id === selectedTextId)?.fontSize} 
+                                value={selectedText?.fontSize}
                                 onChange={(e) => updateSelectedText({ fontSize: Number(e.target.value) })}
                                 onBlur={() => recordHistory()} // Save history on finish
                                 className="w-full p-1 text-xs border border-skin-border rounded bg-skin-fill" 
@@ -784,7 +790,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                               <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(language, 'editor_text_outline_width')}</label>
                               <input 
                                 type="number" min="0" max="20" 
-                                value={textObjects.find(t => t.id === selectedTextId)?.outlineWidth} 
+                                value={selectedText?.outlineWidth}
                                 onChange={(e) => updateSelectedText({ outlineWidth: Number(e.target.value) })}
                                 onBlur={() => recordHistory()} // Save history on finish
                                 className="w-full p-1 text-xs border border-skin-border rounded bg-skin-fill" 
@@ -797,7 +803,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                                 <label className="text-[9px] text-skin-muted block">{t(language, 'editor_text_color')}</label>
                                 <input 
                                     type="color" className="w-full h-6" 
-                                    value={textObjects.find(t => t.id === selectedTextId)?.color} 
+                                    value={selectedText?.color}
                                     onChange={(e) => updateSelectedText({ color: e.target.value })}
                                     onBlur={() => recordHistory()} // Save on close
                                 />
@@ -806,7 +812,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                                 <label className="text-[9px] text-skin-muted block">{t(language, 'editor_text_outline')}</label>
                                 <input 
                                     type="color" className="w-full h-6" 
-                                    value={textObjects.find(t => t.id === selectedTextId)?.outlineColor} 
+                                    value={selectedText?.outlineColor}
                                     onChange={(e) => updateSelectedText({ outlineColor: e.target.value })}
                                     onBlur={() => recordHistory()} // Save on close
                                 />
@@ -816,13 +822,13 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                                 <div className="flex items-center gap-1">
                                    <input 
                                      type="checkbox" 
-                                     checked={textObjects.find(t => t.id === selectedTextId)?.backgroundColor !== 'transparent'} 
+                                     checked={selectedText?.backgroundColor !== 'transparent'}
                                      onChange={(e) => updateSelectedText({ backgroundColor: e.target.checked ? '#ffffff' : 'transparent' }, true)} // Save immediately
                                    />
-                                   {textObjects.find(t => t.id === selectedTextId)?.backgroundColor !== 'transparent' && (
-                                       <input 
-                                         type="color" className="w-6 h-6" 
-                                         value={textObjects.find(t => t.id === selectedTextId)?.backgroundColor} 
+                                   {selectedText?.backgroundColor !== 'transparent' && (
+                                       <input
+                                         type="color" className="w-6 h-6"
+                                         value={selectedText?.backgroundColor}
                                          onChange={(e) => updateSelectedText({ backgroundColor: e.target.value })} 
                                          onBlur={() => recordHistory()} // Save on close
                                        />
@@ -835,7 +841,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                            <label className="flex items-center gap-2 text-xs cursor-pointer border border-skin-border px-2 py-1 rounded bg-skin-fill hover:bg-skin-surface">
                               <input 
                                 type="checkbox" 
-                                checked={textObjects.find(t => t.id === selectedTextId)?.isVertical} 
+                                checked={selectedText?.isVertical}
                                 onChange={(e) => updateSelectedText({ isVertical: e.target.checked }, true)} // Save immediately
                               />
                               {t(language, 'editor_text_vertical')}
@@ -843,7 +849,7 @@ const PatchEditor: React.FC<PatchEditorProps> = ({ imageBase64, onSave, onCancel
                            <label className="flex items-center gap-2 text-xs cursor-pointer border border-skin-border px-2 py-1 rounded bg-skin-fill hover:bg-skin-surface">
                               <input 
                                 type="checkbox" 
-                                checked={textObjects.find(t => t.id === selectedTextId)?.isBold} 
+                                checked={selectedText?.isBold}
                                 onChange={(e) => updateSelectedText({ isBold: e.target.checked }, true)} // Save immediately
                               />
                               {t(language, 'editor_text_bold')}

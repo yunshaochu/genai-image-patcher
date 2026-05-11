@@ -1,9 +1,20 @@
 
-import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
 import { UploadedImage, Region, Language, RestoreBox } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
-import { renderRegionWithRestore, loadImage } from '../services/imageUtils';
+import { renderRegionWithRestore, loadImage, releaseObjectURL } from '../services/imageUtils';
+
+// Helper: convert a canvas to a Blob-backed Object URL (memory-efficient,
+// avoids the giant base64 string that toDataURL produces).
+const canvasToObjectURL = (canvas: HTMLCanvasElement, type: string = 'image/png'): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (blob) resolve(URL.createObjectURL(blob));
+            else reject(new Error('canvas.toBlob returned null'));
+        }, type);
+    });
+};
 
 interface EditorCanvasProps {
   image: UploadedImage;
@@ -334,7 +345,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const [restoreBoxDrawing, setRestoreBoxDrawing] = useState(false);
   const [restoreBoxStart, setRestoreBoxStart] = useState<{ x: number; y: number } | null>(null);
   const [restoreBoxCurrent, setRestoreBoxCurrent] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const [restoreCompositedCache, setRestoreCompositedCache] = useState<Record<string, string>>({});
+  // Cache of composited URLs per region. Stored in a ref so reads in JSX
+  // don't trigger React reconciliation, plus a counter to opt-in to re-render
+  // when the cache actually changes.
+  const restoreCompositedCacheRef = useRef<Record<string, string>>({});
+  const [restoreCacheVersion, setRestoreCacheVersion] = useState(0);
   const [isInverseMode, setIsInverseMode] = useState(false);
 
   // --- Brush restore state ---
@@ -343,15 +358,22 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const brushOverlayRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Update composited cache when restore boxes or mask change
-  useEffect(() => {
-    const updateCache = async () => {
-      // Release old cache Object URLs before building new ones
-      const oldCache = restoreCompositedCache;
-      Object.values(oldCache).forEach(url => {
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-      });
+  // Signature that captures only the fields we care about for the restore composite.
+  // Identity of `image.regions` changes on every drag/prompt edit, but the signature
+  // stays stable unless the restore-relevant data actually changes.
+  const restoreSignature = useMemo(
+    () => image.regions
+      .filter(r => r.status === 'completed' && r.processedImageBase64)
+      .map(r => `${r.id}|${r.processedImageBase64}|${r.restoreMaskBase64 || ''}|${(r.restoreBoxes || []).length}`)
+      .join('||'),
+    [image.regions]
+  );
 
+  // Update composited cache when restore boxes or mask actually change.
+  useEffect(() => {
+    let cancelled = false;
+    const updateCache = async () => {
+      const oldCache = restoreCompositedCacheRef.current;
       const newCache: Record<string, string> = {};
       for (const region of image.regions) {
         if (region.status === 'completed' && region.processedImageBase64) {
@@ -369,16 +391,27 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
           }
         }
       }
-      setRestoreCompositedCache(newCache);
+      if (cancelled) {
+        // Component unmounted or signature changed again — release what we just built.
+        Object.values(newCache).forEach(releaseObjectURL);
+        return;
+      }
+      // Swap atomically and release the previous generation.
+      restoreCompositedCacheRef.current = newCache;
+      Object.values(oldCache).forEach(releaseObjectURL);
+      setRestoreCacheVersion(v => v + 1);
     };
     updateCache();
-    // Cleanup on unmount
+    return () => { cancelled = true; };
+  }, [restoreSignature]);
+
+  // Final unmount: release any URLs still held in the cache ref.
+  useEffect(() => {
     return () => {
-      Object.values(restoreCompositedCache).forEach(url => {
-        if (url.startsWith('blob:')) URL.revokeObjectURL(url);
-      });
+      Object.values(restoreCompositedCacheRef.current).forEach(releaseObjectURL);
+      restoreCompositedCacheRef.current = {};
     };
-  }, [image.regions]);
+  }, []);
 
   // Initialize brush mask canvas when entering brush mode on a selected region
   useEffect(() => {
@@ -509,10 +542,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   };
 
   // --- Brush painting callbacks ---
-  const saveBrushMask = useCallback(() => {
+  const saveBrushMask = useCallback(async () => {
     if (!maskCanvasRef.current || !restoreSelectedRegionId || !onUpdateRestoreMask) return;
-    const base64 = maskCanvasRef.current.toDataURL('image/png');
-    onUpdateRestoreMask(restoreSelectedRegionId, base64);
+    const url = await canvasToObjectURL(maskCanvasRef.current);
+    onUpdateRestoreMask(restoreSelectedRegionId, url);
   }, [restoreSelectedRegionId, onUpdateRestoreMask]);
 
   const handleClearBrushMask = useCallback(() => {
@@ -622,8 +655,9 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       if (isPainting) {
         setIsPainting(false);
         if (maskCanvasRef.current && restoreSelectedRegionId && onUpdateRestoreMask) {
-          const base64 = maskCanvasRef.current.toDataURL('image/png');
-          onUpdateRestoreMask(restoreSelectedRegionId, base64);
+          canvasToObjectURL(maskCanvasRef.current)
+            .then(url => onUpdateRestoreMask(restoreSelectedRegionId, url))
+            .catch(e => console.error('Failed to persist brush mask', e));
         }
       }
     };
@@ -721,7 +755,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             return (
               <img
                 key={`overlay-${region.id}`}
-                src={hasRestore ? (restoreCompositedCache[region.id] || region.processedImageBase64) : region.processedImageBase64}
+                src={hasRestore ? (restoreCompositedCacheRef.current[region.id] || region.processedImageBase64) : region.processedImageBase64}
                 className="absolute pointer-events-none select-none"
                 style={{
                   left: `${ax}%`,

@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo, urlToBase64, releaseObjectURL } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImage, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -89,15 +89,19 @@ export function useImageProcessor(
                     releaseObjectURL(inputImageUrl);
                 }
 
-                // Convert to base64 ONLY at the API boundary
+                // Convert to base64 ONCE at the API boundary, reuse across translation + edit calls.
+                let payloadBase64: string | null = null;
+                const getPayloadBase64 = async () => {
+                    if (payloadBase64 == null) payloadBase64 = await urlToBase64(payloadUrl);
+                    return payloadBase64;
+                };
+
                 let translationText = '';
                 if (config.enableTranslationMode) {
-                   setProcessingState(ProcessingStep.API_CALLING); 
-                   const payloadBase64 = await urlToBase64(payloadUrl);
-                   translationText = await generateTranslation(payloadBase64, config, signal);
-                   // payloadBase64 string is now eligible for GC
+                   setProcessingState(ProcessingStep.API_CALLING);
+                   translationText = await generateTranslation(await getPayloadBase64(), config, signal);
                 }
-                
+
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();
                 if (imageSnapshot.customPrompt) {
@@ -107,9 +111,8 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                // Convert to base64 ONLY for API call
-                const payloadBase64ForAPI = await urlToBase64(payloadUrl);
-                let apiResultBase64 = await generateRegionEdit(payloadBase64ForAPI, effectivePrompt, config, signal);
+                let apiResultBase64 = await generateRegionEdit(await getPayloadBase64(), effectivePrompt, config, signal);
+                payloadBase64 = null; // release reference; let the big string GC
                 // apiResultBase64 is a data:image/... string from the API
                 
                 // Release the payload URL — we're done with it
@@ -118,14 +121,7 @@ export function useImageProcessor(
                 // Convert API base64 result to Object URL for further processing
                 let apiResultUrl: string;
                 if (apiResultBase64.startsWith('data:')) {
-                    // Convert the base64 result to a Blob Object URL to save memory
-                    const [header, data] = apiResultBase64.split(',');
-                    const mimeMatch = header.match(/:(.*?);/);
-                    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-                    const binary = atob(data);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    apiResultUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+                    apiResultUrl = await base64ToObjectURLAsync(apiResultBase64);
                     apiResultBase64 = ''; // Allow GC of the large base64 string
                 } else {
                     apiResultUrl = apiResultBase64; // Already a URL
@@ -260,12 +256,19 @@ export function useImageProcessor(
                 }
 
                 if (signal.aborted) return;
+
+                // Convert to base64 ONCE at the API boundary, reuse across translation + edit calls.
+                let payloadBase64: string | null = null;
+                const getPayloadBase64 = async () => {
+                    if (payloadBase64 == null) payloadBase64 = await urlToBase64(payloadUrl);
+                    return payloadBase64;
+                };
+
                 let translationText = '';
                 if (config.enableTranslationMode) {
-                   setProcessingState(ProcessingStep.API_CALLING); 
-                   const payloadBase64 = await urlToBase64(payloadUrl);
+                   setProcessingState(ProcessingStep.API_CALLING);
                    const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                   translationText = await generateTranslation(payloadBase64, config, signal, contextBase64);
+                   translationText = await generateTranslation(await getPayloadBase64(), config, signal, contextBase64);
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
                 let basePrompt = config.prompt.trim();
@@ -280,9 +283,8 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：\n${translationText}`;
                 }
-                // Convert to base64 ONLY for the API call
-                const payloadBase64ForAPI = await urlToBase64(payloadUrl);
-                let apiResultBase64 = await generateRegionEdit(payloadBase64ForAPI, effectivePrompt, config, signal);
+                let apiResultBase64 = await generateRegionEdit(await getPayloadBase64(), effectivePrompt, config, signal);
+                payloadBase64 = null; // release reference; let the big string GC
                 
                 // Release payload URL — done with it
                 releaseObjectURL(payloadUrl);
@@ -291,13 +293,7 @@ export function useImageProcessor(
 
                 // Convert API base64 result to Object URL
                 if (apiResultBase64.startsWith('data:')) {
-                    const [header, data] = apiResultBase64.split(',');
-                    const mimeMatch = header.match(/:(.*?);/);
-                    const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-                    const binary = atob(data);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                    apiResultUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+                    apiResultUrl = await base64ToObjectURLAsync(apiResultBase64);
                     apiResultBase64 = ''; // Allow GC
                 } else {
                     apiResultUrl = apiResultBase64;

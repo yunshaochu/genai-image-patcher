@@ -1,7 +1,7 @@
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
-import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
+import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
 
 type ViewMode = 'original' | 'result';
 
@@ -12,7 +12,10 @@ export function useImageManager(performanceMode: PerformanceMode) {
   const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
-  const selectedImage = images.find((img) => img.id === selectedImageId);
+  const selectedImage = useMemo(
+    () => images.find((img) => img.id === selectedImageId),
+    [images, selectedImageId]
+  );
 
   // Auto-switch view mode when result is ready
   useEffect(() => {
@@ -130,7 +133,7 @@ export function useImageManager(performanceMode: PerformanceMode) {
   };
 
   const handleToggleSkip = (imageId: string) => {
-    setImages(prev => prev.map(img => 
+    setImages(prev => prev.map(img =>
         img.id === imageId ? { ...img, isSkipped: !img.isSkipped } : img
     ));
   };
@@ -162,48 +165,6 @@ export function useImageManager(performanceMode: PerformanceMode) {
     setImages([]);
     setSelectedImageId(null);
     setSelectedRegionId(null);
-  };
-
-  const handleManualPatchUpdate = (imageId: string, regionId: string, base64: string) => {
-    // Convert incoming base64 to Object URL (from paste or PatchEditor save)
-    const objectUrl = base64.startsWith('data:') ? 
-      (() => { const url = URL.createObjectURL(dataURLtoBlob(base64)); return url; })() : 
-      base64;
-
-    setImages(prev => {
-        return prev.map(img => {
-            if (img.id !== imageId) return img;
-            
-            let updatedRegions: Region[];
-            if (regionId === 'manual-full-image') {
-               const fullRegion: Region = {
-                   id: crypto.randomUUID(),
-                   x: 0, y: 0, width: 100, height: 100,
-                   type: 'rect',
-                   status: 'completed',
-                    processedImageBase64: objectUrl,
-                    source: 'manual' as const,
-                    anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
-                };
-               updatedRegions = [...img.regions, fullRegion];
-            } else {
-               // Release old region URL before replacing
-               const oldRegion = img.regions.find(r => r.id === regionId);
-               if (oldRegion?.processedImageBase64) releaseObjectURL(oldRegion.processedImageBase64);
-
-               updatedRegions = img.regions.map(r => 
-                  r.id === regionId ? { ...r, processedImageBase64: objectUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
-               );
-            }
-
-            const currentHistory = [...img.history];
-            if (currentHistory[img.historyIndex]) {
-                currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
-            }
-
-            return { ...img, regions: updatedRegions, history: currentHistory };
-        });
-    });
   };
 
   // --- HISTORY ACTIONS ---
@@ -310,23 +271,9 @@ export function useImageManager(performanceMode: PerformanceMode) {
     handleUpdateImagePrompt,
     handleToggleSkip,
     handleDeleteImage,
-    handleClearAllImages, 
-    handleManualPatchUpdate,
+    handleClearAllImages,
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage
   };
-}
-
-// Helper: convert data URL to Blob (used for paste/patch editor save)
-function dataURLtoBlob(dataURL: string): Blob {
-  const [header, data] = dataURL.split(',');
-  const mimeMatch = header.match(/:(.*?);/);
-  const mime = mimeMatch ? mimeMatch[1] : 'image/png';
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: mime });
 }

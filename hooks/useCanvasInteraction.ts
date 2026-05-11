@@ -23,13 +23,17 @@ export function useCanvasInteraction(
     disabled: boolean = false
 ) {
     const [interaction, setInteraction] = useState<InteractionState>({ type: 'idle', startPos: { x: 0, y: 0 } });
-    
+
     // Refs to avoid stale closures in event listeners
     const interactionRef = useRef(interaction);
     const imageRef = useRef(image);
-    
+    const onUpdateRegionsRef = useRef(onUpdateRegions);
+    const onSelectRegionRef = useRef(onSelectRegion);
+
     useEffect(() => { interactionRef.current = interaction; }, [interaction]);
     useEffect(() => { imageRef.current = image; }, [image]);
+    useEffect(() => { onUpdateRegionsRef.current = onUpdateRegions; }, [onUpdateRegions]);
+    useEffect(() => { onSelectRegionRef.current = onSelectRegion; }, [onSelectRegion]);
 
     const getRelativeCoords = (clientX: number, clientY: number) => {
         if (!containerRef.current) return { x: 0, y: 0 };
@@ -171,8 +175,8 @@ export function useCanvasInteraction(
                         source: 'manual',
                         customPrompt: ''
                     };
-                    onUpdateRegions(imageRef.current.id, [...imageRef.current.regions, newRegion]);
-                    onSelectRegion(newRegion.id); 
+                    onUpdateRegionsRef.current(imageRef.current.id, [...imageRef.current.regions, newRegion]);
+                    onSelectRegionRef.current(newRegion.id);
                 }
             } else if ((state.type === 'moving' || state.type === 'resizing') && state.currentRect && state.regionId) {
                 // Only update if the region actually changed (avoid no-op updates that trigger unnecessary recalculating)
@@ -183,12 +187,12 @@ export function useCanvasInteraction(
                     orig.width !== cur.width || orig.height !== cur.height
                 );
                 if (hasChanged) {
-                    const updatedRegions = imageRef.current.regions.map(r => 
-                        r.id === state.regionId 
+                    const updatedRegions = imageRef.current.regions.map(r =>
+                        r.id === state.regionId
                             ? { ...r, ...state.currentRect } as Region
                             : r
                     );
-                    onUpdateRegions(imageRef.current.id, updatedRegions);
+                    onUpdateRegionsRef.current(imageRef.current.id, updatedRegions);
                 }
             }
             setInteraction({ type: 'idle', startPos: { x: 0, y: 0 } });
@@ -200,7 +204,7 @@ export function useCanvasInteraction(
             window.removeEventListener('mousemove', handleWindowMouseMove);
             window.removeEventListener('mouseup', handleWindowMouseUp);
         };
-    }, [disabled, onUpdateRegions, onSelectRegion]);
+    }, [disabled]);
 
     return {
         interaction,

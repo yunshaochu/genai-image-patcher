@@ -72,9 +72,9 @@ export default function App() {
   const operationVersionRef = useRef<number>(0);
 
   // Custom wrapper for manual patch updates to handle Full Image row special case
-  const handleManualPatchUpdate = (imageId: string, regionId: string, imageDataUrl: string) => {
+  const handleManualPatchUpdate = useCallback((imageId: string, regionId: string, imageDataUrl: string) => {
     // imageDataUrl is now typically an Object URL (blob:), but may still be base64 from paste
-    
+
     if (regionId === 'special-full-image-mask') {
         const targetImg = images.find(img => img.id === imageId);
         if (!targetImg) return;
@@ -180,7 +180,7 @@ export default function App() {
             return { ...img, regions: updatedRegions, history: currentHistory };
         });
     });
-  };
+  }, [images, config.useInvertedMasking, config.fullImageOpaquePercent, setImages]);
 
   // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
   const handleInteractionStart = useCallback(() => {
@@ -196,7 +196,7 @@ export default function App() {
   // --- Regions Update Handler ---
   // Green frame resize/move no longer re-crops processedImageBase64.
   // The processed image stays at its anchor size; the green frame acts as a viewport window.
-  const onRegionsChanged = (imageId: string, newRegions: Region[]) => {
+  const onRegionsChanged = useCallback((imageId: string, newRegions: Region[]) => {
       handleUpdateRegions(imageId, newRegions);
 
       if (config.useInvertedMasking) {
@@ -210,15 +210,17 @@ export default function App() {
           }
           return;
       }
-  };
+  }, [handleUpdateRegions, config.useInvertedMasking, images, setImages]);
 
   // --- Handlers ---
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      await addImageFiles(Array.from(e.target.files));
-    }
+  const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    // Reset value first so re-selecting the same file(s) still fires onChange.
     e.target.value = '';
-  };
+    if (files && files.length > 0) {
+      await addImageFiles(Array.from(files));
+    }
+  }, [addImageFiles]);
 
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
@@ -270,14 +272,14 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [images, selectedImageId, handleSelectImage]);
 
-  const handleOpenEditor = async (imageId: string, regionId: string) => {
+  const handleOpenEditor = useCallback(async (imageId: string, regionId: string) => {
       const img = images.find(i => i.id === imageId);
       if (!img) return;
 
       if (regionId === 'manual-full-image') {
           const textObjects: TextObject[] = img.regions.map((r, index) => {
              const boxH = (r.height / 100) * img.originalHeight;
-             const fontSize = Math.max(14, Math.round(boxH * 0.3)); 
+             const fontSize = Math.max(14, Math.round(boxH * 0.3));
              const width = (r.width / 100) * img.originalWidth;
              const height = (r.height / 100) * img.originalHeight;
              return {
@@ -330,21 +332,21 @@ export default function App() {
           }];
       }
       setEditingRegion({ imageId, regionId, startBase64, initialTextObjects: singleTextObj });
-  };
+  }, [images]);
 
-  const handleEditorSave = (newBase64: string) => {
+  const handleEditorSave = useCallback((newBase64: string) => {
       if (editingRegion) {
           handleManualPatchUpdate(editingRegion.imageId, editingRegion.regionId, newBase64);
       }
       setEditingRegion(null);
-  };
+  }, [editingRegion, handleManualPatchUpdate]);
 
-  const handleOcrRegion = async (imageId: string, regionId: string) => {
+  const handleOcrRegion = useCallback(async (imageId: string, regionId: string) => {
      const img = images.find(i => i.id === imageId);
      const region = img?.regions.find(r => r.id === regionId);
      if (!img || !region) return;
-     setImages(prev => prev.map(currentImg => 
-         currentImg.id === imageId 
+     setImages(prev => prev.map(currentImg =>
+         currentImg.id === imageId
            ? {
                ...currentImg,
                regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: true } : r)
@@ -357,8 +359,8 @@ export default function App() {
          const text = await recognizeText(cropUrl, config);
          // Release the temporary crop URL after OCR is done
          releaseObjectURL(cropUrl);
-         setImages(prev => prev.map(currentImg => 
-            currentImg.id === imageId 
+         setImages(prev => prev.map(currentImg =>
+            currentImg.id === imageId
               ? {
                   ...currentImg,
                   regions: currentImg.regions.map(r => r.id === regionId ? { ...r, ocrText: text, isOcrLoading: false } : r)
@@ -367,8 +369,8 @@ export default function App() {
          ));
      } catch (e: any) {
          setErrorMsg("OCR Error: " + e.message);
-         setImages(prev => prev.map(currentImg => 
-            currentImg.id === imageId 
+         setImages(prev => prev.map(currentImg =>
+            currentImg.id === imageId
               ? {
                   ...currentImg,
                   regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: false } : r)
@@ -376,7 +378,7 @@ export default function App() {
               : currentImg
          ));
      }
-  };
+  }, [images, config, setImages, setErrorMsg]);
 
   // --- RESTORE BOXES HANDLER ---
   const handleUpdateRestoreBoxes = useCallback((regionId: string, boxes: RestoreBox[]) => {
@@ -394,7 +396,7 @@ export default function App() {
   }, [setImages]);
 
   // ON-DEMAND STITCHING for Download
-  const handleDownload = async () => {
+  const handleDownload = useCallback(async () => {
       if (!selectedImage) return;
       try {
           let stitchedUrl: string;
@@ -415,10 +417,10 @@ export default function App() {
           console.error("Failed to stitch for download", e);
           setErrorMsg("Failed to generate download image.");
       }
-  };
-  
+  }, [selectedImage, config.useInvertedMasking, setErrorMsg]);
+
   // ON-DEMAND STITCHING for Apply
-  const handleApplyAsOriginalWrapper = async () => {
+  const handleApplyAsOriginalWrapper = useCallback(async () => {
       if (!selectedImage) return;
       try {
           let stitchedUrl: string;
@@ -432,7 +434,7 @@ export default function App() {
           console.error("Failed to stitch for apply", e);
           setErrorMsg("Failed to apply changes.");
       }
-  };
+  }, [selectedImage, config.useInvertedMasking, handleApplyResultAsOriginal, setErrorMsg]);
 
   // --- REFINEMENT HANDLER (Scroll to adjust box) ---
   const handleAdjustRegion = useCallback(async (imageId: string, regionId: string, isExpand: boolean) => {
@@ -489,17 +491,34 @@ export default function App() {
     }
   };
 
-  const updateConfig = (key: keyof AppConfig, value: any) => {
+  const updateConfig = useCallback((key: keyof AppConfig, value: any) => {
       setConfig(prev => ({ ...prev, [key]: value }));
-  };
+  }, [setConfig]);
 
-  const fetchTransModels = async () => {
+  const fetchTransModels = useCallback(async () => {
       if (!config.translationBaseUrl || !config.translationApiKey) return;
       try {
           const models = await fetchOpenAIModels(config.translationBaseUrl, config.translationApiKey);
           setTransModels(models);
       } catch(e) { console.error(e); }
-  };
+  }, [config.translationBaseUrl, config.translationApiKey]);
+
+  // Stable adapters for EditorCanvas — bind selectedImage.id so the child only sees a regionId arg.
+  const selectedImageId_safe = selectedImage?.id;
+  const editorOnUpdateRegions = onRegionsChanged;
+  const editorOnOpenEditor = useCallback((regionId: string) => {
+      if (selectedImageId_safe) handleOpenEditor(selectedImageId_safe, regionId);
+  }, [selectedImageId_safe, handleOpenEditor]);
+  const editorOnOcrRegion = useCallback((regionId: string) => {
+      if (selectedImageId_safe) handleOcrRegion(selectedImageId_safe, regionId);
+  }, [selectedImageId_safe, handleOcrRegion]);
+  const editorOnAdjustRegionSize = useCallback((regionId: string, isExpand: boolean) => {
+      if (selectedImageId_safe) handleAdjustRegion(selectedImageId_safe, regionId, isExpand);
+  }, [selectedImageId_safe, handleAdjustRegion]);
+
+  // Stable adapters for Sidebar.
+  const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
+  const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
 
   const showEditor = config.enableMangaMode && config.enableManualEditor;
 
@@ -532,10 +551,10 @@ export default function App() {
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
-        onOpenEditor={(imageId, regionId) => handleOpenEditor(imageId, regionId)} 
-        onOcrRegion={(imageId, regionId) => handleOcrRegion(imageId, regionId)}
-        onOpenGlobalSettings={() => setShowGlobalSettings(true)}
-        onOpenHelp={() => setShowHelp(true)}
+        onOpenEditor={handleOpenEditor}
+        onOcrRegion={handleOcrRegion}
+        onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
+        onOpenHelp={sidebarOnOpenHelp}
         showEditor={showEditor} 
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
         uploadProgress={uploadProgress}
@@ -648,16 +667,16 @@ export default function App() {
                   <EditorCanvas
                     key={selectedImage.id}
                     image={selectedImage}
-                    onUpdateRegions={(imageId, newRegions) => onRegionsChanged(imageId, newRegions)}
+                    onUpdateRegions={editorOnUpdateRegions}
                     disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
                     language={config.language}
-                    onOpenEditor={(regionId) => handleOpenEditor(selectedImage.id, regionId)}
+                    onOpenEditor={editorOnOpenEditor}
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={setSelectedRegionId}
-                    onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
+                    onOcrRegion={editorOnOcrRegion}
                     showOcrButton={config.enableMangaMode && config.enableOCR}
                     showEditorButton={showEditor}
-                    onAdjustRegionSize={(regionId, isExpand) => handleAdjustRegion(selectedImage.id, regionId, isExpand)}
+                    onAdjustRegionSize={editorOnAdjustRegionSize}
                     onInteractionStart={handleInteractionStart}
                     viewMode={viewMode}
                     restoreMode={restoreMode}
