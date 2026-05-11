@@ -35,6 +35,36 @@ const writeTranslationCache = (userPart: string, translation: string): string =>
         : `${TRANSLATION_CACHE_MARKER}\n${translation}`;
 };
 
+/**
+ * Merge processing results from a regionsMap snapshot onto the LIVE image.regions
+ * array, by id. Only "processing-result" fields (status, processedImageUrl,
+ * anchor*) are copied; user-editable fields (x/y/w/h, customPrompt, restoreBoxes,
+ * etc.) are kept from the live state so user edits made during processing —
+ * dragging another region, adding a new one, editing a prompt — are preserved.
+ *
+ * Regions in the live state that aren't in regionsMap (e.g. newly added during
+ * processing) are passed through untouched. Regions in regionsMap that the user
+ * deleted from the live state are silently dropped.
+ */
+const mergeProcessedRegions = (
+    img: UploadedImage,
+    regionsMap: Map<string, Region>
+): Region[] => {
+    return img.regions.map(r => {
+        const processed = regionsMap.get(r.id);
+        if (!processed) return r;
+        return {
+            ...r,
+            status: processed.status,
+            processedImageUrl: processed.processedImageUrl ?? r.processedImageUrl,
+            anchorX: processed.anchorX ?? r.anchorX,
+            anchorY: processed.anchorY ?? r.anchorY,
+            anchorWidth: processed.anchorWidth ?? r.anchorWidth,
+            anchorHeight: processed.anchorHeight ?? r.anchorHeight,
+        };
+    });
+};
+
 export function useImageProcessor(
     images: UploadedImage[],
     updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
@@ -95,7 +125,7 @@ export function useImageProcessor(
             ? await loadImage(imageSnapshot.previewUrl)
             : imgElement;
         regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
-        updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
+        updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
 
         if (signal.aborted) return;
         setProcessingState(ProcessingStep.CROPPING);
@@ -219,7 +249,6 @@ export function useImageProcessor(
                     regionsToProcess.forEach(r => {
                         regionsMap.set(r.id, { ...r, status: 'completed' as const });
                     });
-                    const currentAllRegions = Array.from(regionsMap.values());
 
                     updateImage(imageSnapshot.id, img => {
                         const updatedHistory = [...img.history];
@@ -241,7 +270,7 @@ export function useImageProcessor(
                             ...img,
                             fullAiResultUrl: apiResultUrl,
                             finalResultUrl: stitchedUrl,
-                            regions: currentAllRegions,
+                            regions: mergeProcessedRegions(img, regionsMap),
                             history: updatedHistory
                         };
                     });
@@ -259,8 +288,6 @@ export function useImageProcessor(
                         regionsMap.set(region.id, completedRegion);
                     }
 
-                    const currentAllRegions = Array.from(regionsMap.values());
-                    
                     updateImage(imageSnapshot.id, img => {
                         const updatedHistory = [...img.history];
                         if (updatedHistory[img.historyIndex]?.fullAiResultUrl) {
@@ -274,7 +301,7 @@ export function useImageProcessor(
                         }
                         if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
 
-                        return { ...img, fullAiResultUrl: apiResultUrl, regions: currentAllRegions, history: updatedHistory };
+                        return { ...img, fullAiResultUrl: apiResultUrl, regions: mergeProcessedRegions(img, regionsMap), history: updatedHistory };
                     });
                 }
             } catch (err: any) {
@@ -282,7 +309,7 @@ export function useImageProcessor(
                     regionsToProcess.forEach(r => {
                         regionsMap.set(r.id, { ...r, status: 'failed' as const });
                     });
-                    updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
+                    updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
                 }
             } finally {
                 globalSemaphore.release();
@@ -468,10 +495,8 @@ export function useImageProcessor(
                 const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 regionsMap.set(region.id, completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
-                
-                const currentAllRegions = Array.from(regionsMap.values());
-                
-                updateImage(imageSnapshot.id, img => ({ ...img, regions: currentAllRegions }));
+
+                updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
             } catch (err: any) {
                 if (err.name === 'AbortError') return;
                 // Clean up any URLs we created in this task
@@ -483,7 +508,7 @@ export function useImageProcessor(
 
                 const failedRegion = { ...region, status: 'failed' as const };
                 regionsMap.set(region.id, failedRegion);
-                updateImage(imageSnapshot.id, img => ({ ...img, regions: Array.from(regionsMap.values()) }));
+                updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
             } finally {
                 globalSemaphore.release();
             }

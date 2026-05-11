@@ -546,11 +546,16 @@ const Sidebar: React.FC<SidebarProps> = ({
                            </label>
                            
                            {selectedRegion ? (
-                                <textarea 
-                                key={selectedRegion.id} 
+                                <textarea
+                                key={selectedRegion.id}
                                 value={selectedRegion.customPrompt || ''}
                                 onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
-                                className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
+                                // Lock the textarea while THIS region is being processed
+                                // (its prompt is already in flight to the API; mid-flight
+                                // edits would be silently ignored). Other regions remain
+                                // editable even during batch processing.
+                                readOnly={selectedRegion.status === 'processing'}
+                                className={`w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in ${selectedRegion.status === 'processing' ? 'opacity-60 cursor-not-allowed' : ''}`}
                                 placeholder={t(lang, 'promptSpecificPlaceholder')}
                                 />
                            ) : (

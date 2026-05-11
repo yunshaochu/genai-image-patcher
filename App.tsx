@@ -653,7 +653,12 @@ export default function App() {
                     key={selectedImage.id}
                     image={selectedImage}
                     onUpdateRegions={editorOnUpdateRegions}
-                    disabled={processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE}
+                    // Processing no longer locks the whole canvas. Individual
+                    // regions in `status === 'processing'` are still per-region
+                    // read-only (handled inside EditorCanvas / useCanvasInteraction),
+                    // and useImageProcessor merges results by id so user edits to
+                    // other regions during processing are preserved.
+                    disabled={false}
                     language={config.language}
                     onOpenEditor={editorOnOpenEditor}
                     selectedRegionId={selectedRegionId}

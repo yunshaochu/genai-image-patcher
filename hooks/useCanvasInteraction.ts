@@ -60,14 +60,19 @@ export function useCanvasInteraction(
     };
 
     const handleRegionMouseDown = (e: React.MouseEvent, region: Region) => {
-        if (disabled || region.status === 'processing' || viewMode === 'result') return;
+        if (disabled || viewMode === 'result') return;
         if (e.altKey) return;
         e.stopPropagation();
-        
+
         if (onInteractionStart) onInteractionStart();
 
+        // Selection is always allowed — even for regions currently being processed.
+        // What's blocked is the DRAG (moving the box); resize handles are hidden
+        // separately via `isEditable` in EditorCanvas.
         onSelectRegion(region.id);
-        
+
+        if (region.status === 'processing') return;
+
         const coords = getRelativeCoords(e.clientX, e.clientY);
         setInteraction({
             type: 'moving',
