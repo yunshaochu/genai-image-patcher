@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
 import { DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT } from "../hooks/useConfig";
+import { globalRateLimitGate, parseRetryAfter, isRateLimitError } from "./rateLimitGate";
 
 /**
  * Helper to sanitize header values (API Keys) to prevent
@@ -53,30 +54,41 @@ export const fetchOpenAIModels = async (
 };
 
 /**
- * Wrapper function to handle retries and timeouts.
+ * Wrapper that enforces the per-request timeout and the GLOBAL 429 cool-down.
  *
- * The previous implementation used Promise.race(timeout, op), which only
- * rejected the wrapper promise — the underlying fetch / SDK call kept running
- * to completion. That leaked sockets and (on slow networks) led to phantom
- * retries hitting the server while the user thought the request was cancelled.
+ * Retry policy here is NARROW: we only retry inline on 429 / rate-limit
+ * signals, because those need to back off coordinated with all other
+ * in-flight calls (via globalRateLimitGate) to avoid IP bans.
  *
- * Now we create a per-attempt AbortController that aborts on either the
- * outer cancel signal or the timeout, and pass its signal to the operation.
- * Callers (fetch in the OpenAI path, SDK httpOptions.timeout in the Gemini
- * path) are responsible for honouring that signal so the request really stops.
+ * All other failures (timeouts, 5xx, network errors, content-policy refusals)
+ * throw immediately so the outer round-based retry in useImageProcessor can
+ * decide what to do next round — which frees the concurrency slot for the
+ * next region instead of busy-waiting on a single one.
+ *
+ * Implementation details:
+ * - Per-attempt AbortController so timeouts actually cancel the underlying
+ *   fetch / SDK call (not just the wrapper promise).
+ * - 429 inline retries are capped at MAX_429_RETRIES — the gate handles the
+ *   wait, so we don't sleep here, we just loop and let `await wait()` block.
  */
+const MAX_429_RETRIES = 5;
+
 async function executeWithRetry<T>(
   operation: (opSignal: AbortSignal) => Promise<T>,
   timeoutMs: number = 60000,
-  maxRetries: number = 0,
   signal?: AbortSignal
 ): Promise<T> {
   let lastError: any;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
     if (signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
+
+    // Block on the global gate (no-op if not tripped). If a parallel call
+    // tripped the gate while we were waiting on the semaphore, this is where
+    // we honour it.
+    await globalRateLimitGate.wait(signal);
 
     const controller = new AbortController();
     let timedOut = false;
@@ -90,29 +102,39 @@ async function executeWithRetry<T>(
     try {
       return await operation(controller.signal);
     } catch (error: any) {
-       lastError = error;
+      lastError = error;
 
-       // Outer-cancel: never retry, propagate the abort.
-       if (signal?.aborted) {
-           throw new DOMException('Aborted', 'AbortError');
-       }
+      // Outer-cancel: never retry, propagate the abort.
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
 
-       // If our timeout fired, normalise the error so the caller / logs can
-       // distinguish "we cancelled it" from "the server returned an error".
-       if (timedOut) {
-           lastError = new Error(`Operation timed out after ${timeoutMs}ms`);
-       }
+      // Normalise timeout errors so callers can distinguish "we cancelled"
+      // from "the server returned an error".
+      if (timedOut) {
+        lastError = new Error(`Operation timed out after ${timeoutMs}ms`);
+      }
 
-       const isTimeout = timedOut || (error?.message?.includes?.('timed out') ?? false);
-       console.warn(`Attempt ${attempt + 1} failed (Timeout: ${isTimeout}):`, error);
+      // 429: trip the global gate and retry inline (other in-flight calls
+      // will also pause once they reach `await wait()`).
+      if (isRateLimitError(error)) {
+        const retryAfterMs = parseRetryAfter(error.retryAfter);
+        const waitMs = globalRateLimitGate.trip(retryAfterMs);
+        console.warn(
+          `Rate-limited (429). Gate tripped for ${Math.round(waitMs)}ms. ` +
+          `Inline attempt ${attempt + 1}/${MAX_429_RETRIES + 1}.`
+        );
+        if (attempt < MAX_429_RETRIES) {
+          continue; // next iteration's `await wait()` will honour the gate
+        }
+        throw lastError;
+      }
 
-       if (attempt < maxRetries) {
-         // Wait a bit before retrying (1s)
-         await new Promise(r => setTimeout(r, 1000));
-       }
+      // Non-429: bail. Round-level retry (useImageProcessor) takes over.
+      throw lastError;
     } finally {
-       clearTimeout(timeoutId);
-       if (signal) signal.removeEventListener('abort', onOuterAbort);
+      clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
     }
   }
 
@@ -195,7 +217,13 @@ const generateGeminiImage = async (
             throw error;
         }
         console.error("Gemini API Error:", error);
-        throw new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
+        // Preserve status / code / retryAfter so the upstream retry logic
+        // can detect 429-equivalent (RESOURCE_EXHAUSTED) signals from the SDK.
+        const e: any = new Error(`Gemini API Failed: ${error.message || 'Unknown error'}`);
+        if (error.status != null) e.status = error.status;
+        if (error.code != null) e.code = error.code;
+        if (error.retryAfter != null) e.retryAfter = error.retryAfter;
+        throw e;
       }
   };
 
@@ -296,7 +324,10 @@ const generateOpenAIImage = async (
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      throw new Error(`OpenAI API Error: ${err.error?.message || response.statusText}`);
+      const e: any = new Error(`OpenAI API Error: ${err.error?.message || response.statusText}`);
+      e.status = response.status;
+      e.retryAfter = response.headers.get('Retry-After');
+      throw e;
     }
 
     let content = '';
@@ -444,28 +475,35 @@ export const generateTranslation = async (
   ];
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${safeApiKey}`,
-      },
-      body: JSON.stringify({
-        model: translationModel,
-        messages: messages,
-        max_tokens: 2048
-      }),
-      signal: signal
-    });
+    const worker = async (opSignal: AbortSignal): Promise<string> => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${safeApiKey}`,
+        },
+        body: JSON.stringify({
+          model: translationModel,
+          messages: messages,
+          max_tokens: 2048
+        }),
+        signal: opSignal
+      });
 
-    if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(`Translation API Error: ${err.error?.message || response.statusText}`);
-    }
+      if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          const e: any = new Error(`Translation API Error: ${err.error?.message || response.statusText}`);
+          e.status = response.status;
+          e.retryAfter = response.headers.get('Retry-After');
+          throw e;
+      }
 
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || '';
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content || '';
+    };
 
+    const timeout = config.apiTimeout || 60000;
+    return await executeWithRetry(worker, timeout, signal);
   } catch (error) {
       console.error("Translation API Error", error);
       throw error;
@@ -482,9 +520,11 @@ export const generateRegionEdit = async (
   signal?: AbortSignal
 ): Promise<string> => {
 
-  // Default to 60s timeout and 0 retries if not configured (backwards compat)
+  // Default to 60s timeout if not configured (backwards compat).
+  // Retry on 429 is inline (handled by executeWithRetry + globalRateLimitGate).
+  // All other failures bubble up; the round-level retry in useImageProcessor
+  // picks them up in the next round.
   const timeout = config.apiTimeout || 60000;
-  const retries = config.maxRetries ?? 0;
 
   // The wrapper hands us a per-attempt signal that aborts on outer cancel
   // OR the timeout — forward it down to fetch / SDK so they actually stop.
@@ -497,5 +537,5 @@ export const generateRegionEdit = async (
     }
   };
 
-  return executeWithRetry(worker, timeout, retries, signal);
+  return executeWithRetry(worker, timeout, signal);
 };

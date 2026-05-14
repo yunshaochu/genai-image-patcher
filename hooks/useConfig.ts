@@ -66,6 +66,7 @@ const DEFAULT_CONFIG: AppConfig = {
   processFullImageIfNoRegions: false, 
   apiTimeout: 150000, // 150 seconds default
   maxRetries: 1,
+  showRetryDiagnostics: false,
   theme: 'light',
   language: 'zh',
   provider: 'openai',
@@ -214,6 +215,11 @@ export function useConfig() {
         }
         if (typeof migratedConfig.aiPayloadRedrawTargetKB === 'undefined') {
             migratedConfig.aiPayloadRedrawTargetKB = 1500;
+        }
+
+        // Ensure retry diagnostics toggle exists
+        if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
+            migratedConfig.showRetryDiagnostics = false;
         }
 
         return migratedConfig;

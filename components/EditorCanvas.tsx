@@ -37,6 +37,7 @@ interface EditorCanvasProps {
   restoreBrushSize?: number;
   restoreSelectedRegionId?: string | null;
   onSelectRestoreRegion?: (regionId: string | null) => void;
+  showRetryDiagnostics?: boolean;
 }
 
 /**
@@ -77,6 +78,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     restoreBrushSize = 8,
     restoreSelectedRegionId = null,
     onSelectRestoreRegion,
+    showRetryDiagnostics = false,
 }) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -1067,6 +1069,9 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                     }}
                   >
                     {t(language, `status_${region.status}` as any)}
+                    {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (
+                      <span className="ml-1 opacity-90">↻{region.retryCount}</span>
+                    )}
                   </div>
                 )}
               </div>

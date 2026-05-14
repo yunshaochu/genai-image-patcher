@@ -676,6 +676,7 @@ export default function App() {
                     restoreBrushSize={restoreBrushSize}
                     restoreSelectedRegionId={restoreSelectedRegionId}
                     onSelectRestoreRegion={setRestoreSelectedRegionId}
+                    showRetryDiagnostics={!!config.showRetryDiagnostics}
                 />
               )}
             </>

@@ -641,8 +641,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                  
                  <div className="pt-2 border-t border-skin-border/50 space-y-2">
                     <label className="flex items-start gap-2 cursor-pointer group">
-                        <input 
-                          type="checkbox" 
+                        <input
+                          type="checkbox"
                           checked={config.processFullImageIfNoRegions}
                           onChange={(e) => handleConfigChange('processFullImageIfNoRegions', e.target.checked)}
                           className="mt-0.5"
@@ -650,6 +650,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                         <div>
                            <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'processFullImage')}</span>
                            <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'processFullImageDesc')}</span>
+                        </div>
+                    </label>
+                    <label className="flex items-start gap-2 cursor-pointer group">
+                        <input
+                          type="checkbox"
+                          checked={config.showRetryDiagnostics}
+                          onChange={(e) => handleConfigChange('showRetryDiagnostics', e.target.checked)}
+                          className="mt-0.5"
+                        />
+                        <div>
+                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'showRetryDiagnostics')}</span>
+                           <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'showRetryDiagnosticsDesc')}</span>
                         </div>
                     </label>
                  </div>
@@ -677,16 +689,17 @@ const Sidebar: React.FC<SidebarProps> = ({
                         const region = currentImage.regions.find(r => r.id === selectedRegionId);
                         if (!region) return null;
                         return (
-                            <ManualPatchRow 
+                            <ManualPatchRow
                                 key={region.id}
-                                region={region} 
-                                image={currentImage} 
+                                region={region}
+                                image={currentImage}
                                 onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
                                 lang={lang}
                                 onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}
                                 onOcr={() => onOcrRegion(currentImage.id, region.id)}
                                 showOcr={config.enableMangaMode && config.enableOCR}
                                 showEditor={showEditor}
+                                showRetryDiagnostics={!!config.showRetryDiagnostics}
                             />
                         );
                     })() : !config.useFullImageMasking && config.enableMangaMode ? (

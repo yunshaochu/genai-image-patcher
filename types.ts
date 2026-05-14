@@ -29,6 +29,13 @@ export interface Region {
   isOcrLoading?: boolean; // Loading state for OCR
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
   restoreMaskUrl?: string; // Brush-based restore mask Object URL (涂抹还原), alpha=1=processed, 0=original
+
+  // Retry diagnostics. retryCount counts failed attempts in the current run
+  // (cleared when the user manually triggers a fresh processing pass on this
+  // region). errorHistory keeps short error messages for the same attempts —
+  // surfaced in UI only when AppConfig.showRetryDiagnostics is on.
+  retryCount?: number;
+  errorHistory?: string[];
 }
 
 export interface ImageHistoryState {
@@ -83,7 +90,8 @@ export interface AppConfig {
   
   // Retry & Timeout Settings
   apiTimeout: number; // in milliseconds
-  maxRetries: number; // count
+  maxRetries: number; // count — interpreted as max ROUNDS of round-level retry
+  showRetryDiagnostics: boolean; // show per-region retry count badge + error history
 
   // Workflow Mode
   processingMode: ProcessingMode;

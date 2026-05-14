@@ -149,9 +149,11 @@ export const ManualPatchRow: React.FC<{
   onOcr: () => void;
   showOcr: boolean;
   showEditor: boolean;
-}> = ({ region, image, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor }) => {
+  showRetryDiagnostics: boolean;
+}> = ({ region, image, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor, showRetryDiagnostics }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -279,14 +281,39 @@ export const ManualPatchRow: React.FC<{
              </div>
              
              <div className={`text-[9px] font-bold py-1 ${
-                 region.status === 'completed' ? 'text-emerald-500' : 
+                 region.status === 'completed' ? 'text-emerald-500' :
                  region.status === 'failed' ? 'text-rose-500' :
                  'text-skin-muted'
              }`}>
                 {region.status === 'failed' ? t(lang, 'status_failed') : region.status === 'completed' ? 'Done' : 'Empty'}
              </div>
+             {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (
+                <div className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 border border-amber-200">
+                   {t(lang, 'retryBadge').replace('{count}', String(region.retryCount))}
+                </div>
+             )}
           </div>
       </div>
+
+      {showRetryDiagnostics && region.errorHistory && region.errorHistory.length > 0 && (
+        <div className="border-t border-skin-border pt-1.5">
+          <button
+            onClick={() => setErrorHistoryOpen(v => !v)}
+            className="text-[10px] text-skin-muted hover:text-skin-primary transition-colors w-full text-left"
+          >
+            {errorHistoryOpen
+              ? t(lang, 'errorHistoryHide')
+              : t(lang, 'errorHistoryShow').replace('{count}', String(region.errorHistory.length))}
+          </button>
+          {errorHistoryOpen && (
+            <ol className="mt-1 space-y-1 list-decimal list-inside text-[10px] text-rose-600/90 break-all">
+              {region.errorHistory.map((msg, i) => (
+                <li key={i} className="leading-tight">{msg}</li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
       
       {/* OCR Section - Only if enabled */}
       {showOcr && (

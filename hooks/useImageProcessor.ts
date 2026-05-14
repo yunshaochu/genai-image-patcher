@@ -8,6 +8,19 @@ import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 
 /**
+ * Cap the number of error-history entries stored on a region. Each entry is
+ * a short message string; keeping the most recent few is enough for the user
+ * to spot patterns ("always 429" vs. "always policy violation").
+ */
+const MAX_ERROR_HISTORY = 5;
+
+/** Trim a thrown error down to a single short string for UI display. */
+const errToMsg = (err: any): string => {
+    const raw = err?.message || String(err);
+    return raw.length > 240 ? raw.slice(0, 240) + '…' : raw;
+};
+
+/**
  * Sentinel string that marks the start of a cached translation block inside
  * `region.customPrompt`. Anything BEFORE this line is treated as the user's
  * own instructions; anything AFTER is reused as the cached translation
@@ -61,6 +74,10 @@ const mergeProcessedRegions = (
             anchorY: processed.anchorY ?? r.anchorY,
             anchorWidth: processed.anchorWidth ?? r.anchorWidth,
             anchorHeight: processed.anchorHeight ?? r.anchorHeight,
+            // Retry diagnostics — processed.* always wins so we don't lose
+            // the latest count/history when a parallel region update races.
+            retryCount: processed.retryCount ?? r.retryCount,
+            errorHistory: processed.errorHistory ?? r.errorHistory,
         };
     });
 };
@@ -76,6 +93,12 @@ export function useImageProcessor(
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isDetecting, setIsDetecting] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
+
+    // Mirror of `images` for sync access inside async loops (round-based retry
+    // needs to read the latest region statuses between rounds without waiting
+    // for a re-render).
+    const imagesRef = useRef(images);
+    imagesRef.current = images;
 
     const handleStop = () => {
         if (abortControllerRef.current) {
@@ -112,7 +135,16 @@ export function useImageProcessor(
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
-        const regionsToProcess = allActiveRegions.filter(r => (r.status === 'pending' || r.status === 'failed') && !r.contextOnly);
+        // Cap per-region attempts at (maxRetries + 1). A region that's already
+        // burned through its retry budget is skipped here even if its image is
+        // still being passed through the round loop (because OTHER regions in
+        // it still have budget remaining).
+        const maxAttemptsPerRegion = Math.max(1, (config.maxRetries ?? 0) + 1);
+        const regionsToProcess = allActiveRegions.filter(r =>
+            (r.status === 'pending' || r.status === 'failed')
+            && !r.contextOnly
+            && (r.retryCount ?? 0) < maxAttemptsPerRegion
+        );
         if (regionsToProcess.length === 0) return;
 
         const imgElement = await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
@@ -306,8 +338,15 @@ export function useImageProcessor(
                 }
             } catch (err: any) {
                 if (err.name !== 'AbortError') {
+                    const msg = errToMsg(err);
                     regionsToProcess.forEach(r => {
-                        regionsMap.set(r.id, { ...r, status: 'failed' as const });
+                        const nextHistory = [...(r.errorHistory ?? []), msg].slice(-MAX_ERROR_HISTORY);
+                        regionsMap.set(r.id, {
+                            ...r,
+                            status: 'failed' as const,
+                            retryCount: (r.retryCount ?? 0) + 1,
+                            errorHistory: nextHistory,
+                        });
                     });
                     updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
                 }
@@ -506,7 +545,17 @@ export function useImageProcessor(
                 if (paddedUrl) releaseObjectURL(paddedUrl);
                 if (croppedUrl) releaseObjectURL(croppedUrl);
 
-                const failedRegion = { ...region, status: 'failed' as const };
+                // Base on the latest regionsMap entry — the translation-cache
+                // write earlier in this task may have updated customPrompt,
+                // and the round before may have set retryCount/errorHistory.
+                const baseRegion = regionsMap.get(region.id) ?? region;
+                const nextHistory = [...(baseRegion.errorHistory ?? []), errToMsg(err)].slice(-MAX_ERROR_HISTORY);
+                const failedRegion = {
+                    ...baseRegion,
+                    status: 'failed' as const,
+                    retryCount: (baseRegion.retryCount ?? 0) + 1,
+                    errorHistory: nextHistory,
+                };
                 regionsMap.set(region.id, failedRegion);
                 updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
             } finally {
@@ -525,27 +574,78 @@ export function useImageProcessor(
         abortControllerRef.current = controller;
         setProcessingState(ProcessingStep.CROPPING);
         setErrorMsg(null);
-        const targets: UploadedImage[] = processAll 
-            ? images.filter(img => !img.isSkipped)
-            : (selectedImage ? [selectedImage] : []);
-        if (targets.length === 0) {
+
+        // Pick initial targets once, BEFORE clearing diagnostics. Subsequent
+        // rounds re-read live state via imagesRef so we pick up successes /
+        // failures from the previous round.
+        const selectedId = selectedImage?.id;
+        const pickTargets = (): UploadedImage[] => {
+            const live = imagesRef.current;
+            return processAll
+                ? live.filter(img => !img.isSkipped)
+                : (selectedId ? live.filter(img => img.id === selectedId) : []);
+        };
+
+        const initialTargets = pickTargets();
+        if (initialTargets.length === 0) {
             setProcessingState(ProcessingStep.IDLE);
             return;
         }
+
+        // Clear retry diagnostics on regions about to be (re)processed so
+        // counts/history reflect THIS run, not historical attempts. Only
+        // touches regions in scope (pending/failed, non-contextOnly).
+        const targetIds = new Set(initialTargets.map(i => i.id));
+        updateAllImages(img => {
+            if (!targetIds.has(img.id)) return img;
+            const anyToReset = img.regions.some(r =>
+                (r.status === 'pending' || r.status === 'failed') && !r.contextOnly
+            );
+            if (!anyToReset) return img;
+            return {
+                ...img,
+                regions: img.regions.map(r =>
+                    (r.status === 'pending' || r.status === 'failed') && !r.contextOnly
+                        ? { ...r, retryCount: 0, errorHistory: [] }
+                        : r
+                ),
+            };
+        });
+
         const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
         const globalSemaphore = new AsyncSemaphore(actualLimit);
+        // maxRounds = first attempt + N retries. Floor at 1 so the loop runs
+        // at least once even when maxRetries is misconfigured.
+        const maxRounds = Math.max(1, (config.maxRetries ?? 0) + 1);
+
         try {
-            if (config.executionMode === 'concurrent') {
-                await runWithConcurrency<UploadedImage, void>(
-                    targets, 
-                    config.concurrencyLimit, 
-                    (img) => processSingleImage(img, controller.signal, globalSemaphore),
-                    controller.signal, 0 
+            for (let round = 0; round < maxRounds; round++) {
+                if (controller.signal.aborted) break;
+
+                // Re-snapshot each round: picks up live edits, drops images
+                // that have no remaining work (all regions succeeded or are
+                // capped out at retryCount >= maxRounds).
+                const roundTargets = pickTargets().filter(img =>
+                    img.regions.some(r =>
+                        (r.status === 'pending' || r.status === 'failed')
+                        && !r.contextOnly
+                        && (r.retryCount ?? 0) < maxRounds
+                    )
                 );
-            } else {
-                for (const img of targets) {
-                    if (controller.signal.aborted) break;
-                    await processSingleImage(img, controller.signal, globalSemaphore);
+                if (roundTargets.length === 0) break;
+
+                if (config.executionMode === 'concurrent') {
+                    await runWithConcurrency<UploadedImage, void>(
+                        roundTargets,
+                        config.concurrencyLimit,
+                        (img) => processSingleImage(img, controller.signal, globalSemaphore),
+                        controller.signal, 0
+                    );
+                } else {
+                    for (const img of roundTargets) {
+                        if (controller.signal.aborted) break;
+                        await processSingleImage(img, controller.signal, globalSemaphore);
+                    }
                 }
             }
             if (controller.signal.aborted) setErrorMsg(t(config.language, 'stopped_by_user'));
