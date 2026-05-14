@@ -90,7 +90,7 @@ export interface AppConfig {
   
   // Retry & Timeout Settings
   apiTimeout: number; // in milliseconds
-  maxRetries: number; // count — interpreted as max ROUNDS of round-level retry
+  maxRetriesPerRegion: number; // per-region retry budget (excludes first attempt). Standard mode: each region counts independently. Full-image-masking mode: all regions in an image share one counter (one API call per image).
   showRetryDiagnostics: boolean; // show per-region retry count badge + error history
 
   // Workflow Mode

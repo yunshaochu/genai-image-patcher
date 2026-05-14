@@ -631,9 +631,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                      </div>
                      <div className="flex-1">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'retriesLabel')}</label>
-                        <input 
-                          type="number" value={config.maxRetries}
-                          onChange={(e) => handleConfigChange('maxRetries', Number(e.target.value))}
+                        <input
+                          type="number" value={config.maxRetriesPerRegion}
+                          onChange={(e) => handleConfigChange('maxRetriesPerRegion', Number(e.target.value))}
                           className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
                         />
                      </div>

@@ -61,8 +61,8 @@ export const fetchOpenAIModels = async (
  * in-flight calls (via globalRateLimitGate) to avoid IP bans.
  *
  * All other failures (timeouts, 5xx, network errors, content-policy refusals)
- * throw immediately so the outer round-based retry in useImageProcessor can
- * decide what to do next round — which frees the concurrency slot for the
+ * throw immediately so the outer per-region retry loop in useImageProcessor
+ * can decide what to do next — which frees the concurrency slot for the
  * next region instead of busy-waiting on a single one.
  *
  * Implementation details:
@@ -130,7 +130,7 @@ async function executeWithRetry<T>(
         throw lastError;
       }
 
-      // Non-429: bail. Round-level retry (useImageProcessor) takes over.
+      // Non-429: bail. Per-region retry loop (useImageProcessor) takes over.
       throw lastError;
     } finally {
       clearTimeout(timeoutId);
@@ -522,8 +522,8 @@ export const generateRegionEdit = async (
 
   // Default to 60s timeout if not configured (backwards compat).
   // Retry on 429 is inline (handled by executeWithRetry + globalRateLimitGate).
-  // All other failures bubble up; the round-level retry in useImageProcessor
-  // picks them up in the next round.
+  // All other failures bubble up; the per-region retry loop in useImageProcessor
+  // picks them up on the next pass.
   const timeout = config.apiTimeout || 60000;
 
   // The wrapper hands us a per-attempt signal that aborts on outer cancel

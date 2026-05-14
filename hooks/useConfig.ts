@@ -65,7 +65,7 @@ const DEFAULT_CONFIG: AppConfig = {
   concurrencyLimit: 3,
   processFullImageIfNoRegions: false, 
   apiTimeout: 150000, // 150 seconds default
-  maxRetries: 1,
+  maxRetriesPerRegion: 1,
   showRetryDiagnostics: false,
   theme: 'light',
   language: 'zh',

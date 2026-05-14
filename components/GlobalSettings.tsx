@@ -34,7 +34,24 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                  <button onClick={onClose} className="p-1 hover:bg-skin-fill rounded">✕</button>
               </div>
               <div className="p-6 space-y-4 max-h-[70vh] overflow-y-auto custom-scrollbar">
-                  <div className="flex items-center justify-between">
+                  <div>
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(config.language, 'performanceMode')}</label>
+                      <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+                          <button
+                              onClick={() => updateConfig('performanceMode', 'unlimited')}
+                              className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.performanceMode === 'unlimited' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                          >
+                              {t(config.language, 'perfUnlimited')}
+                          </button>
+                          <button
+                              onClick={() => updateConfig('performanceMode', 'balanced')}
+                              className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.performanceMode === 'balanced' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                          >
+                              {t(config.language, 'perfBalanced')}
+                          </button>
+                      </div>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
                       <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</div>
                           <div className="text-xs text-skin-muted">{t(config.language, 'enableMangaModeDesc')}</div>

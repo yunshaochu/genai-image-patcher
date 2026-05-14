@@ -94,9 +94,9 @@ export function useImageProcessor(
     const [isDetecting, setIsDetecting] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
 
-    // Mirror of `images` for sync access inside async loops (round-based retry
-    // needs to read the latest region statuses between rounds without waiting
-    // for a re-render).
+    // Mirror of `images` for sync access inside async loops (the retry loop
+    // needs to read the latest region statuses between iterations without
+    // waiting for a re-render).
     const imagesRef = useRef(images);
     imagesRef.current = images;
 
@@ -135,11 +135,11 @@ export function useImageProcessor(
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
-        // Cap per-region attempts at (maxRetries + 1). A region that's already
+        // Cap per-region attempts at (maxRetriesPerRegion + 1). A region that's already
         // burned through its retry budget is skipped here even if its image is
-        // still being passed through the round loop (because OTHER regions in
+        // still being passed through the outer loop (because OTHER regions in
         // it still have budget remaining).
-        const maxAttemptsPerRegion = Math.max(1, (config.maxRetries ?? 0) + 1);
+        const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
         const regionsToProcess = allActiveRegions.filter(r =>
             (r.status === 'pending' || r.status === 'failed')
             && !r.contextOnly
@@ -547,7 +547,7 @@ export function useImageProcessor(
 
                 // Base on the latest regionsMap entry — the translation-cache
                 // write earlier in this task may have updated customPrompt,
-                // and the round before may have set retryCount/errorHistory.
+                // and a prior attempt may have set retryCount/errorHistory.
                 const baseRegion = regionsMap.get(region.id) ?? region;
                 const nextHistory = [...(baseRegion.errorHistory ?? []), errToMsg(err)].slice(-MAX_ERROR_HISTORY);
                 const failedRegion = {
@@ -576,8 +576,8 @@ export function useImageProcessor(
         setErrorMsg(null);
 
         // Pick initial targets once, BEFORE clearing diagnostics. Subsequent
-        // rounds re-read live state via imagesRef so we pick up successes /
-        // failures from the previous round.
+        // iterations re-read live state via imagesRef so we pick up successes /
+        // failures from the previous pass.
         const selectedId = selectedImage?.id;
         const pickTargets = (): UploadedImage[] => {
             const live = imagesRef.current;
@@ -614,22 +614,24 @@ export function useImageProcessor(
 
         const actualLimit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
         const globalSemaphore = new AsyncSemaphore(actualLimit);
-        // maxRounds = first attempt + N retries. Floor at 1 so the loop runs
-        // at least once even when maxRetries is misconfigured.
-        const maxRounds = Math.max(1, (config.maxRetries ?? 0) + 1);
+        // Per-region retry budget: each region can be attempted at most
+        // (maxRetriesPerRegion + 1) times. Loop terminates naturally when every
+        // region has either succeeded or exhausted its budget — no artificial
+        // round cap, no progress-stall heuristic.
+        const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
 
         try {
-            for (let round = 0; round < maxRounds; round++) {
+            while (true) {
                 if (controller.signal.aborted) break;
 
-                // Re-snapshot each round: picks up live edits, drops images
-                // that have no remaining work (all regions succeeded or are
-                // capped out at retryCount >= maxRounds).
+                // Re-snapshot live state: picks up edits made during processing
+                // and drops images whose regions have all either succeeded or
+                // exhausted their per-region retry budget.
                 const roundTargets = pickTargets().filter(img =>
                     img.regions.some(r =>
                         (r.status === 'pending' || r.status === 'failed')
                         && !r.contextOnly
-                        && (r.retryCount ?? 0) < maxRounds
+                        && (r.retryCount ?? 0) < maxAttemptsPerRegion
                     )
                 );
                 if (roundTargets.length === 0) break;
