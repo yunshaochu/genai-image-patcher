@@ -21,6 +21,28 @@ const errToMsg = (err: any): string => {
 };
 
 /**
+ * Synchronous mirror of per-region status + retry count used purely for retry-loop
+ * control inside handleProcess.
+ *
+ * We can't rely on React state (imagesRef.current) for this: setState calls inside
+ * async catch handlers are batched and committed by React's scheduler as a
+ * MessageChannel macrotask, but the chain from the catch back to the next while-loop
+ * iteration is pure microtasks (Promise resolutions of processRegionTask →
+ * runWithConcurrency's Promise.all → handleProcess's await). React has not yet
+ * committed the failure update by the time the loop re-reads state, so failed
+ * regions still appear to be in 'processing' status — the filter excludes them
+ * and the loop exits without retrying.
+ *
+ * This map is updated synchronously alongside every React-state status transition
+ * (line 159 'processing', success completions, failure catches). The loop reads
+ * exclusively from here.
+ */
+type RegionRunState = {
+    status: Region['status'];
+    retryCount: number;
+};
+
+/**
  * Sentinel string that marks the start of a cached translation block inside
  * `region.customPrompt`. Anything BEFORE this line is treated as the user's
  * own instructions; anything AFTER is reused as the cached translation
@@ -94,9 +116,10 @@ export function useImageProcessor(
     const [isDetecting, setIsDetecting] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
 
-    // Mirror of `images` for sync access inside async loops (the retry loop
-    // needs to read the latest region statuses between iterations without
-    // waiting for a re-render).
+    // Mirror of `images` for sync access inside async loops. We use it to
+    // re-pick the in-scope image list each retry iteration (so newly added /
+    // removed images flow through). Per-region status/retryCount for retry
+    // control comes from a separate local map — see RegionRunState above.
     const imagesRef = useRef(images);
     imagesRef.current = images;
 
@@ -113,12 +136,41 @@ export function useImageProcessor(
         setErrorMsg(t(config.language, 'stopped_by_user'));
     };
 
-    const processSingleImage = async (imageSnapshot: UploadedImage, signal: AbortSignal, globalSemaphore: AsyncSemaphore) => {
+    const processSingleImage = async (
+        imageSnapshot: UploadedImage,
+        signal: AbortSignal,
+        globalSemaphore: AsyncSemaphore,
+        localRegionState: Map<string, RegionRunState>
+    ) => {
         if (signal.aborted) return;
         if (imageSnapshot.isSkipped) return;
 
+        // Build regionsMap from imageSnapshot, but PATCH each entry with the latest
+        // status/retryCount from localRegionState. This is the fix for the retry-loop
+        // staleness bug: between iterations, imagesRef.current can lag behind the
+        // last failure setState by one React commit cycle, so a region that just
+        // failed still appears here as 'processing' (or with an old retryCount).
+        // localRegionState is the synchronous truth.
         const regionsMap = new Map<string, Region>();
-        imageSnapshot.regions.forEach(r => regionsMap.set(r.id, r));
+        imageSnapshot.regions.forEach(r => {
+            const local = localRegionState.get(r.id);
+            if (local) {
+                regionsMap.set(r.id, { ...r, status: local.status, retryCount: local.retryCount });
+            } else {
+                // Region not yet tracked (e.g. added by auto-detect mid-run, or first
+                // pass over a fresh image). Seed localRegionState from the snapshot.
+                localRegionState.set(r.id, { status: r.status, retryCount: r.retryCount ?? 0 });
+                regionsMap.set(r.id, r);
+            }
+        });
+
+        // Helper to keep regionsMap and localRegionState in lockstep. ALL status
+        // transitions on a region must go through this so the retry loop sees the
+        // change immediately, without waiting for React to commit.
+        const setRegion = (next: Region) => {
+            regionsMap.set(next.id, next);
+            localRegionState.set(next.id, { status: next.status, retryCount: next.retryCount ?? 0 });
+        };
 
         let initialRegions = [...imageSnapshot.regions];
         if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
@@ -130,7 +182,7 @@ export function useImageProcessor(
                 source: 'manual'
             };
             initialRegions = [fullRegion];
-            regionsMap.set(fullRegion.id, fullRegion);
+            setRegion(fullRegion);
             updateImage(imageSnapshot.id, img => ({ ...img, regions: initialRegions }));
         }
 
@@ -156,7 +208,7 @@ export function useImageProcessor(
         const maskImg = imageSnapshot.previewUrl && imageSnapshot.previewUrl !== imageSnapshot.originalUrl
             ? await loadImage(imageSnapshot.previewUrl)
             : imgElement;
-        regionsToProcess.forEach(r => regionsMap.set(r.id, { ...r, status: 'processing' }));
+        regionsToProcess.forEach(r => setRegion({ ...r, status: 'processing' }));
         updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
 
         if (signal.aborted) return;
@@ -279,7 +331,7 @@ export function useImageProcessor(
                 if (config.useInvertedMasking) {
                     const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultUrl, regionsToProcess);
                     regionsToProcess.forEach(r => {
-                        regionsMap.set(r.id, { ...r, status: 'completed' as const });
+                        setRegion({ ...r, status: 'completed' as const });
                     });
 
                     updateImage(imageSnapshot.id, img => {
@@ -317,7 +369,7 @@ export function useImageProcessor(
                             config.fullImageOpaquePercent
                         );
                         const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
-                        regionsMap.set(region.id, completedRegion);
+                        setRegion(completedRegion);
                     }
 
                     updateImage(imageSnapshot.id, img => {
@@ -341,7 +393,7 @@ export function useImageProcessor(
                     const msg = errToMsg(err);
                     regionsToProcess.forEach(r => {
                         const nextHistory = [...(r.errorHistory ?? []), msg].slice(-MAX_ERROR_HISTORY);
-                        regionsMap.set(r.id, {
+                        setRegion({
                             ...r,
                             status: 'failed' as const,
                             retryCount: (r.retryCount ?? 0) + 1,
@@ -532,7 +584,7 @@ export function useImageProcessor(
                 // would silently overwrite that update.
                 const baseRegion = regionsMap.get(region.id) ?? region;
                 const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
-                regionsMap.set(region.id, completedRegion);
+                setRegion(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
 
                 updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
@@ -556,7 +608,7 @@ export function useImageProcessor(
                     retryCount: (baseRegion.retryCount ?? 0) + 1,
                     errorHistory: nextHistory,
                 };
-                regionsMap.set(region.id, failedRegion);
+                setRegion(failedRegion);
                 updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
             } finally {
                 globalSemaphore.release();
@@ -575,9 +627,10 @@ export function useImageProcessor(
         setProcessingState(ProcessingStep.CROPPING);
         setErrorMsg(null);
 
-        // Pick initial targets once, BEFORE clearing diagnostics. Subsequent
-        // iterations re-read live state via imagesRef so we pick up successes /
-        // failures from the previous pass.
+        // Pick initial targets once, BEFORE clearing diagnostics. Each loop
+        // iteration re-reads imagesRef.current to pick up images added or
+        // removed mid-run; per-region status comes from localRegionState
+        // (see below) so we don't depend on React's commit cycle.
         const selectedId = selectedImage?.id;
         const pickTargets = (): UploadedImage[] => {
             const live = imagesRef.current;
@@ -620,19 +673,43 @@ export function useImageProcessor(
         // round cap, no progress-stall heuristic.
         const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
 
+        // Synchronous mirror of per-region status + retryCount, owned by this
+        // handleProcess invocation. See RegionRunState's comment for why we
+        // can't read imagesRef.current between iterations. Initialize with the
+        // post-reset values for in-scope regions (matching the updateAllImages
+        // reset above, which is async and might not be committed yet).
+        const localRegionState = new Map<string, RegionRunState>();
+        for (const img of initialTargets) {
+            if (img.isSkipped) continue;
+            for (const r of img.regions) {
+                if (r.contextOnly) continue;
+                const inScope = r.status === 'pending' || r.status === 'failed';
+                localRegionState.set(r.id, {
+                    status: r.status,
+                    retryCount: inScope ? 0 : (r.retryCount ?? 0),
+                });
+            }
+        }
+
         try {
             while (true) {
                 if (controller.signal.aborted) break;
 
-                // Re-snapshot live state: picks up edits made during processing
-                // and drops images whose regions have all either succeeded or
-                // exhausted their per-region retry budget.
+                // Decide whether each image still has work by consulting localRegionState
+                // (the synchronous truth) rather than imagesRef.current (which lags React's
+                // commit cycle). New regions added mid-run — e.g. by auto-detect — won't be
+                // in localRegionState yet, so fall back to the React state for those.
                 const roundTargets = pickTargets().filter(img =>
-                    img.regions.some(r =>
-                        (r.status === 'pending' || r.status === 'failed')
-                        && !r.contextOnly
-                        && (r.retryCount ?? 0) < maxAttemptsPerRegion
-                    )
+                    img.regions.some(r => {
+                        if (r.contextOnly) return false;
+                        const local = localRegionState.get(r.id);
+                        if (local) {
+                            return (local.status === 'pending' || local.status === 'failed')
+                                && local.retryCount < maxAttemptsPerRegion;
+                        }
+                        return (r.status === 'pending' || r.status === 'failed')
+                            && (r.retryCount ?? 0) < maxAttemptsPerRegion;
+                    })
                 );
                 if (roundTargets.length === 0) break;
 
@@ -640,13 +717,13 @@ export function useImageProcessor(
                     await runWithConcurrency<UploadedImage, void>(
                         roundTargets,
                         config.concurrencyLimit,
-                        (img) => processSingleImage(img, controller.signal, globalSemaphore),
+                        (img) => processSingleImage(img, controller.signal, globalSemaphore, localRegionState),
                         controller.signal, 0
                     );
                 } else {
                     for (const img of roundTargets) {
                         if (controller.signal.aborted) break;
-                        await processSingleImage(img, controller.signal, globalSemaphore);
+                        await processSingleImage(img, controller.signal, globalSemaphore, localRegionState);
                     }
                 }
             }
@@ -657,6 +734,23 @@ export function useImageProcessor(
                  setErrorMsg(e.message || "Unknown error occurred");
             }
             setProcessingState(ProcessingStep.IDLE);
+        } finally {
+            // Defensive sweep: every exit path (normal completion, abort, error)
+            // must leave regions in a terminal state. AbortError handlers inside
+            // processSingleImage / processRegionTask silently return without
+            // touching status, so a region set to 'processing' at line 159 can
+            // stay stuck if its task was aborted before completion. Reset any
+            // such leftovers to 'pending' so the user can interact / retry.
+            updateAllImages(img => {
+                const stuck = img.regions.some(r => r.status === 'processing');
+                if (!stuck) return img;
+                return {
+                    ...img,
+                    regions: img.regions.map(r =>
+                        r.status === 'processing' ? { ...r, status: 'pending' as const } : r
+                    ),
+                };
+            });
         }
     };
 
