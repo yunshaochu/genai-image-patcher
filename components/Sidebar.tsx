@@ -518,6 +518,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                                className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
                            />
                        </label>
+                       {/* Extra inset while cropping back — removes residual blur bleed */}
+                       <label className="flex items-center gap-2 text-[11px]">
+                           <span className="text-skin-muted">{t(lang, 'squareFillCropInset')}</span>
+                           <input
+                               type="number"
+                               min={0}
+                               max={256}
+                               value={config.squareFillCropInset}
+                               onChange={(e) => handleConfigChange('squareFillCropInset', Math.max(0, Math.min(256, Math.round(Number(e.target.value)) || 0)))}
+                               className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
+                           />
+                       </label>
+                       <p className="text-[10px] text-skin-muted leading-tight -mt-1">{t(lang, 'squareFillCropInsetDesc')}</p>
                    </div>
                )}
            </div>

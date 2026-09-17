@@ -111,6 +111,7 @@ export interface AppConfig {
   openaiStream: boolean; // New: Stream Toggle
   enableSquareFill: boolean; // New: Pad image to 1:1 square (blurred background) before sending
   squareFillSize: number; // px: square edge length for square fill (content is never downscaled below its original size)
+  squareFillCropInset: number; // px: extra pixels trimmed from every side when cropping back (0 = exact original-ratio box)
   
   // Gemini Specifics
   geminiApiKey: string;
