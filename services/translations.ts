@@ -67,12 +67,9 @@ export const translations = {
     customModel: "自定义...",
     modelIdPlaceholder: "输入模型 ID",
     squareFill: "正方形补全 (Square Fill)",
-    squareFillDesc: "发送前将图片靠左上角填充为 1:1 正方形（防止被强制拉伸），生成后自动裁剪回原比例。适用于返回图被挤压变形的 API。",
+    squareFillDesc: "对 API 发送和手动工坊复制生效：原图居中放入正方形，两侧用高斯模糊的延伸背景填充，生成后从中央裁回原比例并保持分辨率。适用于返回图被挤压变形的 AI。",
     squareFillDisabledByInvertedTip: "反向遮罩模式下方形补全会被立即撤销，已自动关闭以避免无效开销。",
-    squareFillMode: "去黑边方式",
-    squareFillModeRatio: "按比例裁剪",
-    squareFillModeDetect: "检测黑边+安全边距",
-    squareFillMargin: "安全边距 (px)",
+    squareFillSize: "补方边长 (px)",
     
     // Performance
     performanceMode: "性能模式",
@@ -326,12 +323,9 @@ export const translations = {
     customModel: "Custom...",
     modelIdPlaceholder: "Model ID",
     squareFill: "Square Fill Padding",
-    squareFillDesc: "Pad input image to a 1:1 square (anchored top-left) before sending, then crop the result back. Fixes distortion when API forces square output.",
+    squareFillDesc: "Applies to both API requests and manual workbench copies: center the image in a square padded with a Gaussian-blurred background, then center-crop the result back to the original ratio (resolution preserved). Fixes distortion when the AI forces square output.",
     squareFillDisabledByInvertedTip: "Inverted masking already produces a full-image result; square padding is auto-disabled to avoid useless work.",
-    squareFillMode: "De-pad mode",
-    squareFillModeRatio: "By ratio",
-    squareFillModeDetect: "Detect + margin",
-    squareFillMargin: "Safety margin (px)",
+    squareFillSize: "Square size (px)",
     
     // Performance
     performanceMode: "Performance Mode",

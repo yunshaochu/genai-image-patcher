@@ -1,8 +1,24 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { UploadedImage, AppConfig, Region } from '../../types';
 import { t } from '../../services/translations';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, releaseObjectURL } from '../../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
+
+/**
+ * Square-fill paste helper: when the copied image was padded to a square
+ * (paddingInfo captured at copy time), center-crop the pasted result back to
+ * the original ratio before it is applied. Returns the input unchanged when
+ * square fill is off or the info is missing — zero overhead in that case.
+ */
+const depadPastedImage = async (dataUrl: string, info: PaddingInfo | null): Promise<string> => {
+    if (!info) return dataUrl;
+    try {
+        return await depadImageByRatio(dataUrl, info);
+    } catch (e) {
+        console.error('Square fill depad on paste failed, using pasted image as-is', e);
+        return dataUrl;
+    }
+};
 
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
@@ -12,7 +28,9 @@ export const FullImageMaskRow: React.FC<{
   showEditor: boolean;
 }> = ({ image, config, onPatchUpdate, onOpenEditor, showEditor }) => {
   const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
-  
+  // Padding info of the square-filled copy (null when square fill is off)
+  const paddingInfoRef = useRef<PaddingInfo | null>(null);
+
   useEffect(() => {
     let active = true;
     const generatePreview = async () => {
@@ -24,7 +42,18 @@ export const FullImageMaskRow: React.FC<{
         } else {
             preview = await createMultiMaskedFullImage(imgEl, image.regions);
         }
+        // Square fill: pad the masked copy to a square with a blurred
+        // background (same as the API path). Inverted masking is skipped,
+        // mirroring the API path — padding would be undone immediately.
+        let info: PaddingInfo | null = null;
+        if (config.enableSquareFill && !config.useInvertedMasking) {
+            const padded = await padImageToSquare(preview, config.squareFillSize);
+            releaseObjectURL(preview);
+            preview = padded.url;
+            info = padded.info;
+        }
         if (active) {
+          paddingInfoRef.current = info;
           // Release old preview URL before setting new one
           setMaskedPreview(prev => {
             if (prev) releaseObjectURL(prev);
@@ -40,7 +69,7 @@ export const FullImageMaskRow: React.FC<{
     };
     generatePreview();
     return () => { active = false; };
-  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking]);
+  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking, config.enableSquareFill, config.squareFillSize]);
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     e.stopPropagation();
@@ -53,7 +82,8 @@ export const FullImageMaskRow: React.FC<{
           const reader = new FileReader();
           reader.onload = (evt) => {
              if (evt.target?.result) {
-                onPatchUpdate(evt.target.result as string);
+                depadPastedImage(evt.target.result as string, paddingInfoRef.current)
+                    .then(url => onPatchUpdate(url));
              }
           };
           reader.readAsDataURL(file);
@@ -143,6 +173,7 @@ export const FullImageMaskRow: React.FC<{
 export const ManualPatchRow: React.FC<{
   region: Region;
   image: UploadedImage;
+  config: AppConfig;
   onPatchUpdate: (base64: string) => void;
   lang: 'zh' | 'en';
   onOpenEditor: () => void;
@@ -150,18 +181,30 @@ export const ManualPatchRow: React.FC<{
   showOcr: boolean;
   showEditor: boolean;
   showRetryDiagnostics: boolean;
-}> = ({ region, image, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor, showRetryDiagnostics }) => {
+}> = ({ region, image, config, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor, showRetryDiagnostics }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
+  // Padding info of the square-filled copy (null when square fill is off)
+  const paddingInfoRef = useRef<PaddingInfo | null>(null);
 
   useEffect(() => {
     let active = true;
     const generateCrop = async () => {
       try {
         const imgEl = await loadImage(image.previewUrl);
-        const cropUrl = await cropRegion(imgEl, region);
+        let cropUrl = await cropRegion(imgEl, region);
+        // Square fill: pad the copied crop to a square with a blurred
+        // background so external AI tools get the model-friendly ratio.
+        let info: PaddingInfo | null = null;
+        if (config.enableSquareFill) {
+            const padded = await padImageToSquare(cropUrl, config.squareFillSize);
+            releaseObjectURL(cropUrl);
+            cropUrl = padded.url;
+            info = padded.info;
+        }
         if (active) {
+          paddingInfoRef.current = info;
           setSourceCrop(prev => {
             if (prev) releaseObjectURL(prev);
             return cropUrl;
@@ -175,7 +218,7 @@ export const ManualPatchRow: React.FC<{
     };
     generateCrop();
     return () => { active = false; };
-  }, [image.previewUrl, region]);
+  }, [image.previewUrl, region, config.enableSquareFill, config.squareFillSize]);
 
   const handleCopy = async () => {
     if (!sourceCrop) return;
@@ -205,7 +248,8 @@ export const ManualPatchRow: React.FC<{
           const reader = new FileReader();
           reader.onload = (evt) => {
              if (evt.target?.result) {
-                onPatchUpdate(evt.target.result as string);
+                depadPastedImage(evt.target.result as string, paddingInfoRef.current)
+                    .then(url => onPatchUpdate(url));
              }
           };
           reader.readAsDataURL(file);

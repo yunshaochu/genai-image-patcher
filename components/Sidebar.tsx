@@ -477,6 +477,50 @@ const Sidebar: React.FC<SidebarProps> = ({
                  </button>
                ))}
            </div>
+
+           {/* Square Fill — applies to BOTH API processing and the manual workbench,
+               so it lives here in the mode section instead of the API-only settings. */}
+           <div className="pt-3 mt-3 border-t border-skin-border/50">
+               {/* squareFill is meaningless when inverted masking is active: padding gets undone
+                   immediately after the API call / on paste. Disable the toggle and grey it out. */}
+               {(() => {
+                   const squareFillDisabled = !!config.useInvertedMasking;
+                   return (
+                       <label className={`flex items-start gap-2 group ${squareFillDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                              title={squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : undefined}>
+                           <input
+                               type="checkbox"
+                               checked={config.enableSquareFill && !squareFillDisabled}
+                               disabled={squareFillDisabled}
+                               onChange={(e) => handleConfigChange('enableSquareFill', e.target.checked)}
+                               className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary disabled:opacity-50"
+                           />
+                           <div>
+                               <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
+                               <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">
+                                   {squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : t(lang, 'squareFillDesc')}
+                               </span>
+                           </div>
+                       </label>
+                   );
+               })()}
+               {config.enableSquareFill && !config.useInvertedMasking && (
+                   <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30 space-y-2">
+                       {/* Square edge length */}
+                       <label className="flex items-center gap-2 text-[11px]">
+                           <span className="text-skin-muted">{t(lang, 'squareFillSize')}</span>
+                           <input
+                               type="number"
+                               min={256}
+                               max={8192}
+                               value={config.squareFillSize}
+                               onChange={(e) => handleConfigChange('squareFillSize', Math.max(256, Math.min(8192, Number(e.target.value) || 1024)))}
+                               className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
+                           />
+                       </label>
+                   </div>
+               )}
+           </div>
         </Section>
 
         {showMangaToolkit && (
@@ -693,6 +737,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 key={region.id}
                                 region={region}
                                 image={currentImage}
+                                config={config}
                                 onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
                                 lang={lang}
                                 onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}

@@ -137,9 +137,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <>
                     <div className="animate-in fade-in slide-in-from-top-1">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">API Key (Optional Override)</label>
-                        <input 
-                            type="password" 
-                            value={config.geminiApiKey} 
+                        <input
+                            type="password"
+                            value={config.geminiApiKey}
                             onChange={(e) => onChange('geminiApiKey', e.target.value)}
                             className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                             placeholder="Leave empty to use env API_KEY"
@@ -147,8 +147,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                     <div className="animate-in fade-in slide-in-from-top-2">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'model')}</label>
-                        <input 
-                            type="text" 
+                        <input
+                            type="text"
                             value={config.geminiModel}
                             onChange={(e) => onChange('geminiModel', e.target.value)}
                             className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
@@ -156,69 +156,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                 </>
             )}
-
-            {/* Common Options */}
-            <div className="pt-2 border-t border-skin-border/50">
-                {/* squareFill is meaningless when inverted masking is active: padding gets undone
-                    immediately after the API call. Disable the toggle and grey it out. */}
-                {(() => {
-                    const squareFillDisabled = !!config.useInvertedMasking;
-                    return (
-                        <label className={`flex items-start gap-2 group ${squareFillDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                               title={squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : undefined}>
-                            <input
-                                type="checkbox"
-                                checked={config.enableSquareFill && !squareFillDisabled}
-                                disabled={squareFillDisabled}
-                                onChange={(e) => onChange('enableSquareFill', e.target.checked)}
-                                className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary disabled:opacity-50"
-                            />
-                            <div>
-                                <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
-                                <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">
-                                    {squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : t(lang, 'squareFillDesc')}
-                                </span>
-                            </div>
-                        </label>
-                    );
-                })()}
-                {config.enableSquareFill && !config.useInvertedMasking && (
-                    <div className="mt-2 ml-1 pl-5 border-l-2 border-skin-border/30 space-y-2">
-                        {/* Mode selector */}
-                        <div className="flex items-center gap-2 text-[11px]">
-                            <span className="text-skin-muted">{t(lang, 'squareFillMode')}</span>
-                            <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border text-[10px]">
-                                <button 
-                                    onClick={() => onChange('squareFillMode', 'ratio')}
-                                    className={`px-2 py-0.5 rounded-sm transition-all ${config.squareFillMode === 'ratio' ? 'bg-skin-surface shadow-sm text-skin-primary font-medium' : 'text-skin-muted hover:text-skin-text'}`}
-                                >
-                                    {t(lang, 'squareFillModeRatio')}
-                                </button>
-                                <button 
-                                    onClick={() => onChange('squareFillMode', 'detect')}
-                                    className={`px-2 py-0.5 rounded-sm transition-all ${config.squareFillMode === 'detect' ? 'bg-skin-surface shadow-sm text-skin-primary font-medium' : 'text-skin-muted hover:text-skin-text'}`}
-                                >
-                                    {t(lang, 'squareFillModeDetect')}
-                                </button>
-                            </div>
-                        </div>
-                        {/* Safety margin — only relevant for detect mode */}
-                        {config.squareFillMode === 'detect' && (
-                            <label className="flex items-center gap-2 text-[11px]">
-                                <span className="text-skin-muted">{t(lang, 'squareFillMargin')}</span>
-                                <input
-                                    type="number"
-                                    min={0}
-                                    max={20}
-                                    value={config.squareFillMargin}
-                                    onChange={(e) => onChange('squareFillMargin', Math.max(0, Math.min(20, Number(e.target.value))))}
-                                    className="w-14 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
-                                />
-                            </label>
-                        )}
-                    </div>
-                )}
-            </div>
         </div>
     );
 };

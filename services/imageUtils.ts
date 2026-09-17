@@ -4,12 +4,6 @@ import { Region, UploadedImage, RestoreBox } from '../types';
 export interface PaddingInfo {
     originalWidth: number;
     originalHeight: number;
-    /** Which side(s) received black padding.
-     *  'right'  = image wider than tall → black on the right
-     *  'bottom' = image taller than wide → black on the bottom
-     *  'none'   = already square
-     */
-    paddedSide: 'right' | 'bottom' | 'none';
 }
 
 // =====================================================================
@@ -164,30 +158,55 @@ export const loadImage = (url: string): Promise<HTMLImageElement> => {
 // =====================================================================
 
 /**
- * Pads an image to a 1:1 square canvas.
+ * Pads an image to a 1:1 square canvas ("补方生图" method).
+ * The original is scaled proportionally into the square center; the
+ * background is the original stretched to the square and Gaussian-blurred,
+ * giving the model natural context instead of hard black bars.
  * Returns an Object URL and padding info.
  */
 export const padImageToSquare = async (
-    imageUrl: string
+    imageUrl: string,
+    size: number = 1024
 ): Promise<{ url: string; info: PaddingInfo }> => {
     const img = await loadImage(imageUrl);
     const w = img.naturalWidth;
     const h = img.naturalHeight;
-    const maxDim = Math.max(w, h);
+    // Never downscale the content: a configured size below the original's
+    // longest edge is bumped up so the centered copy keeps its resolution.
+    const S = Math.max(Math.round(size), w, h);
+
+    // Scale original proportionally into the square (centered)
+    let fw: number, fh: number;
+    if (h >= w) { // tall image → vertical strip in the center
+        fw = Math.round((w * S) / h);
+        fh = S;
+    } else { // wide image → horizontal strip in the center
+        fh = Math.round((h * S) / w);
+        fw = S;
+    }
 
     const canvas = document.createElement('canvas');
-    canvas.width = maxDim;
-    canvas.height = maxDim;
+    canvas.width = S;
+    canvas.height = S;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error("Could not get canvas context for padding");
 
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, maxDim, maxDim);
-    ctx.drawImage(img, 0, 0);
+    // Background: original stretched to the square + Gaussian blur.
+    // The blur radius scales with the canvas (16px at 1024, like the
+    // reference implementation) and has a floor of 16px.
+    const blurRadius = Math.max(16, Math.round(S / 64));
+    // Overshoot by the blur radius so the blur's soft edge falls outside
+    // the canvas — no faded/transparent rim is left at the borders.
+    ctx.filter = `blur(${blurRadius}px)`;
+    ctx.drawImage(
+        img,
+        -blurRadius, -blurRadius,
+        S + blurRadius * 2, S + blurRadius * 2
+    );
+    ctx.filter = 'none';
 
-    let paddedSide: PaddingInfo['paddedSide'] = 'none';
-    if (w > h) paddedSide = 'bottom';
-    else if (h > w) paddedSide = 'right';
+    // Paste the scaled original centered on top
+    ctx.drawImage(img, Math.floor((S - fw) / 2), Math.floor((S - fh) / 2), fw, fh);
 
     const result = await canvasToObjectURL(canvas);
     releaseCanvas(canvas);
@@ -195,188 +214,52 @@ export const padImageToSquare = async (
         url: result,
         info: {
             originalWidth: w,
-            originalHeight: h,
-            paddedSide
+            originalHeight: h
         }
     };
 };
 
 /**
- * De-pads by simply cropping the known padding proportion.
+ * Crops the centered region with the original aspect ratio back out of a
+ * (square) generated result ("裁回原比例"). Keeps the result's resolution —
+ * no downscale back to the original pixel size.
  */
 export const depadImageByRatio = async (
     squareUrl: string,
     info: PaddingInfo
 ): Promise<string> => {
-    if (info.paddedSide === 'none') {
-        return squareUrl;
-    }
-
-    const img = await loadImage(squareUrl);
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-
-    let sx: number, sy: number, sw: number, sh: number;
-
-    if (info.paddedSide === 'bottom') {
-        sw = w;
-        sh = w * (info.originalHeight / info.originalWidth);
-        sx = 0;
-        sy = 0;
-    } else {
-        sh = h;
-        sw = h * (info.originalWidth / info.originalHeight);
-        sx = 0;
-        sy = 0;
-    }
-
-    const outCanvas = document.createElement('canvas');
-    outCanvas.width = info.originalWidth;
-    outCanvas.height = info.originalHeight;
-    const outCtx = outCanvas.getContext('2d');
-    if (!outCtx) throw new Error("Could not get canvas context for depadding");
-
-    outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
-
-    const result = await canvasToObjectURL(outCanvas);
-    releaseCanvas(outCanvas);
-    return result;
-};
-
-/**
- * Extracts the original content from a square image by detecting black padding
- * bars. Scans each edge inward, falls back to ratio-based if detection fails.
- */
-export const depadImageFromSquare = async (
-    squareUrl: string,
-    info: PaddingInfo,
-    margin: number = 2
-): Promise<string> => {
-    const img = await loadImage(squareUrl);
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
-
     if (info.originalWidth === info.originalHeight) {
         return squareUrl;
     }
 
-    const scanCanvas = document.createElement('canvas');
-    scanCanvas.width = w;
-    scanCanvas.height = h;
-    const scanCtx = scanCanvas.getContext('2d');
-    if (!scanCtx) throw new Error("Could not get canvas context for depadding");
-    scanCtx.drawImage(img, 0, 0);
-    const imageData = scanCtx.getImageData(0, 0, w, h);
-    // Read the pixel buffer as 32-bit words: one read per pixel instead of four,
-    // and skips the (y*w+x)*4 stride arithmetic. Little-endian byte order means
-    // the low byte of the word is R, then G, then B, then A.
-    const pixels32 = new Uint32Array(imageData.data.buffer);
+    const img = await loadImage(squareUrl);
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
 
-    // Sum-of-channels <= 40 → effectively black (the padding we draw is #000000).
-    const isDarkPx = (px: number) =>
-        ((px & 0xFF) + ((px >>> 8) & 0xFF) + ((px >>> 16) & 0xFF)) <= 40;
+    const ratio = info.originalWidth / info.originalHeight;
 
-    // Stride only within each row/column scan — keep outer loops exact so the
-    // detected boundary is pixel-accurate (the margin adjustment is small).
-    // Inner stride of 4 means ~4× fewer reads for a tight ratio check.
-    const INNER_STRIDE = 4;
-    const ROW_DARK_RATIO = 0.90;
-
-    let topCrop = 0;
-    {
-        const samples = Math.ceil(w / INNER_STRIDE);
-        for (let y = 0; y < h; y++) {
-            let darkCount = 0;
-            const rowOffset = y * w;
-            for (let x = 0; x < w; x += INNER_STRIDE) {
-                if (isDarkPx(pixels32[rowOffset + x])) darkCount++;
-            }
-            if (darkCount / samples < ROW_DARK_RATIO) break;
-            topCrop = y + 1;
-        }
-    }
-
-    let bottomCrop = 0;
-    {
-        const samples = Math.ceil(w / INNER_STRIDE);
-        for (let y = h - 1; y >= 0; y--) {
-            let darkCount = 0;
-            const rowOffset = y * w;
-            for (let x = 0; x < w; x += INNER_STRIDE) {
-                if (isDarkPx(pixels32[rowOffset + x])) darkCount++;
-            }
-            if (darkCount / samples < ROW_DARK_RATIO) break;
-            bottomCrop = h - y;
-        }
-    }
-
-    let leftCrop = 0;
-    {
-        const samples = Math.ceil(h / INNER_STRIDE);
-        for (let x = 0; x < w; x++) {
-            let darkCount = 0;
-            for (let y = 0; y < h; y += INNER_STRIDE) {
-                if (isDarkPx(pixels32[y * w + x])) darkCount++;
-            }
-            if (darkCount / samples < ROW_DARK_RATIO) break;
-            leftCrop = x + 1;
-        }
-    }
-
-    let rightCrop = 0;
-    {
-        const samples = Math.ceil(h / INNER_STRIDE);
-        for (let x = w - 1; x >= 0; x--) {
-            let darkCount = 0;
-            for (let y = 0; y < h; y += INNER_STRIDE) {
-                if (isDarkPx(pixels32[y * w + x])) darkCount++;
-            }
-            if (darkCount / samples < ROW_DARK_RATIO) break;
-            rightCrop = w - x;
-        }
-    }
-
-    topCrop = Math.min(topCrop + margin, h);
-    bottomCrop = Math.min(bottomCrop + margin, h);
-    leftCrop = Math.min(leftCrop + margin, w);
-    rightCrop = Math.min(rightCrop + margin, w);
-
-    const contentW = w - leftCrop - rightCrop;
-    const contentH = h - topCrop - bottomCrop;
-
-    const origAspect = info.originalWidth / info.originalHeight;
-    const detectedAspect = contentW / Math.max(contentH, 1);
-    const aspectDrift = Math.abs(detectedAspect - origAspect) / origAspect;
-
-    let sx: number, sy: number, sw: number, sh: number;
-
-    if (contentW > 0 && contentH > 0 && aspectDrift < 0.3) {
-        sx = leftCrop;
-        sy = topCrop;
-        sw = contentW;
-        sh = contentH;
+    // Decide the crop direction, then take the centered box
+    let cropW: number, cropH: number;
+    if (ratio < iw / ih) {
+        // result wider than target → crop left/right
+        cropH = ih;
+        cropW = Math.round(ih * ratio);
     } else {
-        if (info.paddedSide === 'bottom') {
-            sw = w;
-            sh = w * (info.originalHeight / info.originalWidth);
-        } else {
-            sh = h;
-            sw = h * (info.originalWidth / info.originalHeight);
-        }
-        sx = 0;
-        sy = 0;
+        // result taller than target → crop top/bottom
+        cropW = iw;
+        cropH = Math.round(iw / ratio);
     }
 
-    // Free scan data early — it's the biggest transient allocation
-    releaseCanvas(scanCanvas);
+    const left = Math.floor((iw - cropW) / 2);
+    const top = Math.floor((ih - cropH) / 2);
 
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = info.originalWidth;
-    outCanvas.height = info.originalHeight;
+    outCanvas.width = cropW;
+    outCanvas.height = cropH;
     const outCtx = outCanvas.getContext('2d');
     if (!outCtx) throw new Error("Could not get canvas context for depadding");
 
-    outCtx.drawImage(img, sx, sy, sw, sh, 0, 0, info.originalWidth, info.originalHeight);
+    outCtx.drawImage(img, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
     const result = await canvasToObjectURL(outCanvas);
     releaseCanvas(outCanvas);

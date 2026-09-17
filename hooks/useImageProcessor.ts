@@ -1,7 +1,7 @@
 
 import { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, depadImageFromSquare, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
@@ -234,7 +234,7 @@ export function useImageProcessor(
                 let paddingInfo: PaddingInfo | null = null;
                 const useSquareFill = config.enableSquareFill && !config.useInvertedMasking;
                 if (useSquareFill) {
-                    const padded = await padImageToSquare(inputImageUrl);
+                    const padded = await padImageToSquare(inputImageUrl, config.squareFillSize);
                     payloadUrl = padded.url;
                     paddingInfo = padded.info;
                     // Release the non-padded input — we now have the padded version
@@ -317,11 +317,9 @@ export function useImageProcessor(
                     apiResultBase64 = '';
                 }
                 
-                // Depad — returns Object URL
+                // Depad — center-crop back to the original ratio (resolution preserved)
                 if (useSquareFill && paddingInfo) {
-                    const depadResultUrl = config.squareFillMode === 'ratio'
-                        ? await depadImageByRatio(apiResultUrl, paddingInfo)
-                        : await depadImageFromSquare(apiResultUrl, paddingInfo, config.squareFillMargin);
+                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo);
                     releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
@@ -444,7 +442,7 @@ export function useImageProcessor(
                 let payloadUrl = croppedUrl;
                 let paddingInfo: PaddingInfo | null = null;
                 if (config.enableSquareFill) {
-                    const padded = await padImageToSquare(croppedUrl);
+                    const padded = await padImageToSquare(croppedUrl, config.squareFillSize);
                     paddedUrl = padded.url;
                     payloadUrl = paddedUrl;
                     paddingInfo = padded.info;
@@ -563,11 +561,9 @@ export function useImageProcessor(
                     apiResultBase64 = '';
                 }
                 
-                // Depad
+                // Depad — center-crop back to the original ratio (resolution preserved)
                 if (config.enableSquareFill && paddingInfo) {
-                    const depadResultUrl = config.squareFillMode === 'ratio'
-                        ? await depadImageByRatio(apiResultUrl, paddingInfo)
-                        : await depadImageFromSquare(apiResultUrl, paddingInfo, config.squareFillMargin);
+                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo);
                     releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
