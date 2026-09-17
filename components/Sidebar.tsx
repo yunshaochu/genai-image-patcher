@@ -71,6 +71,12 @@ const THEMES: { id: ThemeType; label: string; bg: string; ring: string }[] = [
   { id: 'forest', label: 'Green', bg: 'bg-emerald-400', ring: 'ring-emerald-300' },
 ];
 
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+
 const Sidebar: React.FC<SidebarProps> = ({
   config,
   setConfig,
@@ -106,7 +112,27 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [isZipping, setIsZipping] = useState(false);
   const [processAll, setProcessAll] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
-  const [clearConfirmation, setClearConfirmation] = useState(false); 
+  const [clearConfirmation, setClearConfirmation] = useState(false);
+  // Set after a successful download (ZIP or single) so the user remembers to
+  // clear the gallery — that also frees the persisted local session.
+  const [clearHighlight, setClearHighlight] = useState(false);
+  const [storageUsage, setStorageUsage] = useState<number | null>(null);
+
+  // Poll the origin's storage usage (IndexedDB session + everything else on
+  // this origin). Refresh immediately when the image count changes, and on a
+  // slow interval to catch blob writes from the debounced autosave.
+  useEffect(() => {
+    let cancelled = false;
+    const update = async () => {
+      try {
+        const est = await navigator.storage.estimate();
+        if (!cancelled && typeof est.usage === 'number') setStorageUsage(est.usage);
+      } catch { /* Storage API unsupported — hide the indicator */ }
+    };
+    update();
+    const timer = setInterval(update, 10000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [images.length]);
   
   // Initialize sections state from localStorage or default
   const [sectionsState, setSectionsState] = useState(() => {
@@ -247,6 +273,7 @@ const Sidebar: React.FC<SidebarProps> = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(objectUrl);
+      setClearHighlight(true); // remind the user to free the local session
 
     } catch (error) {
       console.error("Zip generation failed", error);
@@ -259,10 +286,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   const handleClearGallery = (e: React.MouseEvent) => {
       e.stopPropagation();
       e.preventDefault();
-      
+
       if (clearConfirmation) {
           onClearAllImages();
           setClearConfirmation(false);
+          setClearHighlight(false);
       } else {
           setClearConfirmation(true);
           setTimeout(() => setClearConfirmation(false), 3000);
@@ -408,20 +436,25 @@ const Sidebar: React.FC<SidebarProps> = ({
                         )}
                     </button>
                     
-                    <button 
+                    <button
                         type="button"
                         onClick={handleClearGallery}
-                        className={`px-3 py-1.5 text-xs border rounded-lg transition-all flex items-center justify-center ${
-                            clearConfirmation 
-                                ? 'bg-rose-500 text-white border-rose-600 shadow-md scale-105' 
-                                : 'border-skin-border text-skin-muted hover:text-rose-500 hover:border-rose-500 hover:bg-rose-50 bg-skin-fill/30'
+                        className={`px-3 py-1.5 text-xs border rounded-lg transition-all flex items-center justify-center gap-1 ${
+                            clearConfirmation
+                                ? 'bg-rose-500 text-white border-rose-600 shadow-md scale-105'
+                                : clearHighlight
+                                    ? 'border-rose-500 text-rose-500 bg-rose-500/10 shadow-[0_0_10px_rgba(244,63,94,0.45)] animate-pulse'
+                                    : 'border-skin-border text-skin-muted hover:text-rose-500 hover:border-rose-500 hover:bg-rose-50 bg-skin-fill/30'
                         }`}
-                        title={clearConfirmation ? "Click again to confirm" : t(lang, 'clearGallery')}
+                        title={clearConfirmation ? "Click again to confirm" : clearHighlight ? t(lang, 'clearGalleryHint') : t(lang, 'clearGallery')}
                     >
                         {clearConfirmation ? (
                             <span className="font-bold text-[10px] animate-pulse">SURE?</span>
                         ) : (
-                            <svg className="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                            <>
+                                <svg className="w-3.5 h-3.5 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                {clearHighlight && <span className="font-bold text-[10px] pointer-events-none whitespace-nowrap">{t(lang, 'clearGallery')}</span>}
+                            </>
                         )}
                     </button>
                 </div>
@@ -483,6 +516,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                    <span>{images.length} images</span>
                    <span>{downloadCount} processed</span>
                 </div>
+
+                {storageUsage !== null && config.enableSessionPersistence && (
+                   <div className="text-[10px] text-skin-muted/80 text-center px-1 -mt-1" title={t(lang, 'localCacheTip')}>
+                      {t(lang, 'localCache')}: {formatBytes(storageUsage)}
+                   </div>
+                )}
              </div>
            ) : (
              <div className="text-center py-6 text-xs text-skin-muted italic border-2 border-dashed border-skin-border rounded-lg bg-skin-fill/20">
@@ -886,8 +925,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                         >
                             {t(lang, 'applyAsOriginal')}
                         </button>
-                        <button 
-                        onClick={onDownload}
+                        <button
+                        onClick={() => { onDownload(); setClearHighlight(true); }}
                         className="w-full py-2 border border-skin-border text-skin-text bg-skin-fill hover:bg-skin-surface font-medium rounded-lg text-xs transition-colors"
                         title={t(lang, 'downloadResult')}
                         >

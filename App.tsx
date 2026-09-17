@@ -42,7 +42,7 @@ export default function App() {
     handleUndoImage,
     handleRedoImage,
     getStitchedUrl
-  } = useImageManager(config.performanceMode);
+  } = useImageManager(config.performanceMode, config.enableSessionPersistence);
 
   const {
       processingState,

@@ -127,6 +127,12 @@ export interface AppConfig {
 
   // Performance Mode
   performanceMode: PerformanceMode;
+
+  /** Persist the editing session to IndexedDB so it survives reloads/tab
+   *  discards. When false, nothing is written to disk (and any previously
+   *  persisted session is wiped) — the user should exempt the site from the
+   *  browser's tab sleeping to avoid losing work. */
+  enableSessionPersistence: boolean;
   
   // Theme & Language
   theme: ThemeType;

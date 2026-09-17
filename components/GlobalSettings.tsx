@@ -53,6 +53,26 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                   </div>
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
                       <div>
+                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'sessionPersistence')}</div>
+                          <div className="text-xs text-skin-muted max-w-[220px]">{t(config.language, 'sessionPersistenceDesc')}</div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                            type="checkbox"
+                            className="sr-only peer"
+                            checked={config.enableSessionPersistence}
+                            onChange={(e) => updateConfig('enableSessionPersistence', e.target.checked)}
+                        />
+                        <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-skin-primary"></div>
+                      </label>
+                  </div>
+                  {!config.enableSessionPersistence && (
+                      <div className="mt-2 p-3 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[11px] leading-snug animate-in fade-in slide-in-from-top-1">
+                          ⚠️ {t(config.language, 'sessionPersistenceOffWarning')}
+                      </div>
+                  )}
+                  <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
+                      <div>
                           <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</div>
                           <div className="text-xs text-skin-muted">{t(config.language, 'enableMangaModeDesc')}</div>
                       </div>

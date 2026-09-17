@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
 import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
+import { saveSession, loadSession, clearSession } from '../services/sessionStore';
 
 type ViewMode = 'original' | 'result';
 
@@ -15,7 +16,7 @@ type ImageStore = {
 
 const EMPTY_STORE: ImageStore = { byId: {}, order: [] };
 
-export function useImageManager(performanceMode: PerformanceMode) {
+export function useImageManager(performanceMode: PerformanceMode, enableSessionPersistence: boolean = true) {
   const [store, setStore] = useState<ImageStore>(EMPTY_STORE);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
@@ -32,6 +33,109 @@ export function useImageManager(performanceMode: PerformanceMode) {
 
   // O(1) selected image lookup — was O(N) Array.prototype.find before.
   const selectedImage = selectedImageId ? store.byId[selectedImageId] : undefined;
+
+  // ---------------- Session persistence (survives tab discard / reload) ----------------
+  // Everything in this hook is in-memory blob: URLs, so Chrome/Edge discarding
+  // a background tab (Memory Saver / sleeping tabs) wipes out unsaved work.
+  // We mirror the store into IndexedDB: debounced on every change, plus an
+  // immediate flush when the page is hidden / frozen / unloaded.
+  const restoredRef = useRef(false); // gates autosave until restore finished
+  const savedRefsRef = useRef<Map<string, UploadedImage>>(new Map()); // id → last persisted object ref
+  const storeRef = useRef(store);
+  const selectedIdRef = useRef(selectedImageId);
+  const savingRef = useRef(false);
+  const saveQueuedRef = useRef(false);
+  const persistenceEnabledRef = useRef(enableSessionPersistence);
+
+  useEffect(() => {
+    storeRef.current = store;
+    selectedIdRef.current = selectedImageId;
+  });
+
+  // Track the persistence switch. Turning it OFF wipes the persisted session
+  // immediately so no disk space is held — with persistence disabled there is
+  // nothing to restore anyway.
+  useEffect(() => {
+    persistenceEnabledRef.current = enableSessionPersistence;
+    if (!enableSessionPersistence) {
+      savedRefsRef.current.clear();
+      void clearSession().catch((e) => console.error('[session] Failed to clear session', e));
+    }
+  }, [enableSessionPersistence]);
+
+  // Restore previous session once on mount (only when persistence is enabled).
+  useEffect(() => {
+    let cancelled = false;
+    if (!enableSessionPersistence) {
+      restoredRef.current = true;
+      return;
+    }
+    loadSession()
+      .then((session) => {
+        if (cancelled) return;
+        if (session && session.images.length > 0) {
+          const byId: Record<string, UploadedImage> = {};
+          const order: string[] = [];
+          for (const img of session.images) {
+            byId[img.id] = img;
+            order.push(img.id);
+          }
+          setStore({ byId, order });
+          setSelectedImageId(session.selectedImageId);
+          console.info(`[session] Restored ${session.images.length} image(s) from previous session`);
+        }
+      })
+      .catch((e) => console.error('[session] Failed to restore session', e))
+      .finally(() => {
+        if (!cancelled) restoredRef.current = true;
+      });
+    return () => { cancelled = true; };
+    // Mount-only: config is read synchronously from localStorage, so the
+    // initial value of enableSessionPersistence is the authoritative one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const doSave = useCallback(async () => {
+    if (!restoredRef.current || !persistenceEnabledRef.current) return;
+    if (savingRef.current) {
+      saveQueuedRef.current = true;
+      return;
+    }
+    savingRef.current = true;
+    try {
+      do {
+        saveQueuedRef.current = false;
+        await saveSession(storeRef.current, selectedIdRef.current, savedRefsRef.current);
+      } while (saveQueuedRef.current);
+    } catch (e) {
+      console.error('[session] Autosave failed', e);
+    } finally {
+      savingRef.current = false;
+    }
+  }, []);
+
+  // Debounced save on every store/selection change.
+  useEffect(() => {
+    if (!restoredRef.current) return;
+    const timer = setTimeout(() => { void doSave(); }, 1500);
+    return () => clearTimeout(timer);
+  }, [store, selectedImageId, doSave]);
+
+  // Flush immediately when the tab is hidden / frozen (about to be discarded) / unloaded.
+  useEffect(() => {
+    const flush = () => { void doSave(); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    document.addEventListener('freeze', flush);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('freeze', flush);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [doSave]);
 
   // -------------------- Normalized mutation helpers --------------------
 
@@ -258,6 +362,8 @@ export function useImageManager(performanceMode: PerformanceMode) {
     });
     stitchCacheRef.current.forEach((v) => releaseObjectURL(v.url));
     stitchCacheRef.current.clear();
+    savedRefsRef.current.clear();
+    void clearSession(); // wipe the persisted session so it isn't restored next launch
     setSelectedImageId(null);
     setSelectedRegionId(null);
   }, []);

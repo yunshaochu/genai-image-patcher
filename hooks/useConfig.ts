@@ -71,6 +71,7 @@ const DEFAULT_CONFIG: AppConfig = {
   language: 'zh',
   provider: 'openai',
   performanceMode: 'unlimited',
+  enableSessionPersistence: true, // persist editing session to IndexedDB (anti tab-discard)
   openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
@@ -228,6 +229,11 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // Ensure session persistence toggle exists
+        if (typeof migratedConfig.enableSessionPersistence === 'undefined') {
+            migratedConfig.enableSessionPersistence = true;
         }
 
         return migratedConfig;

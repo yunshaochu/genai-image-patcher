@@ -23,6 +23,12 @@ export const translations = {
     skipped: "已跳过",
     clearGallery: "清空图库",
     clearGalleryConfirm: "确定要清空所有图片吗？此操作无法撤销。",
+    localCache: "本地暂存",
+    localCacheTip: "编辑会话已持久化到本机磁盘 (IndexedDB)，刷新/标签页休眠后可恢复。删除图片或清空图库即释放对应空间。",
+    clearGalleryHint: "下载已完成 —— 点击清空图库可释放本地暂存空间",
+    sessionPersistence: "会话持久化 (防丢失)",
+    sessionPersistenceDesc: "自动把编辑现场保存到本机磁盘，刷新或标签页被浏览器休眠回收后可完整恢复。关闭则不占用磁盘空间。",
+    sessionPersistenceOffWarning: "持久化已关闭：浏览器休眠或刷新标签页将丢失未保存的编辑！请将本站加入浏览器“永不休眠”名单 —— Chrome：设置 → 性能 → 内存节省程序 → “始终使这些网站保持活跃”；Edge：设置 → 系统和性能 → “勿使这些站点进入睡眠”。",
     
     // Manga Toolkit
     mangaTitle: "漫画工具箱",
@@ -311,6 +317,12 @@ export const translations = {
     skipped: "SKIPPED",
     clearGallery: "Clear Gallery",
     clearGalleryConfirm: "Are you sure? This cannot be undone.",
+    localCache: "Local cache",
+    localCacheTip: "Your editing session is persisted to local disk (IndexedDB) and restored after reloads/tab discards. Deleting images or clearing the gallery frees this space.",
+    clearGalleryHint: "Download complete — clear the gallery to free the local cache",
+    sessionPersistence: "Session persistence (anti-loss)",
+    sessionPersistenceDesc: "Automatically saves your editing session to local disk so it fully survives reloads and browser tab discards. Turn off to free disk space.",
+    sessionPersistenceOffWarning: "Persistence is OFF: a discarded or reloaded tab will lose unsaved work! Exempt this site from tab sleeping — Chrome: Settings → Performance → Memory Saver → “Always keep these sites active”; Edge: Settings → System and performance → “Never put these sites to sleep”.",
     
     // Manga Toolkit
     mangaTitle: "Manga Toolkit",
