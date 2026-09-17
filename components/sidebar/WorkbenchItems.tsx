@@ -24,9 +24,7 @@ export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
   config: AppConfig;
   onPatchUpdate: (base64: string) => void;
-  onOpenEditor: () => void;
-  showEditor: boolean;
-}> = ({ image, config, onPatchUpdate, onOpenEditor, showEditor }) => {
+}> = ({ image, config, onPatchUpdate }) => {
   const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
   // Padding info of the square-filled copy (null when square fill is off)
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
@@ -36,11 +34,14 @@ export const FullImageMaskRow: React.FC<{
     const generatePreview = async () => {
       try {
         const imgEl = await loadImage(image.previewUrl);
+        // contextOnly markers (bubble outlines) are visual context only —
+        // never whited out of the masked copy.
+        const maskRegions = image.regions.filter(r => !r.contextOnly);
         let preview: string;
         if (config.useInvertedMasking) {
-            preview = await createInvertedMultiMaskedFullImage(imgEl, image.regions);
+            preview = await createInvertedMultiMaskedFullImage(imgEl, maskRegions);
         } else {
-            preview = await createMultiMaskedFullImage(imgEl, image.regions);
+            preview = await createMultiMaskedFullImage(imgEl, maskRegions);
         }
         // Square fill: pad the masked copy to a square with a blurred
         // background (same as the API path). Inverted masking is skipped,
@@ -144,18 +145,6 @@ export const FullImageMaskRow: React.FC<{
                 ) : (
                   <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
                 )}
-                
-                {showEditor && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
-                            className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
-                            title={t(config.language, 'editor_title')}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                        </button>
-                    </div>
-                )}
              </div>
              
              <div className={`text-[9px] font-bold py-1 ${image.fullAiResultUrl ? 'text-emerald-500' : 'text-skin-muted'}`}>
@@ -176,12 +165,10 @@ export const ManualPatchRow: React.FC<{
   config: AppConfig;
   onPatchUpdate: (base64: string) => void;
   lang: 'zh' | 'en';
-  onOpenEditor: () => void;
   onOcr: () => void;
   showOcr: boolean;
-  showEditor: boolean;
   showRetryDiagnostics: boolean;
-}> = ({ region, image, config, onPatchUpdate, lang, onOpenEditor, onOcr, showOcr, showEditor, showRetryDiagnostics }) => {
+}> = ({ region, image, config, onPatchUpdate, lang, onOcr, showOcr, showRetryDiagnostics }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
@@ -308,19 +295,6 @@ export const ManualPatchRow: React.FC<{
                   <img src={region.processedImageUrl} className="w-full h-full object-contain" />
                 ) : (
                   <span className="text-[9px] text-skin-muted text-center px-1">Ctrl+V</span>
-                )}
-                
-                {/* Only show Editor button if showEditor is true */}
-                {showEditor && (
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <button 
-                            onClick={(e) => { e.stopPropagation(); onOpenEditor(); }}
-                            className="p-1 rounded bg-white text-skin-primary shadow-sm hover:scale-110 transition-transform"
-                            title={t(lang, 'editor_title')}
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                        </button>
-                    </div>
                 )}
              </div>
              

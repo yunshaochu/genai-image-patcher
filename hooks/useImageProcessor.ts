@@ -46,14 +46,27 @@ type RegionRunState = {
  * True when ≥50% of `r`'s area is covered by an existing region. Used to
  * deduplicate auto-detection results against already-present boxes so that
  * re-running detection doesn't stack duplicate bubbles on an image.
+ *
+ * Class-aware: a `bubble` outline fully contains its `text_bubble` children,
+ * so naive area dedup would either drop the children or drop the outline.
+ * Dedup therefore only compares regions of the same detected class; manual /
+ * legacy regions (no class) dedupe against any text class, and context-only
+ * markers (bubble outlines) only dedupe against each other.
  */
 const regionOverlapsExisting = (
-    r: Pick<Region, 'x' | 'y' | 'width' | 'height'>,
-    existing: readonly Pick<Region, 'x' | 'y' | 'width' | 'height'>[]
+    r: Pick<Region, 'x' | 'y' | 'width' | 'height' | 'detectedClass' | 'contextOnly'>,
+    existing: readonly Pick<Region, 'x' | 'y' | 'width' | 'height' | 'detectedClass' | 'contextOnly'>[]
 ): boolean => {
     const rArea = r.width * r.height;
     if (rArea <= 0) return false;
     for (const e of existing) {
+        // Context-only markers must not suppress, or be suppressed by, real
+        // (paintable/editable) regions.
+        if (r.contextOnly || e.contextOnly) {
+            if (!(r.contextOnly && e.contextOnly)) continue;
+        } else if (r.detectedClass && e.detectedClass && r.detectedClass !== e.detectedClass) {
+            continue;
+        }
         const ix = Math.min(r.x + r.width, e.x + e.width) - Math.max(r.x, e.x);
         const iy = Math.min(r.y + r.height, e.y + e.height) - Math.max(r.y, e.y);
         if (ix <= 0 || iy <= 0) continue;
@@ -196,7 +209,9 @@ export function useImageProcessor(
         };
 
         let initialRegions = [...imageSnapshot.regions];
-        if (initialRegions.length === 0 && config.processFullImageIfNoRegions) {
+        // contextOnly markers (bubble outlines) don't count as paintable
+        // regions — an image holding ONLY those is still "empty".
+        if (!initialRegions.some(r => !r.contextOnly) && config.processFullImageIfNoRegions) {
             const fullRegion: Region = {
                 id: crypto.randomUUID(),
                 x: 0, y: 0, width: 100, height: 100,
@@ -210,6 +225,9 @@ export function useImageProcessor(
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
+        // Mask building excludes contextOnly markers — bubble outlines are
+        // visual context for the user, never whited-out for the AI.
+        const maskRegions = allActiveRegions.filter(r => !r.contextOnly);
         // Cap per-region attempts at (maxRetriesPerRegion + 1). A region that's already
         // burned through its retry budget is skipped here even if its image is
         // still being passed through the outer loop (because OTHER regions in
@@ -245,9 +263,9 @@ export function useImageProcessor(
                 // Handle Inverted Masking — now returns Object URL
                 let inputImageUrl: string;
                 if (config.useInvertedMasking) {
-                    inputImageUrl = await createInvertedMultiMaskedFullImage(maskImg, allActiveRegions);
+                    inputImageUrl = await createInvertedMultiMaskedFullImage(maskImg, maskRegions);
                 } else {
-                    inputImageUrl = await createMultiMaskedFullImage(maskImg, allActiveRegions);
+                    inputImageUrl = await createMultiMaskedFullImage(maskImg, maskRegions);
                 }
 
                 // Square Fill Logic — returns Object URL.
@@ -434,7 +452,7 @@ export function useImageProcessor(
         if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
             try {
                 // Same mask-canvas size concern as the useFullImageMasking branch.
-                const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, allActiveRegions);
+                const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, maskRegions);
                 if (config.enableAiPayloadCompression) {
                     maskedContextUrl = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
                     releaseObjectURL(fullMaskedUrl);

@@ -130,9 +130,10 @@ export const detectBubbles = async (
     // default. Clamped to the API's accepted range [0.1, 1.0].
     const confThreshold = Math.min(1, Math.max(0.1, (config.detectionConfidenceThreshold ?? 30) / 100));
     formData.append('conf_threshold', String(confThreshold));
-    // Only text regions — these are what get masked for AI redraw.
-    // text_bubble = 气泡内文本, text_free = 气泡外文本（旁白、标识牌等）
-    formData.append('filter_classes', 'text_bubble,text_free');
+    // Request all three classes. text_bubble = 气泡内文本, text_free = 气泡外文本
+    // are the editable text areas; bubble = 整颗气泡, kept as context-only
+    // markers (reserved for later use, e.g. per-bubble styling).
+    formData.append('filter_classes', 'bubble,text_bubble,text_free');
 
     // 3. Send Request
     const response = await fetch(apiUrl, {
@@ -225,7 +226,11 @@ export const detectBubbles = async (
             height: h,
             type: 'rect',
             status: 'pending',
-            source: 'auto'
+            source: 'auto',
+            detectedClass: det.class_name,
+            // 'bubble' outlines are context-only markers: never sent to the
+            // AI redraw pipeline, not editable text areas (reserved for later).
+            contextOnly: det.class_name === 'bubble',
         });
       }
     });

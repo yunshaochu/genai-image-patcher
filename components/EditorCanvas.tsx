@@ -21,12 +21,10 @@ interface EditorCanvasProps {
   onUpdateRegions: (imageId: string, regions: Region[]) => void;
   disabled?: boolean;
   language: Language;
-  onOpenEditor: (regionId: string) => void;
   selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
   onOcrRegion?: (regionId: string) => void;
   showOcrButton?: boolean;
-  showEditorButton?: boolean;
   onAdjustRegionSize?: (regionId: string, isExpand: boolean) => void;
   onInteractionStart?: () => void;
   viewMode?: 'original' | 'result';
@@ -62,12 +60,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     onUpdateRegions,
     disabled = false,
     language,
-    onOpenEditor,
     selectedRegionId,
     onSelectRegion,
     onOcrRegion,
     showOcrButton = false,
-    showEditorButton = false,
     onAdjustRegionSize,
     onInteractionStart,
     viewMode = 'original',
@@ -1000,18 +996,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                             ) : (
                                <span className="text-[9px] font-bold tracking-tighter">OCR</span>
                             )}
-                          </button>
-                      )}
-                      {!disabled && showEditorButton && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onOpenEditor(region.id);
-                            }}
-                             className="w-6 h-6 bg-skin-primary text-skin-primary-fg border border-transparent rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all"
-                             title="Edit Patch (Brush/Text)"
-                          >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
                           </button>
                       )}
                       {!disabled && (region.status === 'completed' || region.status === 'failed') && (

@@ -8,6 +8,26 @@ export interface RestoreBox {
   inverse: boolean; // true = keep AI result inside box, restore outside
 }
 
+/** Detection classes returned by the comic-detector API (docs/API_RTDTR.md) */
+export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
+
+/**
+ * Per-region text style used by the in-place manga text editor.
+ * Reserved fields (fontFamily / rotation / colors) are consumed by the
+ * compositor but intentionally not exposed in the UI yet — the UI only
+ * offers text content, auto font size and vertical/horizontal for now.
+ */
+export interface EditorTextStyle {
+  fontSize?: number;      // px; undefined = auto-fit to the region box
+  isVertical?: boolean;   // undefined = auto heuristic (tall box / global default)
+  color?: string;         // reserved, default '#000000'
+  outlineColor?: string;  // reserved, default '#ffffff'
+  outlineWidth?: number;  // reserved, default 0 (no stroke)
+  isBold?: boolean;       // reserved, default true
+  fontFamily?: string;    // reserved, default sans-serif
+  rotation?: number;      // reserved, default 0
+}
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -23,12 +43,23 @@ export interface Region {
   anchorWidth?: number;
   anchorHeight?: number;
   source?: 'manual' | 'auto'; // To distinguish manually drawn vs AI detected regions
+  /** Class reported by the detection API. 'bubble' boxes are kept as
+   *  context-only markers (reserved for later use); text_bubble / text_free
+   *  are the editable text areas in editor mode. */
+  detectedClass?: DetectedClass;
   customPrompt?: string; // Image-specific prompt overrides global prompt
   contextOnly?: boolean; // If true, region is visible context only — not translated or painted
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
   restoreMaskUrl?: string; // Brush-based restore mask Object URL (涂抹还原), alpha=1=processed, 0=original
+
+  // --- In-place manga text editor (editor workflow mode) ---
+  editorText?: string;        // Edited/typeset text (falls back to ocrText when unset)
+  editorErased?: boolean;     // Original text inside the region has been flood-fill erased
+  editorStyle?: EditorTextStyle; // Typeset style overrides
+  editorBrushUrl?: string;    // Transparent brush-stroke layer Object URL (region-crop sized)
+  editorComposited?: boolean; // processedImageUrl was produced by the editor compositor
 
   // Retry diagnostics. retryCount counts failed attempts in the current run
   // (cleared when the user manually triggers a fresh processing pass on this
@@ -72,7 +103,7 @@ export type ThemeType = 'light' | 'dark' | 'ocean' | 'rose' | 'forest';
 
 export type Language = 'zh' | 'en';
 
-export type ProcessingMode = 'api' | 'manual';
+export type ProcessingMode = 'api' | 'manual' | 'editor';
 
 export type PerformanceMode = 'unlimited' | 'balanced';
 

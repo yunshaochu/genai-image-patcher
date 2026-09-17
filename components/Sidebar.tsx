@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
 import { stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
@@ -9,7 +9,25 @@ import { Section } from './sidebar/Section';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
+import { EditorPanel } from './sidebar/EditorPanel';
+import { EraseScope, RestoreScope } from '../hooks/useMangaEditor';
 import { DEFAULT_PROMPT } from '../hooks/useConfig';
+
+/** API surface of useMangaEditor, bound to image ids by the Sidebar. */
+export interface EditorApi {
+  busy: boolean;
+  onUpdateRegion: (imageId: string, regionId: string, updates: {
+    editorText?: string;
+    editorErased?: boolean;
+    editorStyle?: Region['editorStyle'];
+  }) => void;
+  onErase: (imageId: string, scope: EraseScope, selectedRegionId?: string | null) => void;
+  onRestoreErase: (imageId: string, scope: RestoreScope, selectedRegionId?: string | null) => void;
+  onOcrAll: (imageId: string) => void;
+  onOcrRegion: (imageId: string, regionId: string) => Promise<void>;
+  buildBrushBase: (imageId: string, regionId: string) => Promise<string | null>;
+  onBrushChange: (imageId: string, regionId: string, url: string | null) => void;
+}
 
 interface SidebarProps {
   config: AppConfig;
@@ -31,13 +49,13 @@ interface SidebarProps {
   onToggleSkip: (imageId: string) => void;
   onAutoDetect: (scope: 'current' | 'all') => void;
   isDetecting: boolean;
-  onOpenEditor: (imageId: string, regionId: string) => void;
   onOcrRegion: (imageId: string, regionId: string) => void;
+  onSelectRegion: (regionId: string | null) => void;
   onOpenGlobalSettings: () => void;
   onOpenHelp: () => void;
-  showEditor: boolean;
   onApplyAsOriginal: () => void;
   onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
+  editorApi: EditorApi;
   uploadProgress?: { current: number; total: number } | null;
   /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
   getStitchedUrl: (image: UploadedImage) => Promise<string>;
@@ -73,13 +91,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   onToggleSkip,
   onAutoDetect,
   isDetecting,
-  onOpenEditor,
   onOcrRegion,
+  onSelectRegion,
   onOpenGlobalSettings,
   onOpenHelp,
-  showEditor,
   onApplyAsOriginal,
   onUpdateImagePrompt,
+  editorApi,
   uploadProgress,
   getStitchedUrl
 }) => {
@@ -108,7 +126,8 @@ const Sidebar: React.FC<SidebarProps> = ({
       prompt: false,
       settings: false, 
       execution: false,
-      manual: false
+      manual: false,
+      editor: true
     };
   });
 
@@ -265,8 +284,20 @@ const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const isManualMode = config.processingMode === 'manual';
+  const isEditorMode = config.processingMode === 'editor';
+  // The editor workflow tab is gated behind the manga module + 修补编辑器 switch.
+  const editorTabAvailable = config.enableMangaMode && config.enableManualEditor;
   const statusKey = processingState.toLowerCase() as any;
   const showMangaToolkit = config.enableMangaMode;
+
+  // If the editor tab's gating switch is turned off while editor mode is
+  // active, fall back to manual mode so the UI never gets stuck on a hidden tab.
+  useEffect(() => {
+    if (isEditorMode && !editorTabAvailable) {
+      handleConfigChange('processingMode', 'manual');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditorMode, editorTabAvailable]);
 
   return (
     <aside className="w-80 h-full bg-skin-surface border-r border-skin-border flex flex-col shadow-2xl z-20 relative">
@@ -462,18 +493,22 @@ const Sidebar: React.FC<SidebarProps> = ({
         
         <Section title={t(lang, 'modeTitle')} isOpen={sectionsState.workflow} onToggle={() => toggleSection('workflow')}>
            <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
-               {(['api', 'manual'] as const).map(m => (
+               {(['api', 'manual', 'editor'] as const)
+                 .filter(m => m !== 'editor' || editorTabAvailable)
+                 .map(m => (
                  <button
                    key={m}
                    onClick={() => {
                        handleConfigChange('processingMode', m);
                        if (m === 'manual') {
                            setSectionsState(prev => ({ ...prev, manual: true }));
+                       } else if (m === 'editor') {
+                           setSectionsState(prev => ({ ...prev, editor: true }));
                        }
                    }}
                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${config.processingMode === m ? 'bg-skin-surface text-skin-primary shadow-sm' : 'text-skin-muted hover:text-skin-text'}`}
                  >
-                    {m === 'api' ? t(lang, 'modeApi') : t(lang, 'modeManual')}
+                    {m === 'api' ? t(lang, 'modeApi') : m === 'manual' ? t(lang, 'modeManual') : t(lang, 'modeEditor')}
                  </button>
                ))}
            </div>
@@ -550,7 +585,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             </Section>
         )}
 
-        {!isManualMode && (
+        {!isManualMode && !isEditorMode && (
           <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
              <div className="space-y-3">
                <div>
@@ -628,7 +663,7 @@ const Sidebar: React.FC<SidebarProps> = ({
           </Section>
         )}
 
-        {!isManualMode && (
+        {!isManualMode && !isEditorMode && (
           <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
              <SettingsPanel 
                 config={config}
@@ -641,7 +676,7 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
         
         {/* Execution Settings */}
-        {!isManualMode && (
+        {!isManualMode && !isEditorMode && (
           <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
               <div className="space-y-3">
                  <div>
@@ -733,18 +768,23 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <div className="space-y-3 animate-in fade-in slide-in-from-right-8">
                     {/* Render Full Image Mask Row FIRST if enabled */}
                     {config.useFullImageMasking && (
-                        <FullImageMaskRow 
-                            image={currentImage} 
-                            config={config} 
+                        <FullImageMaskRow
+                            image={currentImage}
+                            config={config}
                             onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, 'special-full-image-mask', base64)}
-                            onOpenEditor={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                            showEditor={showEditor}
                         />
                     )}
 
                     {selectedRegionId ? (() => {
                         const region = currentImage.regions.find(r => r.id === selectedRegionId);
-                        if (!region) return null;
+                        // contextOnly markers (bubble outlines) have no patch zone
+                        if (!region || region.contextOnly) {
+                            return !config.useFullImageMasking ? (
+                                <div className="text-center py-8 text-skin-muted italic text-xs">
+                                    {t(lang, 'noRegions')}
+                                </div>
+                            ) : null;
+                        }
                         return (
                             <ManualPatchRow
                                 key={region.id}
@@ -753,31 +793,42 @@ const Sidebar: React.FC<SidebarProps> = ({
                                 config={config}
                                 onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
                                 lang={lang}
-                                onOpenEditor={() => onOpenEditor(currentImage.id, region.id)}
                                 onOcr={() => onOcrRegion(currentImage.id, region.id)}
                                 showOcr={config.enableMangaMode && config.enableOCR}
-                                showEditor={showEditor}
                                 showRetryDiagnostics={!!config.showRetryDiagnostics}
                             />
                         );
-                    })() : !config.useFullImageMasking && config.enableMangaMode ? (
-                        // Only show specific full image editor button if NOT using Full Image Masking mode 
-                        // (because FullImageMaskRow handles it otherwise)
-                        <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border text-center">
-                            <p className="text-[10px] text-skin-muted mb-2">Editor access for full image</p>
-                            <button 
-                                onClick={() => onOpenEditor(currentImage.id, 'manual-full-image')}
-                                className="w-full py-2 bg-skin-surface border border-skin-border rounded text-xs font-bold hover:bg-skin-primary hover:text-white hover:border-skin-primary transition-all flex items-center justify-center gap-2"
-                            >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
-                                Edit Full Image
-                            </button>
-                        </div>
-                    ) : !config.useFullImageMasking && (
+                    })() : !config.useFullImageMasking && (
                         <div className="text-center py-8 text-skin-muted italic text-xs">
                             {t(lang, 'noRegions')}
                         </div>
                     )}
+                </div>
+            )}
+            </Section>
+        )}
+
+        {/* Manga Text Editor (editor workflow mode) */}
+        {isEditorMode && editorTabAvailable && (
+            <Section title={t(lang, 'editorPanelTitle')} isOpen={sectionsState.editor} onToggle={() => toggleSection('editor')}>
+            {currentImage ? (
+                <EditorPanel
+                    image={currentImage}
+                    config={config}
+                    selectedRegionId={selectedRegionId}
+                    onSelectRegion={onSelectRegion}
+                    busy={editorApi.busy}
+                    onUpdateRegion={(regionId, updates) => editorApi.onUpdateRegion(currentImage.id, regionId, updates)}
+                    onErase={(scope) => editorApi.onErase(currentImage.id, scope, selectedRegionId)}
+                    onRestoreErase={(scope) => editorApi.onRestoreErase(currentImage.id, scope, selectedRegionId)}
+                    onOcrAll={() => editorApi.onOcrAll(currentImage.id)}
+                    onOcrRegion={(regionId) => editorApi.onOcrRegion(currentImage.id, regionId)}
+                    buildBrushBase={(regionId) => editorApi.buildBrushBase(currentImage.id, regionId)}
+                    onBrushChange={(regionId, url) => editorApi.onBrushChange(currentImage.id, regionId, url)}
+                />
+            ) : (
+                <div className="text-center py-8 text-skin-muted italic text-xs">
+                    {t(lang, 'uploadHint')}
                 </div>
             )}
             </Section>
@@ -800,24 +851,30 @@ const Sidebar: React.FC<SidebarProps> = ({
          
          {!isProcessing ? (
            <div className="space-y-2">
-             <button 
-                onClick={() => onProcess(processAll)}
-                disabled={!!getDisabledReason()}
-                className="w-full py-3 bg-skin-primary hover:bg-opacity-90 disabled:bg-skin-muted disabled:cursor-not-allowed text-skin-primary-fg font-bold rounded-lg shadow-lg shadow-skin-primary/20 transition-all active:scale-95 flex items-center justify-center gap-2"
-                title={getDisabledReason()}
-             >
-                {t(lang, processAll ? 'generateAll' : 'generate')}
-             </button>
-             
-             <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                <input 
-                  type="checkbox" 
-                  checked={processAll} 
-                  onChange={(e) => setProcessAll(e.target.checked)} 
-                  className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                />
-                <span className="text-xs text-skin-muted">{t(lang, 'applyAll', { count: images.length })}</span>
-             </label>
+             {/* Editor mode is fully local (erase/typeset/brush) — no API call,
+                 so no Generate button. Results surface via Download / Apply. */}
+             {!isEditorMode && (
+               <>
+                 <button
+                    onClick={() => onProcess(processAll)}
+                    disabled={!!getDisabledReason()}
+                    className="w-full py-3 bg-skin-primary hover:bg-opacity-90 disabled:bg-skin-muted disabled:cursor-not-allowed text-skin-primary-fg font-bold rounded-lg shadow-lg shadow-skin-primary/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+                    title={getDisabledReason()}
+                 >
+                    {t(lang, processAll ? 'generateAll' : 'generate')}
+                 </button>
+
+                 <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={processAll}
+                      onChange={(e) => setProcessAll(e.target.checked)}
+                      className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
+                    />
+                    <span className="text-xs text-skin-muted">{t(lang, 'applyAll', { count: images.length })}</span>
+                 </label>
+               </>
+             )}
 
              <div className="grid grid-cols-2 gap-2">
                  {(currentImage?.finalResultUrl || currentImage?.regions.some(r => r.status === 'completed')) && (

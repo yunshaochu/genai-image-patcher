@@ -1,9 +1,8 @@
 
-import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
 import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
-import Sidebar from './components/Sidebar';
+import Sidebar, { EditorApi } from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import type { TextObject } from './components/PatchEditor';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
@@ -11,11 +10,9 @@ import { t } from './services/translations';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
+import { useMangaEditor } from './hooks/useMangaEditor';
 
-// Heavy components: only loaded when user opens the editor / help dialog.
-// PatchEditor pulls in ~1000 lines of canvas/text-rendering logic that is
-// useless before the user clicks "edit patch".
-const PatchEditor = lazy(() => import('./components/PatchEditor'));
+// Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
 const GlobalSettings = lazy(() => import('./components/GlobalSettings'));
 
@@ -57,6 +54,19 @@ export default function App() {
       handleAutoDetect
   } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage);
 
+  // In-place manga text editor engine (editor workflow mode). All editor data
+  // lives on Region fields; this hook owns only caches + debounce timers.
+  const {
+      busy: editorBusy,
+      updateEditorRegion,
+      setBrushLayer,
+      eraseRegions,
+      restoreErase,
+      ocrAllRegions,
+      resyncEditedRegions,
+      buildBrushBase,
+  } = useMangaEditor({ images, updateImage, config, setErrorMsg });
+
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -64,15 +74,9 @@ export default function App() {
   const [restoreBrushMode, setRestoreBrushMode] = useState(false);
   const [restoreBrushSize, setRestoreBrushSize] = useState(8);
   const [restoreSelectedRegionId, setRestoreSelectedRegionId] = useState<string | null>(null);
-  
+
   const [transModels, setTransModels] = useState<string[]>([]);
-  const [editingRegion, setEditingRegion] = useState<{ 
-      imageId: string, 
-      regionId: string, 
-      startBase64: string,
-      initialTextObjects?: TextObject[]
-  } | null>(null);
-  
+
   // Debounce Timer Ref for Heavy Operations
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -148,29 +152,13 @@ export default function App() {
     }
 
     updateImage(imageId, img => {
-        let updatedRegions: Region[];
+        // Release old region URL before replacing
+        const oldRegion = img.regions.find(r => r.id === regionId);
+        if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
 
-        // Legacy/Alternative Manual Full Image as a new region (fallback)
-        if (regionId === 'manual-full-image') {
-            const fullRegion: Region = {
-                id: crypto.randomUUID(),
-                x: 0, y: 0, width: 100, height: 100,
-                type: 'rect',
-                status: 'completed',
-                processedImageUrl: imageDataUrl,
-                source: 'manual' as const,
-                anchorX: 0, anchorY: 0, anchorWidth: 100, anchorHeight: 100,
-            };
-           updatedRegions = [...img.regions, fullRegion];
-        } else {
-           // Release old region URL before replacing
-           const oldRegion = img.regions.find(r => r.id === regionId);
-           if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
-
-           updatedRegions = img.regions.map(r =>
-              r.id === regionId ? { ...r, processedImageUrl: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
-           );
-        }
+        const updatedRegions = img.regions.map(r =>
+           r.id === regionId ? { ...r, processedImageUrl: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
+        );
 
         const currentHistory = [...img.history];
         if (currentHistory[img.historyIndex]) {
@@ -196,6 +184,14 @@ export default function App() {
   const onRegionsChanged = useCallback((imageId: string, newRegions: Region[]) => {
       handleUpdateRegions(imageId, newRegions);
 
+      // Editor mode: geometry changes of edited regions trigger a debounced
+      // re-layout + re-composite of their patches (erasure cache is keyed by
+      // geometry, so only moved boxes do real work).
+      if (config.processingMode === 'editor') {
+          resyncEditedRegions(imageId, newRegions);
+          return;
+      }
+
       if (config.useInvertedMasking) {
           const targetImage = images.find(img => img.id === imageId);
           if (targetImage && targetImage.fullAiResultUrl) {
@@ -207,7 +203,7 @@ export default function App() {
           }
           return;
       }
-  }, [handleUpdateRegions, config.useInvertedMasking, images, updateImage]);
+  }, [handleUpdateRegions, config.useInvertedMasking, config.processingMode, images, updateImage, resyncEditedRegions]);
 
   // --- Handlers ---
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -268,75 +264,6 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [images, selectedImageId, handleSelectImage]);
-
-  const handleOpenEditor = useCallback(async (imageId: string, regionId: string) => {
-      const img = images.find(i => i.id === imageId);
-      if (!img) return;
-
-      if (regionId === 'manual-full-image') {
-          const textObjects: TextObject[] = img.regions.map((r, index) => {
-             const boxH = (r.height / 100) * img.originalHeight;
-             const fontSize = Math.max(14, Math.round(boxH * 0.3));
-             const width = (r.width / 100) * img.originalWidth;
-             const height = (r.height / 100) * img.originalHeight;
-             return {
-                 id: r.id,
-                 x: (r.x / 100) * img.originalWidth,
-                 y: (r.y / 100) * img.originalHeight,
-                 width: width,
-                 height: height,
-                 text: r.ocrText || `Text ${index + 1}`,
-                 fontSize: fontSize,
-                 color: '#000000',
-                 outlineColor: '#ffffff',
-                 outlineWidth: 3,
-                 backgroundColor: 'transparent',
-                 isVertical: r.height > r.width * 1.5,
-                 isBold: true,
-                 rotation: 0
-             };
-          });
-          setEditingRegion({
-              imageId,
-              regionId,
-              startBase64: img.finalResultUrl || img.previewUrl,
-              initialTextObjects: textObjects
-          });
-          return;
-      }
-
-      const region = img.regions.find(r => r.id === regionId);
-      if (!region) return;
-      let startBase64 = region.processedImageUrl;
-      if (!startBase64) {
-         const imgEl = await loadImage(img.previewUrl);
-         startBase64 = await cropRegion(imgEl, region);
-      }
-      let singleTextObj: TextObject[] | undefined = undefined;
-      if (region.ocrText) {
-          singleTextObj = [{
-             id: crypto.randomUUID(),
-             x: 10, y: 10,
-             text: region.ocrText,
-             fontSize: 24,
-             color: '#000000',
-             outlineColor: '#ffffff',
-             outlineWidth: 3,
-             backgroundColor: 'transparent',
-             isVertical: region.height > region.width * 1.5,
-             isBold: true,
-             rotation: 0
-          }];
-      }
-      setEditingRegion({ imageId, regionId, startBase64, initialTextObjects: singleTextObj });
-  }, [images]);
-
-  const handleEditorSave = useCallback((newBase64: string) => {
-      if (editingRegion) {
-          handleManualPatchUpdate(editingRegion.imageId, editingRegion.regionId, newBase64);
-      }
-      setEditingRegion(null);
-  }, [editingRegion, handleManualPatchUpdate]);
 
   const handleOcrRegion = useCallback(async (imageId: string, regionId: string) => {
      const img = images.find(i => i.id === imageId);
@@ -493,9 +420,6 @@ export default function App() {
   // Stable adapters for EditorCanvas — bind selectedImage.id so the child only sees a regionId arg.
   const selectedImageId_safe = selectedImage?.id;
   const editorOnUpdateRegions = onRegionsChanged;
-  const editorOnOpenEditor = useCallback((regionId: string) => {
-      if (selectedImageId_safe) handleOpenEditor(selectedImageId_safe, regionId);
-  }, [selectedImageId_safe, handleOpenEditor]);
   const editorOnOcrRegion = useCallback((regionId: string) => {
       if (selectedImageId_safe) handleOcrRegion(selectedImageId_safe, regionId);
   }, [selectedImageId_safe, handleOcrRegion]);
@@ -507,7 +431,17 @@ export default function App() {
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
 
-  const showEditor = config.enableMangaMode && config.enableManualEditor;
+  // Bound API surface of the manga text editor for the Sidebar's editor panel.
+  const editorApi: EditorApi = useMemo(() => ({
+      busy: editorBusy,
+      onUpdateRegion: updateEditorRegion,
+      onErase: (imageId, scope, sel) => { eraseRegions(imageId, scope, sel); },
+      onRestoreErase: (imageId, scope, sel) => { restoreErase(imageId, scope, sel); },
+      onOcrAll: (imageId) => { ocrAllRegions(imageId); },
+      onOcrRegion: handleOcrRegion,
+      buildBrushBase,
+      onBrushChange: setBrushLayer,
+  }), [editorBusy, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, buildBrushBase, setBrushLayer]);
 
   return (
     <div 
@@ -538,12 +472,12 @@ export default function App() {
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
-        onOpenEditor={handleOpenEditor}
         onOcrRegion={handleOcrRegion}
+        onSelectRegion={setSelectedRegionId}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
-        showEditor={showEditor}
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
+        editorApi={editorApi}
         uploadProgress={uploadProgress}
         getStitchedUrl={getStitchedUrl}
       />
@@ -660,12 +594,10 @@ export default function App() {
                     // other regions during processing are preserved.
                     disabled={false}
                     language={config.language}
-                    onOpenEditor={editorOnOpenEditor}
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={setSelectedRegionId}
                     onOcrRegion={editorOnOcrRegion}
                     showOcrButton={config.enableMangaMode && config.enableOCR}
-                    showEditorButton={showEditor}
                     onAdjustRegionSize={editorOnAdjustRegionSize}
                     onInteractionStart={handleInteractionStart}
                     viewMode={viewMode}
@@ -699,19 +631,6 @@ export default function App() {
         )}
       </main>
       
-      {editingRegion && (
-         <Suspense fallback={null}>
-            <PatchEditor
-                imageBase64={editingRegion.startBase64}
-                onSave={handleEditorSave}
-                onCancel={() => setEditingRegion(null)}
-                language={config.language}
-                initialTextObjects={editingRegion.initialTextObjects}
-                defaultVertical={config.enableVerticalTextDefault}
-            />
-         </Suspense>
-      )}
-
       {showGlobalSettings && (
         <Suspense fallback={null}>
           <GlobalSettings
