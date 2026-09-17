@@ -70,6 +70,8 @@ export const translations = {
     squareFillDesc: "对 API 发送和手动工坊复制生效：原图居中放入正方形，两侧用高斯模糊的延伸背景填充，生成后从中央裁回原比例并保持分辨率。适用于返回图被挤压变形的 AI。",
     squareFillDisabledByInvertedTip: "反向遮罩模式下方形补全会被立即撤销，已自动关闭以避免无效开销。",
     squareFillSize: "补方边长 (px)",
+    squareFillCropInset: "裁边内缩 (px)",
+    squareFillCropInsetDesc: "裁回原比例时，每边额外多裁掉的像素，用于去掉 AI 成品图边缘残留的模糊边。0 = 保持现状。",
     
     // Performance
     performanceMode: "性能模式",
@@ -326,6 +328,8 @@ export const translations = {
     squareFillDesc: "Applies to both API requests and manual workbench copies: center the image in a square padded with a Gaussian-blurred background, then center-crop the result back to the original ratio (resolution preserved). Fixes distortion when the AI forces square output.",
     squareFillDisabledByInvertedTip: "Inverted masking already produces a full-image result; square padding is auto-disabled to avoid useless work.",
     squareFillSize: "Square size (px)",
+    squareFillCropInset: "Crop inset (px)",
+    squareFillCropInsetDesc: "Extra pixels trimmed from every side when cropping the square result back, to remove residual blurred edges. 0 = keep current behavior.",
     
     // Performance
     performanceMode: "Performance Mode",

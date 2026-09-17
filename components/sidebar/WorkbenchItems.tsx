@@ -10,10 +10,10 @@ import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullIma
  * the original ratio before it is applied. Returns the input unchanged when
  * square fill is off or the info is missing — zero overhead in that case.
  */
-const depadPastedImage = async (dataUrl: string, info: PaddingInfo | null): Promise<string> => {
+const depadPastedImage = async (dataUrl: string, info: PaddingInfo | null, cropInset: number): Promise<string> => {
     if (!info) return dataUrl;
     try {
-        return await depadImageByRatio(dataUrl, info);
+        return await depadImageByRatio(dataUrl, info, cropInset);
     } catch (e) {
         console.error('Square fill depad on paste failed, using pasted image as-is', e);
         return dataUrl;
@@ -82,7 +82,7 @@ export const FullImageMaskRow: React.FC<{
           const reader = new FileReader();
           reader.onload = (evt) => {
              if (evt.target?.result) {
-                depadPastedImage(evt.target.result as string, paddingInfoRef.current)
+                depadPastedImage(evt.target.result as string, paddingInfoRef.current, config.squareFillCropInset)
                     .then(url => onPatchUpdate(url));
              }
           };
@@ -248,7 +248,7 @@ export const ManualPatchRow: React.FC<{
           const reader = new FileReader();
           reader.onload = (evt) => {
              if (evt.target?.result) {
-                depadPastedImage(evt.target.result as string, paddingInfoRef.current)
+                depadPastedImage(evt.target.result as string, paddingInfoRef.current, config.squareFillCropInset)
                     .then(url => onPatchUpdate(url));
              }
           };

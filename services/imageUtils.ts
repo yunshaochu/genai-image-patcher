@@ -223,10 +223,15 @@ export const padImageToSquare = async (
  * Crops the centered region with the original aspect ratio back out of a
  * (square) generated result ("裁回原比例"). Keeps the result's resolution —
  * no downscale back to the original pixel size.
+ *
+ * `cropInset` trims that many extra pixels off every side of the centered box,
+ * to shave off residual Gaussian-blur bleed left by the AI result. 0 keeps the
+ * exact original-ratio box (previous behavior).
  */
 export const depadImageByRatio = async (
     squareUrl: string,
-    info: PaddingInfo
+    info: PaddingInfo,
+    cropInset: number = 0
 ): Promise<string> => {
     if (info.originalWidth === info.originalHeight) {
         return squareUrl;
@@ -248,6 +253,13 @@ export const depadImageByRatio = async (
         // result taller than target → crop top/bottom
         cropW = iw;
         cropH = Math.round(iw / ratio);
+    }
+
+    // Extra inset on every side to remove residual blur bleed from the AI result
+    const inset = Math.max(0, Math.round(cropInset));
+    if (inset > 0) {
+        cropW = Math.max(1, cropW - inset * 2);
+        cropH = Math.max(1, cropH - inset * 2);
     }
 
     const left = Math.floor((iw - cropW) / 2);

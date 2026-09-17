@@ -77,6 +77,7 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiStream: false, 
   enableSquareFill: false, // Default false
   squareFillSize: 1024, // px: square edge length for square fill padding
+  squareFillCropInset: 0, // px: extra pixels trimmed from every side when cropping back
   geminiApiKey: process.env.API_KEY || '',
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
@@ -155,6 +156,9 @@ export function useConfig() {
         delete (migratedConfig as any).squareFillMargin;
         if (typeof migratedConfig.squareFillSize === 'undefined') {
             migratedConfig.squareFillSize = 1024;
+        }
+        if (typeof migratedConfig.squareFillCropInset === 'undefined') {
+            migratedConfig.squareFillCropInset = 0;
         }
         
         // Ensure useFullImageMasking exists

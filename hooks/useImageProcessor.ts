@@ -342,7 +342,7 @@ export function useImageProcessor(
                 
                 // Depad — center-crop back to the original ratio (resolution preserved)
                 if (useSquareFill && paddingInfo) {
-                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo);
+                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo, config.squareFillCropInset);
                     releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
@@ -586,7 +586,7 @@ export function useImageProcessor(
                 
                 // Depad — center-crop back to the original ratio (resolution preserved)
                 if (config.enableSquareFill && paddingInfo) {
-                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo);
+                    const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo, config.squareFillCropInset);
                     releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
