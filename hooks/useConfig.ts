@@ -81,7 +81,8 @@ const DEFAULT_CONFIG: AppConfig = {
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
   // Default to localhost for Python backend development
-  detectionApiUrl: 'http://localhost:5000/detect',
+  // comic-detector RT-DETR service (see docs/API_RTDTR.md) listens on 5001
+  detectionApiUrl: 'http://localhost:5001/detect',
   ocrApiUrl: 'http://localhost:5000/ocr',
   
   // Detection Tuning Defaults
@@ -196,6 +197,12 @@ export function useConfig() {
         }
         if (typeof migratedConfig.translationPromptWithContext === 'undefined') {
             migratedConfig.translationPromptWithContext = '';
+        }
+
+        // Migrate old default detection URL to the new comic-detector service
+        // (RT-DETR on port 5001). Custom URLs are preserved as-is.
+        if (migratedConfig.detectionApiUrl === 'http://localhost:5000/detect') {
+            migratedConfig.detectionApiUrl = 'http://localhost:5001/detect';
         }
 
         // Ensure performanceMode exists

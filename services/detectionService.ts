@@ -2,10 +2,12 @@
 
 import { AppConfig, Region } from "../types";
 
-// API Response Types based on API.md
-interface ApiTextBlock {
-  xyxy: [number, number, number, number]; // [x1, y1, x2, y2]
-  prob: number;
+// API Response Types based on comic-detector RT-DETR API (docs/API_RTDTR.md)
+interface ApiDetection {
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2]
+  class_id: number;
+  class_name: 'bubble' | 'text_bubble' | 'text_free';
+  confidence: number;
 }
 
 interface ApiDetectionResponse {
@@ -14,7 +16,7 @@ interface ApiDetectionResponse {
     width: number;
     height: number;
   };
-  text_blocks: ApiTextBlock[];
+  detections: ApiDetection[];
   error?: string;
 }
 
@@ -119,11 +121,18 @@ export const detectBubbles = async (
   try {
     // 1. Prepare Image (Resize & Compress)
     const imageBlob = await prepareImageForUpload(imageBase64);
-    
+
     // 2. Build FormData
     const formData = new FormData();
     formData.append('image', imageBlob, 'image.jpg');
-    formData.append('return_mask', 'false');
+    // Server-side confidence threshold: send the configured value so a low
+    // threshold (e.g. 0.3) isn't pre-filtered away by the server's 0.5
+    // default. Clamped to the API's accepted range [0.1, 1.0].
+    const confThreshold = Math.min(1, Math.max(0.1, (config.detectionConfidenceThreshold ?? 30) / 100));
+    formData.append('conf_threshold', String(confThreshold));
+    // Only text regions — these are what get masked for AI redraw.
+    // text_bubble = 气泡内文本, text_free = 气泡外文本（旁白、标识牌等）
+    formData.append('filter_classes', 'text_bubble,text_free');
 
     // 3. Send Request
     const response = await fetch(apiUrl, {
@@ -147,30 +156,30 @@ export const detectBubbles = async (
     }
 
     const { width, height } = data.image_size;
-    
+
     // Safety check
     if (!width || !height) {
         console.warn("Detection API returned invalid image size", data.image_size);
         return [];
     }
-    
+
     // Configuration for adjustments
     const inflation = (config.detectionInflationPercent ?? 0) / 100;
     const offX = (config.detectionOffsetXPercent ?? 0) / 100;
     const offY = (config.detectionOffsetYPercent ?? 0) / 100;
-    const confThreshold = (config.detectionConfidenceThreshold ?? 0) / 100;
 
     // Map API result to internal Region format
     const regions: Region[] = [];
-    
-    data.text_blocks.forEach((block) => {
-      // 1. Check Confidence
-      if (block.prob < confThreshold) {
+
+    data.detections.forEach((det) => {
+      // 1. Check Confidence (safety net — the server already filtered
+      // at conf_threshold, but a custom URL may ignore the parameter)
+      if (det.confidence < confThreshold) {
           return;
       }
 
       // API returns absolute pixel coordinates [left, top, right, bottom]
-      const [x1, y1, x2, y2] = block.xyxy;
+      const [x1, y1, x2, y2] = det.bbox;
       
       let wPx = x2 - x1;
       let hPx = y2 - y1;

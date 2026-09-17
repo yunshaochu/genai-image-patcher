@@ -112,12 +112,17 @@ export function useImageManager(performanceMode: PerformanceMode) {
     return url;
   }, []);
 
-  // Auto-switch view mode when result is ready
+  // Fallback: if the current image has no result to show, revert to original view
   useEffect(() => {
-    if (!selectedImage?.regions.some(r => r.status === 'completed') && viewMode === 'result') {
+    const hasResult =
+      !!selectedImage &&
+      (selectedImage.regions.some(r => r.status === 'completed') ||
+        selectedImage.isSkipped ||
+        !!selectedImage.finalResultUrl);
+    if (!hasResult && viewMode === 'result') {
       setViewMode('original');
     }
-  }, [selectedImage?.regions, viewMode]);
+  }, [selectedImage, viewMode]);
 
   const addImageFiles = async (fileList: File[]) => {
     const imageFiles = fileList.filter(f => f.type.startsWith('image/') && !f.name.startsWith('.'));
@@ -191,7 +196,9 @@ export function useImageManager(performanceMode: PerformanceMode) {
   const handleSelectImage = useCallback((id: string) => {
     setSelectedImageId(id);
     setSelectedRegionId(null);
-    setViewMode('original');
+    // viewMode is intentionally preserved so the "已完成" tab stays selected
+    // when switching images; the guard effect above reverts it if the newly
+    // selected image has no result to show.
   }, []);
 
   const handleUpdateRegions = useCallback((imageId: string, regions: Region[]) => {

@@ -136,7 +136,7 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
                             value={config.detectionApiUrl}
                             onChange={(e) => onChange('detectionApiUrl', e.target.value)}
                             className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                            placeholder="http://localhost:5000/detect"
+                            placeholder="http://localhost:5001/detect"
                         />
                     </div>
                 </>

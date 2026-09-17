@@ -43,6 +43,26 @@ type RegionRunState = {
 };
 
 /**
+ * True when ≥50% of `r`'s area is covered by an existing region. Used to
+ * deduplicate auto-detection results against already-present boxes so that
+ * re-running detection doesn't stack duplicate bubbles on an image.
+ */
+const regionOverlapsExisting = (
+    r: Pick<Region, 'x' | 'y' | 'width' | 'height'>,
+    existing: readonly Pick<Region, 'x' | 'y' | 'width' | 'height'>[]
+): boolean => {
+    const rArea = r.width * r.height;
+    if (rArea <= 0) return false;
+    for (const e of existing) {
+        const ix = Math.min(r.x + r.width, e.x + e.width) - Math.max(r.x, e.x);
+        const iy = Math.min(r.y + r.height, e.y + e.height) - Math.max(r.y, e.y);
+        if (ix <= 0 || iy <= 0) continue;
+        if ((ix * iy) / rArea >= 0.5) return true;
+    }
+    return false;
+};
+
+/**
  * Sentinel string that marks the start of a cached translation block inside
  * `region.customPrompt`. Anything BEFORE this line is treated as the user's
  * own instructions; anything AFTER is reused as the cached translation
@@ -115,6 +135,9 @@ export function useImageProcessor(
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [isDetecting, setIsDetecting] = useState(false);
     const abortControllerRef = useRef<AbortController | null>(null);
+    // Synchronous mirror of `isDetecting` for re-entry protection — see
+    // handleAutoDetect. State alone has an async commit window.
+    const isDetectingRef = useRef(false);
 
     // Mirror of `images` for sync access inside async loops. We use it to
     // re-pick the in-scope image list each retry iteration (so newly added /
@@ -751,23 +774,42 @@ export function useImageProcessor(
     };
 
     const handleAutoDetect = async (scope: 'current' | 'all') => {
+        // Synchronous re-entry guard. `isDetecting` state alone can't prevent a
+        // second invocation: the state commit is async, so a rapid second click
+        // (or a delayed render) re-enters and re-detects every image.
+        if (isDetectingRef.current) return;
+        isDetectingRef.current = true;
         setIsDetecting(true);
         setErrorMsg(null);
         const controller = new AbortController();
         abortControllerRef.current = controller;
         try {
-            const targets = scope === 'current' 
+            const targets = scope === 'current'
                ? (selectedImage ? [selectedImage] : [])
                : images.filter(img => !img.isSkipped);
             if (targets.length === 0) {
-               setIsDetecting(false);
                return;
             }
             const detectTask = async (img: UploadedImage) => {
                try {
                    const newRegions = await detectBubbles(img.previewUrl, config);
                    if (newRegions.length > 0) {
-                       updateImage(img.id, currentImg => ({ ...currentImg, regions: [...currentImg.regions, ...newRegions] }));
+                       updateImage(img.id, currentImg => {
+                           // Drop new boxes that mostly overlap an existing region
+                           // (≥50% of the new box's area covered). Re-running
+                           // detection (e.g. "current" then "all", or a second
+                           // pass) would otherwise stack duplicate bubbles on
+                           // already-detected images.
+                           const accepted: Region[] = [];
+                           for (const r of newRegions) {
+                               if (!regionOverlapsExisting(r, currentImg.regions)
+                                   && !regionOverlapsExisting(r, accepted)) {
+                                   accepted.push(r);
+                               }
+                           }
+                           if (accepted.length === 0) return currentImg; // no-op
+                           return { ...currentImg, regions: [...currentImg.regions, ...accepted] };
+                       });
                    }
                } catch (e: any) {
                    console.error(`Detection failed for ${img.file.name}:`, e);
@@ -777,6 +819,7 @@ export function useImageProcessor(
         } catch (e: any) {
             setErrorMsg("Detection Error: " + e.message);
         } finally {
+            isDetectingRef.current = false;
             setIsDetecting(false);
             abortControllerRef.current = null;
         }
