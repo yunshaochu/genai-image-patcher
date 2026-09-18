@@ -63,6 +63,8 @@ export default function App() {
       eraseRegions,
       restoreErase,
       ocrAllRegions,
+      translateImageRegions,
+      translateAllImages,
       resyncEditedRegions,
       buildBrushBase,
   } = useMangaEditor({ images, updateImage, config, setErrorMsg });
@@ -439,9 +441,11 @@ export default function App() {
       onRestoreErase: (imageId, scope, sel) => { restoreErase(imageId, scope, sel); },
       onOcrAll: (imageId) => { ocrAllRegions(imageId); },
       onOcrRegion: handleOcrRegion,
+      onTranslateImage: (imageId) => { translateImageRegions(imageId); },
+      onTranslateAllImages: () => { translateAllImages(); },
       buildBrushBase,
       onBrushChange: setBrushLayer,
-  }), [editorBusy, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, buildBrushBase, setBrushLayer]);
+  }), [editorBusy, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, translateImageRegions, translateAllImages, buildBrushBase, setBrushLayer]);
 
   return (
     <div 

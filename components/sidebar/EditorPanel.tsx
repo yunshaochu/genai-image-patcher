@@ -30,7 +30,9 @@ interface EditorPanelProps {
   onErase: (scope: EraseScope) => void;
   onRestoreErase: (scope: RestoreScope) => void;
   onOcrAll: () => void;
-  onOcrRegion: (regionId: string) => Promise<void>;
+  onOcrRegion: (regionId: string) => void;
+  onTranslate: () => void;
+  onTranslateAll: () => void;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
 }
@@ -260,18 +262,9 @@ const BrushPainter: React.FC<{
 // Main panel
 // ---------------------------------------------------------------------------
 export const EditorPanel: React.FC<EditorPanelProps> = ({
-  image,
-  config,
-  selectedRegionId,
-  onSelectRegion,
-  busy,
-  onUpdateRegion,
-  onErase,
-  onRestoreErase,
-  onOcrAll,
-  onOcrRegion,
-  buildBrushBase,
-  onBrushChange,
+    image, config, selectedRegionId, onSelectRegion, busy, onUpdateRegion,
+    onErase, onRestoreErase, onOcrAll, onOcrRegion, onTranslate, onTranslateAll,
+    buildBrushBase, onBrushChange,
 }) => {
   const lang = config.language;
   const [tab, setTab] = useState<'text' | 'brush'>('text');
@@ -343,6 +336,27 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
               <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
               {t(lang, 'editorOcrAll')}
             </button>
+          )}
+
+          {config.enableTranslationMode && (
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={onTranslate}
+                disabled={busy || textRegions.length === 0}
+                className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
+                title={t(lang, 'editorTranslateTip')}
+              >
+                {t(lang, 'editorTranslateAll')}
+              </button>
+              <button
+                onClick={onTranslateAll}
+                disabled={busy}
+                className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
+                title={t(lang, 'editorTranslateAllImagesTip')}
+              >
+                {t(lang, 'editorTranslateAllImages')}
+              </button>
+            </div>
           )}
 
           {busy && (

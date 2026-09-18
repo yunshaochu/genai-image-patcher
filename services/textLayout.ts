@@ -11,6 +11,10 @@ import { EditorTextStyle } from '../types';
  * - Horizontal: greedy char wrap measured with canvas measureText, binary
  *   search for the largest font size that fits the box.
  * - Vertical: chars flow top→bottom, columns right→left (traditional manga).
+ *   Columns are top-aligned so first characters share one horizontal line;
+ *   vertical punctuation forms are emulated (90° rotation for dashes /
+ *   brackets / ellipsis, em-box offsets for 。、：；！？) since canvas cannot
+ *   trigger OpenType 'vert' features.
  * - The text block is centered inside the box.
  */
 
@@ -35,6 +39,31 @@ const NO_LINE_END = new Set(
 );
 
 const LINE_HEIGHT_RATIO = 1.18;
+
+// ── Vertical punctuation handling (竖排标点) ─────────────────────────────
+// Canvas can't trigger OpenType 'vert'/'vrt2' features, so vertical forms are
+// emulated per character:
+//  - ROTATE90: glyphs whose vertical form is the horizontal glyph turned 90°
+//    CW — dashes, ellipsis, the katakana long-vowel mark, and all brackets /
+//    corner quotes (「 rotated 90° CW IS the correct vertical bracket shape).
+//  - PUNCT_OFFSET: fullwidth CJK punctuation whose ink sits bottom-left in
+//    the horizontal em box; in vertical writing 。、 belong to the TOP-RIGHT
+//    of the em box, ：； pull toward the center, and ！？ must be centered
+//    (their ink is left-of-em in horizontal fonts). Values are x/y offsets
+//    as fractions of fontSize.
+const ROTATE90 = new Set(
+  '—―−-ー~～〜…‥⋯（）()【】[]《》〈〉「」『』〔〕｛｝{}‖'.split('')
+);
+const PUNCT_OFFSET: Record<string, readonly [number, number]> = {
+  '。': [0.35, -0.35],
+  '、': [0.35, -0.35],
+  '，': [0.35, -0.35],
+  '．': [0.35, -0.35],
+  '：': [0.25, -0.25],
+  '；': [0.25, -0.25],
+  '！': [0.25, 0],
+  '？': [0.25, 0],
+};
 
 let measureCanvas: HTMLCanvasElement | null = null;
 const getMeasureCtx = (): CanvasRenderingContext2D => {
@@ -250,14 +279,31 @@ export const drawTextLayout = (
     const blockW = lines.length * colW;
     // Columns flow right → left: column 0 is the rightmost.
     const rightEdge = boxW - padding - Math.max(0, (innerW - blockW) / 2);
+    // All columns share one baseline: the block is centered by its LONGEST
+    // column and every column starts at the same y, so first characters line
+    // up horizontally (竖排首字对齐).
+    const maxColH = Math.max(...lines.map(l => l.length * fontSize));
+    const startY = padding + Math.max(0, (innerH - maxColH) / 2);
     lines.forEach((line, colIdx) => {
       const colCenterX = rightEdge - colIdx * colW - colW / 2;
-      const colH = line.length * fontSize;
-      let y = padding + Math.max(0, (innerH - colH) / 2);
+      let y = startY;
       for (const ch of line) {
-        const cw = ctx.measureText(ch).width;
-        const x = colCenterX - cw / 2;
-        drawLine(ch, x, y);
+        if (ROTATE90.has(ch)) {
+          // Drawn as the horizontal glyph rotated 90° CW about the em center.
+          ctx.save();
+          ctx.translate(colCenterX, y + fontSize / 2);
+          ctx.rotate(Math.PI / 2);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          drawLine(ch, 0, 0);
+          ctx.restore();
+        } else {
+          const cw = ctx.measureText(ch).width;
+          const offset = PUNCT_OFFSET[ch];
+          const dx = offset ? offset[0] * fontSize : 0;
+          const dy = offset ? offset[1] * fontSize : 0;
+          drawLine(ch, colCenterX - cw / 2 + dx, y + dy);
+        }
         y += fontSize;
       }
     });

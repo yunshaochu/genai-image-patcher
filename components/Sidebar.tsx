@@ -25,6 +25,8 @@ export interface EditorApi {
   onRestoreErase: (imageId: string, scope: RestoreScope, selectedRegionId?: string | null) => void;
   onOcrAll: (imageId: string) => void;
   onOcrRegion: (imageId: string, regionId: string) => Promise<void>;
+  onTranslateImage: (imageId: string) => void;
+  onTranslateAllImages: () => void;
   buildBrushBase: (imageId: string, regionId: string) => Promise<string | null>;
   onBrushChange: (imageId: string, regionId: string, url: string | null) => void;
 }
@@ -862,6 +864,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                     onRestoreErase={(scope) => editorApi.onRestoreErase(currentImage.id, scope, selectedRegionId)}
                     onOcrAll={() => editorApi.onOcrAll(currentImage.id)}
                     onOcrRegion={(regionId) => editorApi.onOcrRegion(currentImage.id, regionId)}
+                    onTranslate={() => editorApi.onTranslateImage(currentImage.id)}
+                    onTranslateAll={editorApi.onTranslateAllImages}
                     buildBrushBase={(regionId) => editorApi.buildBrushBase(currentImage.id, regionId)}
                     onBrushChange={(regionId, url) => editorApi.onBrushChange(currentImage.id, regionId, url)}
                 />

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppConfig, Region, UploadedImage } from '../types';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { recognizeText } from '../services/detectionService';
+import { translateEditorRegions } from '../services/editorTranslate';
 import {
   compositeRegionPatch,
   regionNeedsComposite,
@@ -242,6 +243,79 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [busy, getImage, recompositeRegion, updateImage]);
 
+  /**
+   * Auto-translate one image: a single vision-AI call over all editable
+   * regions (annotated full image + numbered skeleton). The returned source
+   * text doubles as OCR (→ ocrText); the translation lands in editorText and
+   * the region is erased so the typeset composite shows cleanly. Regions the
+   * AI flags as skip (sfx / decorations / misdetections) are left untouched.
+   */
+  const translateImageRegions = useCallback(async (imageId: string) => {
+    const img = getImage(imageId);
+    if (!img || busy) return;
+    const targets = img.regions.filter(r => !r.contextOnly);
+    if (targets.length === 0) return;
+
+    setBusy(true);
+    try {
+      const imageEl = await loadImage(img.previewUrl);
+      const results = await translateEditorRegions(imageEl, targets, configRef.current);
+
+      // Compute post-update region objects up-front (updaters must stay pure,
+      // and recomposite needs them explicitly — the store commit lags behind
+      // updateImage). editorStyle is left untouched: undefined fontSize /
+      // isVertical mean the layout engine auto-fits size and direction for
+      // the new text.
+      const translated: Region[] = [];
+      for (const r of targets) {
+        const res = results.get(r.id);
+        if (!res || res.skip || !res.zh?.trim()) continue;
+        translated.push({
+          ...r,
+          ocrText: res.source ?? r.ocrText,
+          editorText: res.zh,
+          editorErased: true,
+          // AI judges the original's direction; when it doesn't say, keep the
+          // existing style (undefined = layout auto-heuristic).
+          editorStyle: res.vertical === undefined
+            ? r.editorStyle
+            : { ...r.editorStyle, isVertical: res.vertical },
+        });
+      }
+      if (translated.length === 0) throw new Error('AI 没有翻译任何区域（可能全部被判定为拟声词/误检）');
+
+      const byId = new Map(translated.map(t => [t.id, t]));
+      updateImage(imageId, current => ({
+        ...current,
+        regions: current.regions.map(r => byId.get(r.id) ?? r),
+      }));
+      // Typeset composite per translated region (erasure included), sequential.
+      for (const nr of translated) {
+        await recompositeRegion(imageId, nr.id, nr);
+      }
+    } catch (e: any) {
+      console.error('Auto translate failed', e);
+      setErrorMsg(e?.message || '翻译失败');
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg]);
+
+  /**
+   * Batch variant: translate every loaded image that has editable regions,
+   * sequentially. Per-image failures surface via setErrorMsg but do not
+   * abort the batch.
+   */
+  const translateAllImages = useCallback(async () => {
+    if (busy) return;
+    const ids = imagesRef.current
+      .filter(img => img.regions.some(r => !r.contextOnly))
+      .map(img => img.id);
+    for (const id of ids) {
+      await translateImageRegions(id);
+    }
+  }, [busy, translateImageRegions]);
+
   /** OCR every non-context region that doesn't have text yet. */
   const ocrAllRegions = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
@@ -334,6 +408,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     eraseRegions,
     restoreErase,
     ocrAllRegions,
+    translateImageRegions,
+    translateAllImages,
     resyncEditedRegions,
     buildBrushBase,
   };
