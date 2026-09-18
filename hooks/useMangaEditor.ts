@@ -12,6 +12,15 @@ import {
 export type EraseScope = 'all' | 'bubbleOnly' | 'selected';
 export type RestoreScope = 'all' | 'textFree' | 'selected';
 
+/**
+ * AI-owned region: completed by the image-generation pipeline, not by the
+ * editor. Editor operations (erase / text / brush / OCR / translate) must
+ * never touch these — the AI patch always wins. Conversely, editor-completed
+ * regions (editorComposited=true) are excluded from AI processing because the
+ * AI only picks up pending/failed regions.
+ */
+const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.editorComposited;
+
 interface UseMangaEditorParams {
   images: UploadedImage[];
   updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void;
@@ -19,7 +28,7 @@ interface UseMangaEditorParams {
   setErrorMsg: (msg: string | null) => void;
 }
 
-const RECOMPOSITE_DEBOUNCE_MS = 400;
+const RECOMPOSITE_DEBOUNCE_MS = 200;
 
 /**
  * State engine for the in-place manga text editor (editor workflow mode).
@@ -62,9 +71,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   /**
    * Rebuild the region's patch from its editor fields and write the result
-   * into processedImageUrl (status 'completed'), so the existing result /
-   * stitch / download machinery picks it up unchanged. When nothing remains
-   * to composite, restores the region to its un-edited state.
+   * into processedImageUrl. Completion semantics:
+   *  - Text written (editorText non-empty) → status 'completed': the patch
+   *    joins the result view / stitch / download machinery.
+   *  - Erase/brush only (no written text) → stays 'pending': an intermediate
+   *    state for typesetting, shown ONLY in the editor canvas tab; the AI
+   *    pipeline can still pick the region up and overwrite it (AI wins).
+   * When nothing remains to composite, restores the region to its un-edited
+   * state.
    *
    * `regionOverride` passes the just-committed region state, because
    * imagesRef lags one React commit behind updateImage — without it the
@@ -74,6 +88,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const img = getImage(imageId);
     const region = regionOverride ?? img?.regions.find(r => r.id === regionId);
     if (!img || !region) return;
+    if (isAiOwned(region)) return;
 
     try {
       const imageEl = await loadImage(img.previewUrl);
@@ -95,6 +110,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         return next;
       });
 
+      // Only explicitly written text makes the region "final". The OCR
+      // fallback (ocrText) still renders in the editor tab, but the region
+      // stays pending until the user confirms text into editorText.
+      const hasWrittenText = !!region.editorText?.trim();
+
       updateImage(imageId, current => ({
         ...current,
         regions: current.regions.map(r => {
@@ -106,7 +126,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             return {
               ...r,
               processedImageUrl: url,
-              status: 'completed' as const,
+              status: hasWrittenText ? ('completed' as const) : ('pending' as const),
               editorComposited: true,
               patchMarginX: result.marginXPct,
               patchMarginY: result.marginYPct,
@@ -153,6 +173,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     regionId: string,
     updates: Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] }
   ) => {
+    const target = getImage(imageId)?.regions.find(r => r.id === regionId);
+    if (target && isAiOwned(target)) return;
     updateImage(imageId, img => ({
       ...img,
       regions: img.regions.map(r => {
@@ -165,10 +187,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       }),
     }));
     scheduleRecomposite(imageId, regionId);
-  }, [updateImage, scheduleRecomposite]);
+  }, [getImage, updateImage, scheduleRecomposite]);
 
   /** Replace (or clear) the brush-stroke layer of a region. */
   const setBrushLayer = useCallback((imageId: string, regionId: string, brushUrl: string | null) => {
+    const target = getImage(imageId)?.regions.find(r => r.id === regionId);
+    if (target && isAiOwned(target)) return;
     updateImage(imageId, img => ({
       ...img,
       regions: img.regions.map(r => {
@@ -178,7 +202,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       }),
     }));
     scheduleRecomposite(imageId, regionId, 0);
-  }, [updateImage, scheduleRecomposite]);
+  }, [getImage, updateImage, scheduleRecomposite]);
 
   const pickEraseTargets = useCallback((
     img: UploadedImage,
@@ -187,10 +211,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   ): Region[] => {
     if (scope === 'selected') {
       const r = img.regions.find(r => r.id === selectedRegionId);
-      return r && !r.editorErased ? [r] : [];
+      return r && !r.editorErased && !isAiOwned(r) ? [r] : [];
     }
     return img.regions.filter(r => {
-      if (r.contextOnly || r.editorErased) return false;
+      if (r.contextOnly || r.editorErased || isAiOwned(r)) return false;
       if (scope === 'bubbleOnly') return r.detectedClass === 'text_bubble';
       return true; // 'all' — manual boxes + text_bubble + text_free
     });
@@ -235,7 +259,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const img = getImage(imageId);
     if (!img || busy) return;
     const targets = img.regions.filter(r => {
-      if (!r.editorErased) return false;
+      if (!r.editorErased || isAiOwned(r)) return false;
       if (scope === 'selected') return r.id === selectedRegionId;
       if (scope === 'textFree') return r.detectedClass === 'text_free';
       return true;
@@ -260,6 +284,21 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [busy, getImage, recompositeRegion, updateImage]);
 
   /**
+   * Translate-target picker honoring the configured scope:
+   *  - 'bubble': only detected text_bubble regions
+   *  - 'all':    every editable text region (text_bubble + text_free + manual)
+   * AI-owned regions are always excluded (their content is final).
+   */
+  const pickTranslateTargets = useCallback((img: UploadedImage): Region[] => {
+    const scope = configRef.current.editorTranslationScope ?? 'all';
+    return img.regions.filter(r => {
+      if (r.contextOnly || isAiOwned(r)) return false;
+      if (scope === 'bubble') return r.detectedClass === 'text_bubble';
+      return true;
+    });
+  }, []);
+
+  /**
    * Auto-translate one image: a single vision-AI call over all editable
    * regions (annotated full image + numbered skeleton). The returned source
    * text doubles as OCR (→ ocrText); the translation lands in editorText and
@@ -269,7 +308,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const translateImageRegions = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img || busy) return;
-    const targets = img.regions.filter(r => !r.contextOnly);
+    const targets = pickTranslateTargets(img);
     if (targets.length === 0) return;
 
     setBusy(true);
@@ -315,7 +354,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     } finally {
       setBusy(false);
     }
-  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg]);
+  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets]);
 
   /**
    * Batch variant: translate every loaded image that has editable regions,
@@ -325,19 +364,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const translateAllImages = useCallback(async () => {
     if (busy) return;
     const ids = imagesRef.current
-      .filter(img => img.regions.some(r => !r.contextOnly))
+      .filter(img => pickTranslateTargets(img).length > 0)
       .map(img => img.id);
     for (const id of ids) {
       await translateImageRegions(id);
     }
-  }, [busy, translateImageRegions]);
+  }, [busy, translateImageRegions, pickTranslateTargets]);
 
   /** OCR every non-context region that doesn't have text yet. */
   const ocrAllRegions = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img || busy) return;
     const targets = img.regions.filter(r =>
-      !r.contextOnly && !(r.editorText ?? r.ocrText)?.trim()
+      !r.contextOnly && !isAiOwned(r) && !(r.editorText ?? r.ocrText)?.trim()
     );
     if (targets.length === 0) return;
 
@@ -384,6 +423,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const regions = regionsOverride ?? img?.regions;
     if (!regions) return;
     for (const r of regions) {
+      if (isAiOwned(r)) continue;
       if (!regionNeedsComposite(r)) continue;
       const moved =
         r.anchorX === undefined ||
@@ -404,7 +444,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const buildBrushBase = useCallback(async (imageId: string, regionId: string): Promise<string | null> => {
     const img = getImage(imageId);
     const region = img?.regions.find(r => r.id === regionId);
-    if (!img || !region) return null;
+    if (!img || !region || isAiOwned(region)) return null;
     const noBrush: Region = { ...region, editorBrushUrl: undefined };
     if (!regionNeedsComposite(noBrush)) return null;
     const imageEl = await loadImage(img.previewUrl);

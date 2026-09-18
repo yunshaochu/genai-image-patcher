@@ -27,7 +27,7 @@ interface EditorCanvasProps {
   showOcrButton?: boolean;
   onAdjustRegionSize?: (regionId: string, isExpand: boolean) => void;
   onInteractionStart?: () => void;
-  viewMode?: 'original' | 'result';
+  viewMode?: 'original' | 'result' | 'edit';
   restoreMode?: boolean;
   onUpdateRestoreBoxes?: (regionId: string, boxes: RestoreBox[]) => void;
   onUpdateRestoreMask?: (regionId: string, maskBase64: string | null) => void;
@@ -75,7 +75,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     restoreSelectedRegionId = null,
     onSelectRestoreRegion,
     showRetryDiagnostics = false,
-}) => {
+}: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -339,7 +339,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       onUpdateRegions,
       onSelectRegion,
       onInteractionStart,
-      viewMode as 'original' | 'result',
+      viewMode,
       disabled
   );
 
@@ -678,6 +678,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   };
 
   const isOriginalMode = viewMode === 'original';
+  const isEditMode = viewMode === 'edit';
+  // The editor tab ('edit') combines the result view's patch overlays with
+  // the original view's box interactions (select / move / resize / draw).
+  const boxesInteractive = isOriginalMode || isEditMode;
+  const showPatchOverlays = viewMode === 'result' || isEditMode;
   const isRestoreActive = restoreMode && viewMode === 'result';
 
   const imgW = image.originalWidth || 800;
@@ -711,7 +716,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
         {/* Content container: sized to original image dimensions, positioned via transform */}
         <div
           ref={containerRef}
-          className={`absolute shadow-xl ${isOriginalMode && !restoreMode ? '' : 'cursor-default'}`}
+          className={`absolute shadow-xl ${boxesInteractive && !restoreMode ? '' : 'cursor-default'}`}
           onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : (e) => {
             // Block left-click background interaction when panning with space or alt
             if (e.button === 0 && (e.altKey || spaceHeldRef.current)) return;
@@ -722,7 +727,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             height: imgH,
             transformOrigin: '0 0',
             transform: `translate(${(vpW - imgW * zoom) / 2 + panX}px, ${(vpH - imgH * zoom) / 2 + panY}px) scale(${zoom})`,
-            cursor: isRestoreActive ? 'crosshair' : (isOriginalMode && interaction.type === 'drawing' ? 'crosshair' : 'default'),
+            cursor: isRestoreActive ? 'crosshair' : (boxesInteractive && interaction.type === 'drawing' ? 'crosshair' : 'default'),
             visibility: isZoomReady ? 'visible' : 'hidden',
           }}
         >
@@ -735,8 +740,13 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             draggable={false}
           />
 
-          {/* RESULT MODE: Processed image overlays */}
-          {!isOriginalMode && image.regions.filter(r => r.status === 'completed' && r.processedImageUrl).map((region) => {
+          {/* RESULT/EDIT MODE: Processed image overlays. Result shows only
+              finalized (completed) patches; edit additionally shows editor
+              intermediate patches (erase/brush-only, still pending). */}
+          {showPatchOverlays && image.regions.filter(r =>
+            r.status === 'completed' && r.processedImageUrl ||
+            (isEditMode && r.editorComposited && r.processedImageUrl)
+          ).map((region) => {
             const ax = region.anchorX ?? region.x;
             const ay = region.anchorY ?? region.y;
             const aw = region.anchorWidth ?? region.width;
@@ -780,8 +790,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             // visual/AI context but never drawn — the dashed box is visual
             // noise, especially on the completed view.
             if (region.contextOnly) return null;
-            const isSelected = selectedRegionId === region.id && isOriginalMode;
-            const isEditable = isOriginalMode && !disabled && region.status !== 'processing';
+            const isSelected = selectedRegionId === region.id && boxesInteractive;
+            const isEditable = boxesInteractive && !disabled && region.status !== 'processing';
 
             const isManipulating = (interaction.type === 'moving' || interaction.type === 'resizing') && interaction.regionId === region.id;
 
@@ -792,7 +802,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
             let styleClasses = '';
 
-            if (!isOriginalMode) {
+            if (!boxesInteractive) {
                 if (isRestoreActive) {
                     const isRestoreSelected = region.id === restoreSelectedRegionId;
                     styleClasses = isRestoreSelected
@@ -878,8 +888,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   width: `${width}%`,
                   height: `${height}%`,
                   transition: isManipulating ? 'none' : undefined,
-                  cursor: isOriginalMode || isRestoreActive ? cursorStyle : 'default',
-                  overflow: (isRestoreActive || !isOriginalMode) ? 'hidden' : 'visible'
+                  cursor: boxesInteractive || isRestoreActive ? cursorStyle : 'default',
+                  overflow: (isRestoreActive || !boxesInteractive) ? 'hidden' : 'visible'
                 }}
               >
                 {/* RESTORE MODE: Overlay on selected region */}
@@ -1023,8 +1033,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                    </div>
                 )}
 
-                {/* ORIGINAL MODE: Status Badge */}
-                {isOriginalMode && region.status !== 'pending' && !isManipulating && (
+                {/* ORIGINAL/EDIT MODE: Status Badge */}
+                {boxesInteractive && region.status !== 'pending' && !isManipulating && (
                   <div
                     className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
                       region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
@@ -1044,12 +1054,28 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                     )}
                   </div>
                 )}
+
+                {/* EDIT MODE: erased-intermediate badge (pending but erased —
+                    the box stays blue because erasure is not a final result) */}
+                {isEditMode && region.status === 'pending' && region.editorErased && !isManipulating && (
+                  <div
+                    className="absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 bg-sky-100/90 text-sky-700 border-sky-200"
+                    style={{
+                      top: 2 * invZoom,
+                      left: 2 * invZoom,
+                      transform: `scale(${invZoom})`,
+                      transformOrigin: 'top left',
+                    }}
+                  >
+                    {t(language, 'editorErasedBadge')}
+                  </div>
+                )}
               </div>
             );
           })}
 
           {/* Drawing preview rectangle */}
-          {isOriginalMode && interaction.type === 'drawing' && interaction.currentRect && !restoreMode && (
+          {boxesInteractive && interaction.type === 'drawing' && interaction.currentRect && !restoreMode && (
             <div
               className="absolute border-2 border-dashed border-skin-primary bg-skin-primary/20 pointer-events-none z-50"
               style={{
@@ -1064,7 +1090,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       </div>
 
       {/* Zoom controls */}
-      {isOriginalMode && !restoreMode && (
+      {boxesInteractive && !restoreMode && (
         <div className="absolute bottom-4 right-4 flex gap-1 z-40">
           <button onClick={handleZoomOut} className="w-7 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-sm hover:bg-skin-fill transition" title="Zoom Out">−</button>
           <span className="w-12 h-7 bg-skin-surface border border-skin-border rounded flex items-center justify-center text-[10px] font-mono">{Math.round(zoom * 100)}%</span>

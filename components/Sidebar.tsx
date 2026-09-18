@@ -858,19 +858,13 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <EditorPanel
                     image={currentImage}
                     config={config}
-                    selectedRegionId={selectedRegionId}
-                    onSelectRegion={onSelectRegion}
                     busy={editorApi.busy}
-                    computedFontSizes={editorApi.computedFontSizes}
-                    onUpdateRegion={(regionId, updates) => editorApi.onUpdateRegion(currentImage.id, regionId, updates)}
+                    onConfigChange={handleConfigChange}
                     onErase={(scope) => editorApi.onErase(currentImage.id, scope, selectedRegionId)}
                     onRestoreErase={(scope) => editorApi.onRestoreErase(currentImage.id, scope, selectedRegionId)}
                     onOcrAll={() => editorApi.onOcrAll(currentImage.id)}
-                    onOcrRegion={(regionId) => editorApi.onOcrRegion(currentImage.id, regionId)}
                     onTranslate={() => editorApi.onTranslateImage(currentImage.id)}
                     onTranslateAll={editorApi.onTranslateAllImages}
-                    buildBrushBase={(regionId) => editorApi.buildBrushBase(currentImage.id, regionId)}
-                    onBrushChange={(regionId, url) => editorApi.onBrushChange(currentImage.id, regionId, url)}
                 />
             ) : (
                 <div className="text-center py-8 text-skin-muted italic text-xs">

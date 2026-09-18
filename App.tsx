@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspens
 import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
 import Sidebar, { EditorApi } from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
+import EditorDock from './components/EditorDock';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
@@ -79,6 +80,15 @@ export default function App() {
   const [restoreSelectedRegionId, setRestoreSelectedRegionId] = useState<string | null>(null);
 
   const [transModels, setTransModels] = useState<string[]>([]);
+
+  const isEditorMode = config.processingMode === 'editor';
+
+  // The '编辑' canvas tab only exists in the editor workflow. Leaving the
+  // workflow while sitting on that tab falls back to 'original' so the
+  // canvas never gets stuck on a hidden view.
+  useEffect(() => {
+      if (!isEditorMode && viewMode === 'edit') setViewMode('original');
+  }, [isEditorMode, viewMode, setViewMode]);
 
   // Debounce Timer Ref for Heavy Operations
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -493,11 +503,19 @@ export default function App() {
            <>
              <div className="absolute top-4 left-4 z-10 flex gap-2">
                  <button 
-                   onClick={() => setViewMode('original')}
+                   onClick={() => { setViewMode('original'); setRestoreMode(false); }}
                    className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'original' ? 'bg-skin-primary text-skin-primary-fg border-skin-primary' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
                  >
                    {t(config.language, 'readyToCreate')}
                  </button>
+                  {isEditorMode && (
+                     <button 
+                         onClick={() => { setViewMode('edit'); setRestoreMode(false); }}
+                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'edit' ? 'bg-sky-500 text-white border-sky-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                     >
+                         {t(config.language, 'editorEditTab')}
+                     </button>
+                  )}
                   {(selectedImage.regions.some(r => r.status === 'completed') || selectedImage.isSkipped || selectedImage.finalResultUrl) && (
                      <button 
                          onClick={() => { setViewMode('result'); setRestoreMode(false); }}
@@ -616,6 +634,24 @@ export default function App() {
                     onSelectRestoreRegion={setRestoreSelectedRegionId}
                     showRetryDiagnostics={!!config.showRetryDiagnostics}
                 />
+              )}
+
+              {/* Right-side property dock on the '编辑' tab — shows the selected
+                  box's text/direction/font-size/erase/OCR/brush. AI-owned boxes
+                  render read-only inside the dock. */}
+              {isEditorMode && viewMode === 'edit' && selectedRegionId && (
+                  <EditorDock
+                    image={selectedImage}
+                    config={config}
+                    selectedRegionId={selectedRegionId}
+                    onSelectRegion={setSelectedRegionId}
+                    busy={editorBusy}
+                    computedFontSizes={computedFontSizes}
+                    onUpdateRegion={(regionId, updates) => updateEditorRegion(selectedImage.id, regionId, updates)}
+                    onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
+                    buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
+                    onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
+                  />
               )}
             </>
         ) : (

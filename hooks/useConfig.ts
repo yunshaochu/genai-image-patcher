@@ -107,6 +107,7 @@ const DEFAULT_CONFIG: AppConfig = {
 
   // Translation Defaults
   enableTranslationMode: false,
+  editorTranslationScope: 'all',
   sendMaskedContextForTranslation: false,
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',

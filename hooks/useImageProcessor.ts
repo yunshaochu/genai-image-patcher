@@ -370,7 +370,10 @@ export function useImageProcessor(
                 if (config.useInvertedMasking) {
                     const stitchedUrl = await stitchImageInverted(imageSnapshot.previewUrl, apiResultUrl, regionsToProcess);
                     regionsToProcess.forEach(r => {
-                        setRegion({ ...r, status: 'completed' as const });
+                        // AI takes ownership: drop any editor-intermediate patch
+                        // (erasure is only a typesetting intermediate state).
+                        if (r.processedImageUrl) releaseObjectURL(r.processedImageUrl);
+                        setRegion({ ...r, status: 'completed' as const, processedImageUrl: undefined, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined });
                     });
 
                     updateImage(imageSnapshot.id, img => {
@@ -407,7 +410,9 @@ export function useImageProcessor(
                             maskImg.naturalHeight,
                             config.fullImageOpaquePercent
                         );
-                        const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                        // AI takes ownership: drop any editor-intermediate patch.
+                        if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
+                        const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                         setRegion(completedRegion);
                     }
 
@@ -620,7 +625,9 @@ export function useImageProcessor(
                 // earlier in this task). Spreading the original `region` snapshot here
                 // would silently overwrite that update.
                 const baseRegion = regionsMap.get(region.id) ?? region;
-                const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                // AI takes ownership: clear editor-composite markers so the
+                // editor treats this region as read-only (AI result wins).
+                const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 setRegion(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
 

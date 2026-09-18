@@ -4,7 +4,8 @@ import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../ty
 import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
 import { saveSession, loadSession, clearSession } from '../services/sessionStore';
 
-type ViewMode = 'original' | 'result';
+// 'edit' is the editor-workflow canvas tab (patch overlays + box interactions).
+type ViewMode = 'original' | 'result' | 'edit';
 
 // Normalized store: byId for O(1) lookups, order for stable iteration.
 // Replaces the previous setImages(prev => prev.map(...)) pattern that did O(N)

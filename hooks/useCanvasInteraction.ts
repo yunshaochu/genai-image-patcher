@@ -19,7 +19,8 @@ export function useCanvasInteraction(
     onUpdateRegions: (imageId: string, regions: Region[]) => void,
     onSelectRegion: (id: string | null) => void,
     onInteractionStart?: () => void,
-    viewMode: 'original' | 'result' = 'original',
+    // 'edit' (editor canvas tab) behaves like 'original': full box interaction.
+    viewMode: 'original' | 'result' | 'edit' = 'original',
     disabled: boolean = false
 ) {
     const [interaction, setInteraction] = useState<InteractionState>({ type: 'idle', startPos: { x: 0, y: 0 } });
