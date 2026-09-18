@@ -1,0 +1,20 @@
+# BananaChange 统一后端依赖 (Windows)
+# 安装: pip install -r requirements.txt
+
+numpy
+opencv-python>=4.1.2
+Pillow>=7.1.2
+
+# PyTorch (CPU版即可运行)
+# 如需GPU加速，请到 https://pytorch.org/get-started/locally/ 选择CUDA版本单独安装
+torch>=1.7.0
+torchvision>=0.8.1
+
+# RT-DETR 依赖
+transformers>=4.38.0
+safetensors>=0.4.0
+huggingface_hub>=0.19.0
+
+# API 服务
+flask>=2.0.0
+flask-cors>=4.0.0

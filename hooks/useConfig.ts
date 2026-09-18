@@ -83,9 +83,10 @@ const DEFAULT_CONFIG: AppConfig = {
   geminiModel: 'gemini-2.5-flash-image', 
   processingMode: 'api',
   // Default to localhost for Python backend development
-  // comic-detector RT-DETR service (see docs/API_RTDTR.md) listens on 5001
+  // Unified backend (server/, see docs/API_RTDTR.md) listens on 5001
   detectionApiUrl: 'http://localhost:5001/detect',
   ocrApiUrl: 'http://localhost:5000/ocr',
+  editorBackendUrl: 'http://localhost:5001',
   
   // Detection Tuning Defaults
   detectionInflationPercent: 10,

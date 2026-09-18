@@ -25,6 +25,7 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
     const [showDetectTuning, setShowDetectTuning] = useState(false);
     const showDetection = config.enableBubbleDetection;
     const showOCR = config.enableOCR;
+    const showEditor = config.enableManualEditor;
 
     return (
         <>
@@ -149,13 +150,27 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
             {showOCR && (
                 <div className="pt-2">
                     <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'ocrApiLabel')}</label>
-                    <input 
-                        type="text" 
+                    <input
+                        type="text"
                         value={config.ocrApiUrl}
                         onChange={(e) => onChange('ocrApiUrl', e.target.value)}
                         className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                         placeholder="http://localhost:5000/ocr"
                     />
+                </div>
+            )}
+
+            {showEditor && (
+                <div className="pt-2">
+                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'editorBackendLabel')}</label>
+                    <input
+                        type="text"
+                        value={config.editorBackendUrl}
+                        onChange={(e) => onChange('editorBackendUrl', e.target.value)}
+                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
+                        placeholder="http://localhost:5001"
+                    />
+                    <p className="text-[9px] text-skin-muted mt-1 italic">{t(lang, 'editorBackendTip')}</p>
                 </div>
             )}
         </>

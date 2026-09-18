@@ -78,7 +78,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         imageEl,
         region,
         erasedCacheRef.current,
-        configRef.current.enableVerticalTextDefault
+        configRef.current.enableVerticalTextDefault,
+        configRef.current.editorBackendUrl
       );
 
       updateImage(imageId, current => ({
@@ -321,7 +322,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       imageEl,
       noBrush,
       erasedCacheRef.current,
-      configRef.current.enableVerticalTextDefault
+      configRef.current.enableVerticalTextDefault,
+      configRef.current.editorBackendUrl
     );
   }, [getImage]);
 

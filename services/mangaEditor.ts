@@ -1,6 +1,6 @@
 import { Region } from '../types';
 import { loadImage, releaseObjectURL } from './imageUtils';
-import { eraseTextInCanvas } from './textErase';
+import { eraseTextInCanvasAuto } from './textErase';
 import { layoutText, drawTextLayout } from './textLayout';
 
 /**
@@ -43,12 +43,16 @@ export const regionNeedsComposite = (region: Region): boolean =>
  * Build the composited patch for a region. Returns an Object URL, or null
  * when the region has no editor content (caller should then restore the
  * region to its un-edited state).
+ *
+ * `editorBackendUrl` points at the unified Python backend; its /erase
+ * endpoint (OpenCV inpaint) is preferred over the local fallback eraser.
  */
 export const compositeRegionPatch = async (
   imageEl: HTMLImageElement,
   region: Region,
   erasedCache: Map<string, ErasedCacheEntry>,
-  preferVerticalDefault: boolean
+  preferVerticalDefault: boolean,
+  editorBackendUrl?: string
 ): Promise<string | null> => {
   if (!regionNeedsComposite(region)) return null;
 
@@ -77,7 +81,11 @@ export const compositeRegionPatch = async (
       const ectx = eraseCanvas.getContext('2d');
       if (!ectx) throw new Error('Could not get canvas context');
       ectx.drawImage(imageEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-      eraseTextInCanvas(eraseCanvas);
+      await eraseTextInCanvasAuto(
+        eraseCanvas,
+        editorBackendUrl,
+        region.detectedClass === 'text_free' ? 'free' : 'bubble'
+      );
       const url = await canvasToObjectURL(eraseCanvas);
       if (entry) releaseObjectURL(entry.url);
       entry = { geomKey: key, url };
