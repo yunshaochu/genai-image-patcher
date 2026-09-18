@@ -7,7 +7,8 @@ import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
  * Compositing pipeline for the in-place manga text editor.
  *
  * For each edited region the final patch is rebuilt from scratch:
- *   original crop  →  flood-fill erasure (optional)  →  typeset text  →  brush layer
+ *   original crop  →  flood-fill erasure (optional)  →  whiteout (optional)
+ *   →  typeset text  →  brush layer
  *
  * Everything is derived from data stored on the Region, so any layer can be
  * toggled (e.g. undo erasure while keeping the typeset text) and the patch
@@ -128,13 +129,15 @@ export const resolveEraseRect = (
   };
 };
 
-/** Effective text for a region: user edit wins, OCR text is the fallback. */
+/** Effective text for a region: user edit wins, OCR text is the fallback.
+ *  Frozen regions (translation held back) suppress the OCR fallback — they
+ *  must render the untouched original, not a typeset preview. */
 export const getRegionEditorText = (region: Region): string =>
-  region.editorText ?? region.ocrText ?? '';
+  region.editorText ?? (region.editorFrozenText?.trim() ? '' : region.ocrText ?? '');
 
 /** True when the region has anything for the compositor to render. */
 export const regionNeedsComposite = (region: Region): boolean =>
-  !!region.editorErased || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
+  !!region.editorErased || !!region.editorWhitedOut || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
 
 export interface CompositeResult {
   url: string;
@@ -256,6 +259,13 @@ export const compositeRegionPatch = async (
         mx + Math.max(0, -entry.dx), my + Math.max(0, -entry.dy), sw, sh
       );
     }
+  }
+
+  // 1.5 Brute-force whiteout (text_free quick fix: covers the whole crop —
+  // complex background included — so typeset text sits on a clean white box)
+  if (region.editorWhitedOut) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(mx, my, cropW, cropH);
   }
 
   // 2. Typeset text

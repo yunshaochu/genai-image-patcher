@@ -1070,6 +1070,22 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                     {t(language, 'editorErasedBadge')}
                   </div>
                 )}
+
+                {/* EDIT MODE: frozen-translation badge (translation kept in
+                    data but deliberately not typeset — left for AI redraw) */}
+                {isEditMode && region.status === 'pending' && region.editorFrozenText?.trim() && !isManipulating && (
+                  <div
+                    className="absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 bg-violet-100/90 text-violet-700 border-violet-200"
+                    style={{
+                      top: 2 * invZoom,
+                      left: 2 * invZoom,
+                      transform: `scale(${invZoom})`,
+                      transformOrigin: 'top left',
+                    }}
+                  >
+                    {t(language, 'editorFrozenBadge')}
+                  </div>
+                )}
               </div>
             );
           })}

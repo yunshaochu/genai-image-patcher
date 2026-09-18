@@ -189,6 +189,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       regions: img.regions.map(r => {
         if (r.id !== regionId) return r;
         const next: Region = { ...r, ...updates };
+        // Typing text into a frozen region is an implicit unfreeze — the
+        // held-back translation is superseded by the user's own text.
+        if (updates.editorText?.trim()) next.editorFrozenText = undefined;
         if (updates.editorStyle !== undefined) {
           next.editorStyle = { ...r.editorStyle, ...updates.editorStyle };
         }
@@ -309,10 +312,16 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   /**
    * Auto-translate one image: a single vision-AI call over all editable
-   * regions (annotated full image + numbered skeleton). The returned source
-   * text doubles as OCR (→ ocrText); the translation lands in editorText and
-   * the region is erased so the typeset composite shows cleanly. Regions the
-   * AI flags as skip (sfx / decorations / misdetections) are left untouched.
+   * regions (annotated full image + numbered skeleton). Every text-bearing
+   * region gets a translation; how it lands depends on the AI's freeze flag:
+   *  - Normal: source → ocrText, translation → editorText, region erased and
+   *    typeset (status completed).
+   *  - Frozen (sfx / stylized lettering / text_free on complex backgrounds):
+   *    translation → editorFrozenText only; the original artwork stays
+   *    untouched and the region keeps pending status so the AI redraw
+   *    pipeline can still pick it up. Manual unfreeze / the whiten quick-fix
+   *    promote the frozen text into a real typeset patch later.
+   * Regions the AI reports as empty (misdetections) are skipped.
    */
   const translateImageRegions = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
@@ -327,28 +336,47 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
       // Compute post-update region objects up-front (updaters must stay pure,
       // and recomposite needs them explicitly — the store commit lags behind
-      // updateImage). editorStyle is left untouched: undefined fontSize /
-      // isVertical mean the layout engine auto-fits size and direction for
-      // the new text.
+      // updateImage). editorStyle is left untouched apart from direction:
+      // undefined fontSize means the layout engine auto-fits the new text.
       const translated: Region[] = [];
+      const frozen: Region[] = [];
       for (const r of targets) {
         const res = results.get(r.id);
-        if (!res || res.skip || !res.zh?.trim()) continue;
-        translated.push({
-          ...r,
-          ocrText: res.source ?? r.ocrText,
-          editorText: res.zh,
-          editorErased: true,
-          // AI judges the original's direction; when it doesn't say, keep the
-          // existing style (undefined = layout auto-heuristic).
-          editorStyle: res.vertical === undefined
-            ? r.editorStyle
-            : { ...r.editorStyle, isVertical: res.vertical },
-        });
+        if (!res || !res.zh?.trim()) continue; // empty box / misdetection
+        // AI judges the original's direction; when it doesn't say, keep the
+        // existing style (undefined = layout auto-heuristic).
+        const style = res.vertical === undefined
+          ? r.editorStyle
+          : { ...r.editorStyle, isVertical: res.vertical };
+        if (res.freeze) {
+          frozen.push({
+            ...r,
+            ocrText: res.source ?? r.ocrText,
+            editorFrozenText: res.zh,
+            // Freeze = pull the translation OUT of the image: drop any
+            // previously typeset text / erasure / whiteout so the original
+            // artwork is restored untouched.
+            editorText: undefined,
+            editorErased: false,
+            editorWhitedOut: false,
+            editorStyle: style,
+          });
+        } else {
+          translated.push({
+            ...r,
+            ocrText: res.source ?? r.ocrText,
+            editorText: res.zh,
+            editorFrozenText: undefined,
+            editorErased: true,
+            editorStyle: style,
+          });
+        }
       }
-      if (translated.length === 0) throw new Error('AI 没有翻译任何区域（可能全部被判定为拟声词/误检）');
+      if (translated.length === 0 && frozen.length === 0) {
+        throw new Error('AI 没有识别到任何文字（可能全部为空框/误检）');
+      }
 
-      const byId = new Map(translated.map(t => [t.id, t]));
+      const byId = new Map([...translated, ...frozen].map(t => [t.id, t]));
       updateImage(imageId, current => ({
         ...current,
         regions: current.regions.map(r => byId.get(r.id) ?? r),
@@ -357,6 +385,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       for (const nr of translated) {
         await recompositeRegion(imageId, nr.id, nr);
       }
+      // Frozen regions only need a recomposite when a previous patch must be
+      // torn down (re-translating a region that was typeset before).
+      for (const nr of frozen) {
+        if (nr.editorComposited) await recompositeRegion(imageId, nr.id, nr);
+      }
     } catch (e: any) {
       console.error('Auto translate failed', e);
       setErrorMsg(e?.message || '翻译失败');
@@ -364,6 +397,92 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       setBusy(false);
     }
   }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets]);
+
+  /**
+   * Manual unfreeze (fix an AI false positive): move the frozen translation
+   * into editorText, erase the original and typeset — the regular path.
+   */
+  const unfreezeTranslation = useCallback(async (imageId: string, regionId: string) => {
+    const img = getImage(imageId);
+    const region = img?.regions.find(r => r.id === regionId);
+    if (!img || !region || busy) return;
+    if (isAiOwned(region) || !region.editorFrozenText?.trim()) return;
+    const next: Region = {
+      ...region,
+      editorText: region.editorFrozenText,
+      editorFrozenText: undefined,
+      editorErased: true,
+    };
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => r.id === regionId ? next : r),
+    }));
+    await recompositeRegion(imageId, regionId, next);
+  }, [busy, getImage, recompositeRegion, updateImage]);
+
+  /**
+   * Manual freeze (the reverse of unfreeze): pull the typeset translation
+   * OUT of the image — the original artwork is restored, the translation is
+   * held in editorFrozenText and the region goes back to pending so the AI
+   * redraw pipeline can pick it up.
+   */
+  const freezeTranslation = useCallback(async (imageId: string, regionId: string) => {
+    const img = getImage(imageId);
+    const region = img?.regions.find(r => r.id === regionId);
+    if (!img || !region || busy) return;
+    if (isAiOwned(region) || !region.editorText?.trim()) return;
+    const next: Region = {
+      ...region,
+      editorFrozenText: region.editorText,
+      editorText: undefined,
+      editorErased: false,
+      editorWhitedOut: false,
+    };
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => r.id === regionId ? next : r),
+    }));
+    // Recomposite with nothing left to render → tears the patch down.
+    await recompositeRegion(imageId, regionId, next);
+  }, [busy, getImage, recompositeRegion, updateImage]);
+
+  /**
+   * No-redraw-model fallback for frozen text_free: brute-force whiten the
+   * whole box (editorWhitedOut — flood-fill erasure can't handle complex
+   * backgrounds) and fill in the frozen translation, all in one click.
+   */
+  const whitenFrozenTextFree = useCallback(async (imageId: string) => {
+    const img = getImage(imageId);
+    if (!img || busy) return;
+    const targets = img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) &&
+      r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
+    );
+    if (targets.length === 0) return;
+
+    setBusy(true);
+    try {
+      const nextList = targets.map(r => ({
+        ...r,
+        editorText: r.editorFrozenText,
+        editorFrozenText: undefined,
+        editorWhitedOut: true,
+        // Whitening already covers everything; erasure would only waste the
+        // expensive flood fill under an opaque white box.
+        editorErased: false,
+      }));
+      const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
+      updateImage(imageId, current => ({
+        ...current,
+        regions: current.regions.map(r => byId.get(r.id) ?? r),
+      }));
+      for (const nr of nextList) {
+        await recompositeRegion(imageId, nr.id, nr);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, getImage, recompositeRegion, updateImage]);
 
   /**
    * Batch variant: translate every loaded image that has editable regions,
@@ -481,6 +600,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     ocrAllRegions,
     translateImageRegions,
     translateAllImages,
+    unfreezeTranslation,
+    freezeTranslation,
+    whitenFrozenTextFree,
     resyncEditedRegions,
     buildBrushBase,
   };

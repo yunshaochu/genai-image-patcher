@@ -40,6 +40,9 @@ interface EditorDockProps {
   onOcrAll: () => void;
   onTranslate: () => void;
   onTranslateAll: () => void;
+  onUnfreeze: (regionId: string) => void;
+  onFreeze: (regionId: string) => void;
+  onWhitenFrozenTextFree: () => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -272,6 +275,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
   onErase, onRestoreErase, onOcrAll, onTranslate, onTranslateAll,
+  onUnfreeze, onFreeze, onWhitenFrozenTextFree,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -311,6 +315,10 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const scope = config.editorTranslationScope ?? 'all';
     const translateTargetCount = image.regions.filter(r =>
       !r.contextOnly && (scope === 'bubble' ? r.detectedClass === 'text_bubble' : true)
+    ).length;
+    // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
+    const frozenFreeCount = image.regions.filter(r =>
+      !r.contextOnly && r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
     ).length;
 
     return (
@@ -415,6 +423,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   {t(lang, 'editorTranslateAllImages')}
                 </button>
               </div>
+              <button
+                onClick={onWhitenFrozenTextFree}
+                disabled={busy || frozenFreeCount === 0}
+                className="w-full px-2 py-1.5 text-[10px] font-bold border border-violet-300 text-violet-600 bg-violet-500/10 rounded hover:bg-violet-500/20 disabled:opacity-50 transition-colors"
+                title={t(lang, 'editorWhitenFreeTip')}
+              >
+                {t(lang, 'editorWhitenFree')}{frozenFreeCount > 0 ? ` (${frozenFreeCount})` : ''}
+              </button>
             </div>
           )}
 
@@ -465,6 +481,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
         {region.editorErased && (
           <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">
             {t(lang, 'editorErasedBadge')}
+          </span>
+        )}
+        {region.editorFrozenText?.trim() && (
+          <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-violet-100 text-violet-700">
+            {t(lang, 'editorFrozenBadge')}
           </span>
         )}
         <div className="ml-auto flex items-center gap-0.5">
@@ -609,6 +630,38 @@ const EditorDock: React.FC<EditorDockProps> = ({
             </button>
           ) : <span />}
         </div>
+
+        {/* Freeze-state slot: frozen → held-back translation + unfreeze;
+            otherwise → manual freeze (pull typeset text out of the image,
+            keep it as frozen data for AI redraw). */}
+        {region.editorFrozenText?.trim() ? (
+          <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/30 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <svg className="w-3 h-3 text-violet-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 2v20M4 6l16 12M20 6L4 18M8 4l4 3 4-3M8 20l4-3 4 3" /></svg>
+              <span className="text-[10px] font-bold text-violet-600">{t(lang, 'editorFrozenBadge')}</span>
+              <button
+                onClick={() => onUnfreeze(region.id)}
+                disabled={busy || aiLocked}
+                className="ml-auto px-2 py-0.5 text-[10px] font-bold rounded border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 transition-colors"
+                title={t(lang, 'editorUnfreezeTip')}
+              >
+                {t(lang, 'editorUnfreeze')}
+              </button>
+            </div>
+            <p className="text-[10px] text-skin-text whitespace-pre-wrap leading-relaxed">{region.editorFrozenText}</p>
+            <p className="text-[9px] text-skin-muted leading-tight">{t(lang, 'editorFrozenTip')}</p>
+          </div>
+        ) : (
+          <button
+            onClick={() => onFreeze(region.id)}
+            disabled={busy || aiLocked || !region.editorText?.trim()}
+            className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
+            title={t(lang, 'editorFreezeTip')}
+          >
+            <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 2v20M4 6l16 12M20 6L4 18M8 4l4 3 4-3M8 20l4-3 4 3" /></svg>
+            {t(lang, 'editorFreeze')}
+          </button>
+        )}
 
         {busy && (
           <div className="flex items-center justify-center gap-2 text-[10px] text-skin-primary">

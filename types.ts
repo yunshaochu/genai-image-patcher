@@ -60,6 +60,16 @@ export interface Region {
   editorStyle?: EditorTextStyle; // Typeset style overrides
   editorBrushUrl?: string;    // Transparent brush-stroke layer Object URL (region-crop sized)
   editorComposited?: boolean; // processedImageUrl was produced by the editor compositor
+  /** AI translation held back from the image (翻译冻结): the editor keeps the
+   *  translated text here without typesetting it — used for sfx / stylized
+   *  lettering / text_free on complex backgrounds that are left for AI redraw.
+   *  Field present (non-empty) = region is frozen; unfreezing moves it into
+   *  editorText and typesets it. */
+  editorFrozenText?: string;
+  /** Brute-force whiteout: the compositor fills the whole crop white (after
+   *  erasure, before text) — the no-redraw-model fallback for frozen
+   *  text_free on complex backgrounds. */
+  editorWhitedOut?: boolean;
   /** Editor patch overflow margin beyond the anchor box, as % of the full image
    *  width/height (patch extends this far past the crop on each side so
    *  overflowing text stays visible). 0/undefined = crop-sized patch. */

@@ -67,6 +67,9 @@ export default function App() {
       ocrAllRegions,
       translateImageRegions,
       translateAllImages,
+      unfreezeTranslation,
+      freezeTranslation,
+      whitenFrozenTextFree,
       resyncEditedRegions,
       buildBrushBase,
   } = useMangaEditor({ images, updateImage, config, setErrorMsg });
@@ -642,6 +645,9 @@ export default function App() {
                     onOcrAll={() => ocrAllRegions(selectedImage.id)}
                     onTranslate={() => translateImageRegions(selectedImage.id)}
                     onTranslateAll={() => translateAllImages()}
+                    onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
+                    onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
+                    onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
                   />
               )}
             </>
