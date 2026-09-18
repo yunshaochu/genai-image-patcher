@@ -225,8 +225,12 @@ export const padImageToSquare = async (
  * no downscale back to the original pixel size.
  *
  * `cropInset` trims that many extra pixels off every side of the centered box,
- * to shave off residual Gaussian-blur bleed left by the AI result. 0 keeps the
- * exact original-ratio box (previous behavior).
+ * to shave off residual Gaussian-blur bleed left by the AI result. The output
+ * canvas KEEPS the full original-ratio box: the inset crop is drawn centered
+ * at its natural pixel size and the trimmed margin stays transparent, so
+ * downstream compositing fills the margin with the original image — the
+ * smaller crop is never stretched back to fill the box (which also distorted
+ * the aspect ratio). 0 keeps the exact previous behavior (fully opaque box).
  */
 export const depadImageByRatio = async (
     squareUrl: string,
@@ -255,15 +259,15 @@ export const depadImageByRatio = async (
         cropH = Math.round(iw / ratio);
     }
 
-    // Extra inset on every side to remove residual blur bleed from the AI result
+    // Inset box: trimmed on every side, still centered. The output canvas
+    // keeps the FULL original-ratio box (cropW×cropH); the inset crop is
+    // drawn centered at its natural size, leaving the margin transparent.
     const inset = Math.max(0, Math.round(cropInset));
-    if (inset > 0) {
-        cropW = Math.max(1, cropW - inset * 2);
-        cropH = Math.max(1, cropH - inset * 2);
-    }
+    const innerW = Math.max(1, cropW - inset * 2);
+    const innerH = Math.max(1, cropH - inset * 2);
 
-    const left = Math.floor((iw - cropW) / 2);
-    const top = Math.floor((ih - cropH) / 2);
+    const left = Math.floor((iw - innerW) / 2);
+    const top = Math.floor((ih - innerH) / 2);
 
     const outCanvas = document.createElement('canvas');
     outCanvas.width = cropW;
@@ -271,7 +275,9 @@ export const depadImageByRatio = async (
     const outCtx = outCanvas.getContext('2d');
     if (!outCtx) throw new Error("Could not get canvas context for depadding");
 
-    outCtx.drawImage(img, left, top, cropW, cropH, 0, 0, cropW, cropH);
+    const dx = Math.floor((cropW - innerW) / 2);
+    const dy = Math.floor((cropH - innerH) / 2);
+    outCtx.drawImage(img, left, top, innerW, innerH, dx, dy, innerW, innerH);
 
     const result = await canvasToObjectURL(outCanvas);
     releaseCanvas(outCanvas);
@@ -715,6 +721,11 @@ export const stitchImageInverted = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
 
+  // Base layer: the original image, so a transparent crop-inset margin in
+  // the AI layer falls back to the original pixels instead of becoming a
+  // hole. With a fully opaque AI layer this is visually identical to
+  // drawing the AI layer alone.
+  ctx.drawImage(originalImg, 0, 0, canvas.width, canvas.height);
   ctx.drawImage(aiImg, 0, 0, canvas.width, canvas.height);
 
   for (const region of regions) {
