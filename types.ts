@@ -160,9 +160,8 @@ export interface AppConfig {
   geminiModel: string;
 
   // Backend Detection Settings (Python)
-  detectionApiUrl: string; // e.g. http://localhost:5001/detect
-  ocrApiUrl: string; // e.g. http://localhost:5001/ocr
-  editorBackendUrl: string; // Unified Python backend base URL, e.g. http://localhost:5001 (hosts /erase)
+  pythonBackendUrl: string; // Unified Python backend base URL, e.g. http://localhost:5001 (hosts /detect, /erase, /health)
+  ocrApiUrl: string; // e.g. http://localhost:5000/ocr
   
   // Detection Tuning
   detectionInflationPercent: number; // e.g. 10 for 10% expansion

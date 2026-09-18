@@ -129,17 +129,6 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
                     )}
 
                     <p className="text-[10px] text-skin-muted text-center mt-1 mb-2">{t(lang, 'detectTip')}</p>
-                    
-                    <div className="pt-2 border-t border-skin-border/50">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'detectApiLabel')}</label>
-                        <input 
-                            type="text" 
-                            value={config.detectionApiUrl}
-                            onChange={(e) => onChange('detectionApiUrl', e.target.value)}
-                            className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                            placeholder="http://localhost:5001/detect"
-                        />
-                    </div>
                 </>
             ) : (
                 <div className="text-xs text-skin-muted italic text-center py-2">
@@ -160,17 +149,17 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
                 </div>
             )}
 
-            {showEditor && (
-                <div className="pt-2">
-                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'editorBackendLabel')}</label>
+            {(showDetection || showEditor) && (
+                <div className="pt-2 border-t border-skin-border/50">
+                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'pythonBackendLabel')}</label>
                     <input
                         type="text"
-                        value={config.editorBackendUrl}
-                        onChange={(e) => onChange('editorBackendUrl', e.target.value)}
+                        value={config.pythonBackendUrl}
+                        onChange={(e) => onChange('pythonBackendUrl', e.target.value)}
                         className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                         placeholder="http://localhost:5001"
                     />
-                    <p className="text-[9px] text-skin-muted mt-1 italic">{t(lang, 'editorBackendTip')}</p>
+                    <p className="text-[9px] text-skin-muted mt-1 italic">{t(lang, 'pythonBackendTip')}</p>
                 </div>
             )}
         </>

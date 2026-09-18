@@ -112,10 +112,11 @@ export const detectBubbles = async (
   imageBase64: string,
   config: AppConfig
 ): Promise<Region[]> => {
-  const apiUrl = config.detectionApiUrl;
+  const baseUrl = config.pythonBackendUrl?.replace(/\/+$/, '');
+  const apiUrl = baseUrl ? `${baseUrl}/detect` : '';
 
   if (!apiUrl) {
-     throw new Error("Detection API URL is not configured.");
+     throw new Error("Python backend URL is not configured.");
   }
 
   try {

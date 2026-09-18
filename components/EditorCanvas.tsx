@@ -483,14 +483,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   }, [getRelativeCoords]);
 
   // --- Region actions ---
-  const toggleContextOnly = (regionId: string) => {
-    if (disabled) return;
-    const newRegions = image.regions.map(r =>
-      r.id === regionId ? { ...r, contextOnly: !r.contextOnly } : r
-    );
-    onUpdateRegions(image.id, newRegions);
-  };
-
   const removeRegion = (regionId: string) => {
     if (disabled) return;
     onUpdateRegions(
@@ -784,6 +776,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
           {/* Regions */}
           {image.regions.map((region) => {
+            // contextOnly markers (bubble outlines) are kept in state as
+            // visual/AI context but never drawn — the dashed box is visual
+            // noise, especially on the completed view.
+            if (region.contextOnly) return null;
             const isSelected = selectedRegionId === region.id && isOriginalMode;
             const isEditable = isOriginalMode && !disabled && region.status !== 'processing';
 
@@ -823,12 +819,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                         styleClasses = 'border-2 border-skin-primary hover:border-skin-primary bg-skin-primary/5 z-10 cursor-pointer';
                     }
                 }
-            }
-
-            if (region.contextOnly) {
-                styleClasses = isSelected
-                  ? 'border-2 border-dashed border-amber-400 bg-amber-400/10 shadow-[0_0_0_1px_rgba(251,191,36,0.5)] z-20 cursor-move'
-                  : 'border-2 border-dashed border-gray-400 bg-gray-400/5 z-10 cursor-pointer hover:border-amber-400/50';
             }
 
             // Compute the region's screen position to decide if action buttons
@@ -1016,18 +1006,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                              title="Reset / Redo"
                           >
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                          </button>
-                      )}
-                      {!disabled && region.status !== 'processing' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleContextOnly(region.id);
-                            }}
-                             className={`w-6 h-6 border rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all ${region.contextOnly ? 'bg-amber-100 text-amber-600 border-amber-400' : 'bg-skin-surface text-skin-muted border-skin-border'}`}
-                            title={region.contextOnly ? 'Context Only (click to enable translation)' : 'Mark as Context Only'}
-                          >
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                           </button>
                       )}
                       {!disabled && region.status !== 'processing' && (

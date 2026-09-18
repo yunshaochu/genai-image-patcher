@@ -84,9 +84,8 @@ const DEFAULT_CONFIG: AppConfig = {
   processingMode: 'api',
   // Default to localhost for Python backend development
   // Unified backend (server/, see docs/API_RTDTR.md) listens on 5001
-  detectionApiUrl: 'http://localhost:5001/detect',
+  pythonBackendUrl: 'http://localhost:5001',
   ocrApiUrl: 'http://localhost:5000/ocr',
-  editorBackendUrl: 'http://localhost:5001',
   
   // Detection Tuning Defaults
   detectionInflationPercent: 10,
@@ -205,11 +204,20 @@ export function useConfig() {
             migratedConfig.translationPromptWithContext = '';
         }
 
-        // Migrate old default detection URL to the new comic-detector service
-        // (RT-DETR on port 5001). Custom URLs are preserved as-is.
-        if (migratedConfig.detectionApiUrl === 'http://localhost:5000/detect') {
-            migratedConfig.detectionApiUrl = 'http://localhost:5001/detect';
+        // detectionApiUrl + editorBackendUrl were merged into the single
+        // pythonBackendUrl (unified backend base URL). Derive it from the old
+        // keys; the old 5000 default maps to the new 5001 default.
+        if (typeof parsed.pythonBackendUrl === 'undefined') {
+            const oldEditor = parsed.editorBackendUrl as string | undefined;
+            const oldDetect = parsed.detectionApiUrl as string | undefined;
+            if (oldEditor) {
+                migratedConfig.pythonBackendUrl = oldEditor;
+            } else if (oldDetect && oldDetect !== 'http://localhost:5000/detect') {
+                migratedConfig.pythonBackendUrl = oldDetect.replace(/\/detect\/?$/, '');
+            }
         }
+        delete (migratedConfig as any).detectionApiUrl;
+        delete (migratedConfig as any).editorBackendUrl;
 
         // Ensure performanceMode exists
         if (typeof migratedConfig.performanceMode === 'undefined') {

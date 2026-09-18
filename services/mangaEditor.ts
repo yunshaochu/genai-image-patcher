@@ -59,7 +59,7 @@ export interface CompositeResult {
  * overflow and adjust the font size. `allowMargin=false` forces a crop-sized
  * patch (used for the brush-painter base, whose canvas must stay crop-sized).
  *
- * `editorBackendUrl` points at the unified Python backend; its /erase
+ * `pythonBackendUrl` points at the unified Python backend; its /erase
  * endpoint (OpenCV inpaint) is preferred over the local fallback eraser.
  */
 export const compositeRegionPatch = async (
@@ -67,7 +67,7 @@ export const compositeRegionPatch = async (
   region: Region,
   erasedCache: Map<string, ErasedCacheEntry>,
   preferVerticalDefault: boolean,
-  editorBackendUrl?: string,
+  pythonBackendUrl?: string,
   allowMargin = true
 ): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
@@ -120,7 +120,7 @@ export const compositeRegionPatch = async (
       ectx.drawImage(imageEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
       await eraseTextInCanvasAuto(
         eraseCanvas,
-        editorBackendUrl,
+        pythonBackendUrl,
         region.detectedClass === 'text_free' ? 'free' : 'bubble'
       );
       const url = await canvasToObjectURL(eraseCanvas);

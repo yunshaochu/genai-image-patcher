@@ -82,7 +82,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         region,
         erasedCacheRef.current,
         configRef.current.enableVerticalTextDefault,
-        configRef.current.editorBackendUrl
+        configRef.current.pythonBackendUrl
       );
       const url = result?.url ?? null;
 
@@ -415,7 +415,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       noBrush,
       erasedCacheRef.current,
       configRef.current.enableVerticalTextDefault,
-      configRef.current.editorBackendUrl,
+      configRef.current.pythonBackendUrl,
       false
     );
     return result?.url ?? null;
