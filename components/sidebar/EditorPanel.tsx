@@ -493,16 +493,16 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
                         <button
                           onClick={() => stepFontSize(region, 5)}
                           title="+5"
-                          className="flex-1 px-1 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all"
+                          className="flex-1 px-1.5 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all"
                         >
-                          <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 15l7-7 7 7" /></svg>
+                          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 6.5 L20.5 19 H3.5 Z" /></svg>
                         </button>
                         <button
                           onClick={() => stepFontSize(region, -5)}
                           title="-5"
-                          className="flex-1 px-1 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all border-t border-skin-border"
+                          className="flex-1 px-1.5 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all border-t border-skin-border"
                         >
-                          <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7 7" /></svg>
+                          <svg className="w-2.5 h-2.5" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"><path d="M12 17.5 L3.5 5 H20.5 Z" /></svg>
                         </button>
                       </div>
                     </div>
