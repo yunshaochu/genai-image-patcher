@@ -1,6 +1,6 @@
 import { Region } from '../types';
 import { loadImage, releaseObjectURL } from './imageUtils';
-import { eraseTextInCanvasAuto } from './textErase';
+import { eraseTextInCanvasAuto, EraseKind } from './textErase';
 import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
 
 /**
@@ -26,10 +26,107 @@ const canvasToObjectURL = (canvas: HTMLCanvasElement): Promise<string> =>
 export interface ErasedCacheEntry {
   geomKey: string;
   url: string;
+  /** Offset of the region crop inside the cached ROI image (px). */
+  dx: number;
+  dy: number;
+  /** Cached ROI size (px). */
+  w: number;
+  h: number;
 }
 
 const regionGeomKey = (region: Region): string =>
   `${region.x.toFixed(3)},${region.y.toFixed(3)},${region.width.toFixed(3)},${region.height.toFixed(3)}`;
+
+/**
+ * Margin (px) added around the erase box. `whiten_regions.py` uses
+ * `--expand 4` on the bubble box; 8 gives anti-aliased outlines a bit more
+ * room without dragging in unrelated art.
+ */
+const ERASE_EXPAND_PX = 8;
+
+/** Backend eraser tuning, matching whiten_regions.py's recommended values. */
+const ERASE_DILATE = 5;
+const ERASE_INPAINT_RADIUS = 7;
+
+/** A bubble box is only used when it isn't wildly bigger than the text box
+ *  (guards against a mis-detected page-spanning "bubble"). */
+const MAX_BUBBLE_AREA_RATIO = 16;
+
+const regionToPx = (r: Region, imgW: number, imgH: number) => ({
+  x1: (r.x / 100) * imgW,
+  y1: (r.y / 100) * imgH,
+  x2: ((r.x + r.width) / 100) * imgW,
+  y2: ((r.y + r.height) / 100) * imgH,
+});
+
+export interface PxRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * Erase ROI in image pixels = union(region box, parent bubble box) grown by
+ * ERASE_EXPAND_PX and clamped to the image.
+ *
+ * Why this matters: the eraser's `_edge_reachable` starts its flood fill FROM
+ * THE ROI BORDER, so the border decides what counts as "outside". With a crop
+ * that ends exactly on the text box, the border lands on bubble outline or on
+ * the text itself — outline and text become indistinguishable and either the
+ * outline gets eaten or edge text survives. Giving the crop the whole bubble
+ * plus a margin of outside background reproduces the geometry
+ * whiten_regions.py works with (bubble box + `--expand`).
+ *
+ * `contextBubbles` are the detected `bubble`-class boxes of the same image
+ * (stored as context-only regions). Matching = the bubble whose box contains
+ * the region centre and whose own centre is closest (same idea as
+ * `match_bubbles`), so manually drawn boxes benefit too.
+ */
+export const resolveEraseRect = (
+  region: Region,
+  contextBubbles: Region[] | undefined,
+  imgW: number,
+  imgH: number
+): PxRect => {
+  const self = regionToPx(region, imgW, imgH);
+  const selfArea = Math.max(1, (self.x2 - self.x1) * (self.y2 - self.y1));
+  let { x1, y1, x2, y2 } = self;
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
+
+  let best: ReturnType<typeof regionToPx> | null = null;
+  let bestDist = Infinity;
+  for (const b of contextBubbles ?? []) {
+    if (b.id === region.id || b.detectedClass !== 'bubble') continue;
+    const bb = regionToPx(b, imgW, imgH);
+    // Region centre must be inside the bubble box.
+    if (cx < bb.x1 || cx > bb.x2 || cy < bb.y1 || cy > bb.y2) continue;
+    if ((bb.x2 - bb.x1) * (bb.y2 - bb.y1) > selfArea * MAX_BUBBLE_AREA_RATIO) continue;
+    const d = ((bb.x1 + bb.x2) / 2 - cx) ** 2 + ((bb.y1 + bb.y2) / 2 - cy) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = bb;
+    }
+  }
+  if (best) {
+    x1 = Math.min(x1, best.x1);
+    y1 = Math.min(y1, best.y1);
+    x2 = Math.max(x2, best.x2);
+    y2 = Math.max(y2, best.y2);
+  }
+
+  x1 = Math.max(0, Math.floor(x1 - ERASE_EXPAND_PX));
+  y1 = Math.max(0, Math.floor(y1 - ERASE_EXPAND_PX));
+  x2 = Math.min(imgW, Math.ceil(x2 + ERASE_EXPAND_PX));
+  y2 = Math.min(imgH, Math.ceil(y2 + ERASE_EXPAND_PX));
+  return {
+    x: x1,
+    y: y1,
+    w: Math.max(1, Math.round(x2 - x1)),
+    h: Math.max(1, Math.round(y2 - y1)),
+  };
+};
 
 /** Effective text for a region: user edit wins, OCR text is the fallback. */
 export const getRegionEditorText = (region: Region): string =>
@@ -61,6 +158,9 @@ export interface CompositeResult {
  *
  * `pythonBackendUrl` points at the unified Python backend; its /erase
  * endpoint (OpenCV inpaint) is preferred over the local fallback eraser.
+ *
+ * `contextBubbles` are the image's detected `bubble` boxes; they enlarge the
+ * erasure ROI (see `resolveEraseRect`).
  */
 export const compositeRegionPatch = async (
   imageEl: HTMLImageElement,
@@ -68,6 +168,7 @@ export const compositeRegionPatch = async (
   erasedCache: Map<string, ErasedCacheEntry>,
   preferVerticalDefault: boolean,
   pythonBackendUrl?: string,
+  contextBubbles?: Region[],
   allowMargin = true
 ): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
@@ -109,27 +210,52 @@ export const compositeRegionPatch = async (
 
   // 1. Erasure (cached per region+geometry — the expensive step)
   if (region.editorErased) {
-    const key = regionGeomKey(region);
+    const kind: EraseKind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
+    // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
+    // text box — see resolveEraseRect.
+    const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
+    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}`;
     let entry = erasedCache.get(region.id);
     if (!entry || entry.geomKey !== key) {
       const eraseCanvas = document.createElement('canvas');
-      eraseCanvas.width = cropW;
-      eraseCanvas.height = cropH;
+      eraseCanvas.width = roi.w;
+      eraseCanvas.height = roi.h;
       const ectx = eraseCanvas.getContext('2d');
       if (!ectx) throw new Error('Could not get canvas context');
-      ectx.drawImage(imageEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-      await eraseTextInCanvasAuto(
-        eraseCanvas,
-        pythonBackendUrl,
-        region.detectedClass === 'text_free' ? 'free' : 'bubble'
-      );
+      ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
+      await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
+        kind,
+        dilate: ERASE_DILATE,
+        inpaintRadius: ERASE_INPAINT_RADIUS,
+      });
       const url = await canvasToObjectURL(eraseCanvas);
       if (entry) releaseObjectURL(entry.url);
-      entry = { geomKey: key, url };
+      entry = {
+        geomKey: key,
+        url,
+        dx: Math.round(cropX - roi.x),
+        dy: Math.round(cropY - roi.y),
+        w: roi.w,
+        h: roi.h,
+      };
       erasedCache.set(region.id, entry);
     }
     const erasedImg = await loadImage(entry.url);
-    ctx.drawImage(erasedImg, mx, my, cropW, cropH);
+    // Paste-back isolation: only the region's own bbox is taken from the
+    // erased ROI (same guard as whiten_regions.py's final `final[y1:y2,x1:x2]
+    // = erased[...]`). Whatever the eraser did outside the box is discarded,
+    // so a leaky flood fill can never damage the outline or a neighbour.
+    const sx = Math.max(0, entry.dx);
+    const sy = Math.max(0, entry.dy);
+    const sw = Math.min(cropW, entry.w - sx);
+    const sh = Math.min(cropH, entry.h - sy);
+    if (sw > 0 && sh > 0) {
+      ctx.drawImage(
+        erasedImg,
+        sx, sy, sw, sh,
+        mx + Math.max(0, -entry.dx), my + Math.max(0, -entry.dy), sw, sh
+      );
+    }
   }
 
   // 2. Typeset text

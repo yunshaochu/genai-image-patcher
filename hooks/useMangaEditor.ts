@@ -21,6 +21,14 @@ export type RestoreScope = 'all' | 'textFree' | 'selected';
  */
 const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.editorComposited;
 
+/**
+ * Detected `bubble` boxes of an image (kept as context-only regions). They are
+ * handed to the compositor so erasure runs on the whole bubble instead of the
+ * bare text box.
+ */
+const getContextBubbles = (img: UploadedImage): Region[] =>
+  img.regions.filter(r => r.detectedClass === 'bubble');
+
 interface UseMangaEditorParams {
   images: UploadedImage[];
   updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void;
@@ -97,7 +105,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         region,
         erasedCacheRef.current,
         configRef.current.enableVerticalTextDefault,
-        configRef.current.pythonBackendUrl
+        configRef.current.pythonBackendUrl,
+        getContextBubbles(img)
       );
       const url = result?.url ?? null;
 
@@ -456,6 +465,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       erasedCacheRef.current,
       configRef.current.enableVerticalTextDefault,
       configRef.current.pythonBackendUrl,
+      getContextBubbles(img),
       false
     );
     return result?.url ?? null;

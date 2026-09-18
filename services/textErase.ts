@@ -40,9 +40,17 @@
 interface EraseOptions {
   /** Base tolerance (ladder start) for background flood fill. */
   tolerance?: number;
+  /** Region kind: decides the seed strategy of the local fallback below. */
+  kind?: EraseKind;
+  /** Text-mask dilation radius sent to the backend (whiten_regions.py: 5). */
+  dilate?: number;
+  /** Inpaint radius sent to the backend (whiten_regions.py: 7). */
+  inpaintRadius?: number;
 }
 
 const DEFAULT_TOLERANCE = 40;
+const DEFAULT_DILATE = 5;
+const DEFAULT_INPAINT_RADIUS = 7;
 
 /** Region kind for the backend eraser: bubble interior vs free-standing text. */
 export type EraseKind = 'bubble' | 'free';
@@ -58,6 +66,7 @@ export const eraseTextInCanvasViaBackend = async (
   canvas: HTMLCanvasElement,
   backendBaseUrl: string,
   kind: EraseKind,
+  options: EraseOptions = {},
   timeoutMs = 20000
 ): Promise<boolean> => {
   const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/png'));
@@ -66,6 +75,8 @@ export const eraseTextInCanvasViaBackend = async (
   const form = new FormData();
   form.append('image', blob, 'crop.png');
   form.append('kind', kind);
+  form.append('dilate', String(options.dilate ?? DEFAULT_DILATE));
+  form.append('inpaint_radius', String(options.inpaintRadius ?? DEFAULT_INPAINT_RADIUS));
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -107,11 +118,11 @@ export const eraseTextInCanvasAuto = async (
   options: EraseOptions = {}
 ): Promise<void> => {
   if (backendBaseUrl) {
-    const ok = await eraseTextInCanvasViaBackend(canvas, backendBaseUrl, kind);
+    const ok = await eraseTextInCanvasViaBackend(canvas, backendBaseUrl, kind, options);
     if (ok) return;
     console.warn('Backend erasure unavailable, falling back to local algorithm');
   }
-  eraseTextInCanvas(canvas, options);
+  eraseTextInCanvas(canvas, { ...options, kind });
 };
 
 export const eraseTextInCanvas = (
@@ -119,6 +130,7 @@ export const eraseTextInCanvas = (
   options: EraseOptions = {}
 ): void => {
   const baseTol = options.tolerance ?? DEFAULT_TOLERANCE;
+  const kind = options.kind ?? 'bubble';
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
@@ -196,10 +208,19 @@ export const eraseTextInCanvas = (
 
   // ---------------------------------------------------------------------
   // Multi-seed FIXED_RANGE flood fill: 1 = background.
-  // Border seeds handle text_free (art backgrounds); flat center seeds make
-  // sure the bubble interior is covered even when an outline seals the crop.
+  //
+  // Seed policy follows the Python original per kind:
+  //   free   → border seeds (Python seeds the 4 edge midpoints): text sits on
+  //            an art background that reaches the crop border.
+  //   bubble → flat centre seeds only: the ROI now contains the bubble outline
+  //            and outside background, so seeding the border would mark the
+  //            outside as background and turn the whole bubble interior (and
+  //            possibly the outline) into a "text hole".
   // ---------------------------------------------------------------------
-  const floodBackground = (tolerance: number): { bg: Uint8Array; count: number } => {
+  const floodBackground = (
+    tolerance: number,
+    seedBorder: boolean
+  ): { bg: Uint8Array; count: number } => {
     const bg = new Uint8Array(n);
     const seedColor = new Int32Array(n);
     const queue: number[] = [];
@@ -210,13 +231,15 @@ export const eraseTextInCanvas = (
       queue.push(idx);
     };
 
-    for (let x = 0; x < w; x++) {
-      pushSeed(x);
-      pushSeed((h - 1) * w + x);
-    }
-    for (let y = 0; y < h; y++) {
-      pushSeed(y * w);
-      pushSeed(y * w + w - 1);
+    if (seedBorder) {
+      for (let x = 0; x < w; x++) {
+        pushSeed(x);
+        pushSeed((h - 1) * w + x);
+      }
+      for (let y = 0; y < h; y++) {
+        pushSeed(y * w);
+        pushSeed(y * w + w - 1);
+      }
     }
     for (const s of flatCenterSeeds()) pushSeed(s);
 
@@ -249,7 +272,14 @@ export const eraseTextInCanvas = (
   let bestCount = -1;
   const ladder = [baseTol, Math.round(baseTol * 0.6), Math.round(baseTol * 0.35)];
   for (const tol of ladder) {
-    const res = floodBackground(tol);
+    let res = floodBackground(tol, kind === 'free');
+    // Bubble with very dense text: every flat centre seed may have landed on a
+    // stroke, leaving (almost) no background. Retry with border seeds instead
+    // of erasing nothing.
+    if (kind === 'bubble' && res.count < n * 0.02) {
+      const alt = floodBackground(tol, true);
+      if (alt.count > res.count) res = alt;
+    }
     if (res.count > bestCount) {
       bestCount = res.count;
       bestBg = res.bg;
