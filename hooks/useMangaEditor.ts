@@ -19,7 +19,7 @@ export type RestoreScope = 'all' | 'textFree' | 'selected';
  * regions (editorComposited=true) are excluded from AI processing because the
  * AI only picks up pending/failed regions.
  */
-const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.editorComposited;
+export const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.editorComposited;
 
 /**
  * Detected `bubble` boxes of an image (kept as context-only regions). They are
@@ -49,6 +49,13 @@ const RECOMPOSITE_DEBOUNCE_MS = 200;
  */
 export function useMangaEditor({ images, updateImage, config, setErrorMsg }: UseMangaEditorParams) {
   const [busy, setBusy] = useState(false);
+  // True while an auto-translate run (single page or batch) is in flight —
+  // drives the dock's stop button. Distinct from `busy`, which erase/OCR
+  // operations also set.
+  const [translating, setTranslating] = useState(false);
+  // AbortController of the in-flight translation (single-page runs own it;
+  // batch runs share one controller across images).
+  const translateAbortRef = useRef<AbortController | null>(null);
   // regionId → last resolved font size (auto-fit or manual), for panel display.
   const [computedFontSizes, setComputedFontSizes] = useState<Record<string, number>>({});
   const imagesRef = useRef(images);
@@ -299,15 +306,26 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * Translate-target picker honoring the configured scope:
    *  - 'bubble': only detected text_bubble regions
    *  - 'all':    every editable text region (text_bubble + text_free + manual)
-   * AI-owned regions are always excluded (their content is final).
+   * AI-owned regions are always excluded (their content is final), and so are
+   * regions that already hold a translation (editorText typeset / manually
+   * typed, or editorFrozenText held back) — re-sending those would burn API
+   * quota AND overwrite the user's own edits. A page whose regions are all
+   * done therefore yields zero targets and the whole call is skipped.
+   * To force a re-translation of one box, clear its text first.
    */
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] => {
     const scope = configRef.current.editorTranslationScope ?? 'all';
     return img.regions.filter(r => {
       if (r.contextOnly || isAiOwned(r)) return false;
+      if (r.editorText?.trim() || r.editorFrozenText?.trim()) return false;
       if (scope === 'bubble') return r.detectedClass === 'text_bubble';
       return true;
     });
+  }, []);
+
+  /** Stop button: aborts the in-flight translation (single page or batch). */
+  const stopTranslation = useCallback(() => {
+    translateAbortRef.current?.abort();
   }, []);
 
   /**
@@ -322,17 +340,27 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    *    pipeline can still pick it up. Manual unfreeze / the whiten quick-fix
    *    promote the frozen text into a real typeset patch later.
    * Regions the AI reports as empty (misdetections) are skipped.
+   *
+   * `outerSignal` is the batch controller's signal when called from
+   * translateAllImages; single-page runs create their own controller so the
+   * dock's stop button can abort the vision call / gate wait.
    */
-  const translateImageRegions = useCallback(async (imageId: string) => {
+  const translateImageRegions = useCallback(async (imageId: string, outerSignal?: AbortSignal) => {
     const img = getImage(imageId);
     if (!img || busy) return;
     const targets = pickTranslateTargets(img);
     if (targets.length === 0) return;
 
+    // Batch runs share their controller; single-page runs own one.
+    const ownCtrl = outerSignal ? null : new AbortController();
+    const signal = outerSignal ?? ownCtrl!.signal;
+    if (ownCtrl) translateAbortRef.current = ownCtrl;
+
     setBusy(true);
+    setTranslating(true);
     try {
       const imageEl = await loadImage(img.previewUrl);
-      const results = await translateEditorRegions(imageEl, targets, configRef.current);
+      const results = await translateEditorRegions(imageEl, targets, configRef.current, signal);
 
       // Compute post-update region objects up-front (updaters must stay pure,
       // and recomposite needs them explicitly — the store commit lags behind
@@ -385,12 +413,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         throw new Error('AI 没有识别到任何文字（可能全部为空框/误检）');
       }
 
-      const byId = new Map([...translated, ...frozen].map(t => [t.id, t]));
+      const byId = new Map<string, Region>([...translated, ...frozen].map(nr => [nr.id, nr]));
       updateImage(imageId, current => ({
         ...current,
         regions: current.regions.map(r => byId.get(r.id) ?? r),
       }));
       // Typeset composite per translated region (erasure included), sequential.
+      // Note: once the API call has returned, composites always run to
+      // completion — the translations are already paid for, and stopping
+      // mid-typeset would leave regions with text but no rendered patch
+      // (torn state). The stop button therefore only interrupts the network
+      // wait (and skips the remaining images in a batch).
       for (const nr of translated) {
         await recompositeRegion(imageId, nr.id, nr);
       }
@@ -400,10 +433,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         if (nr.editorComposited) await recompositeRegion(imageId, nr.id, nr);
       }
     } catch (e: any) {
-      console.error('Auto translate failed', e);
-      setErrorMsg(e?.message || '翻译失败');
+      // User-stopped (AbortError) is intentional — not an error.
+      if (e?.name !== 'AbortError') {
+        console.error('Auto translate failed', e);
+        setErrorMsg(e?.message || '翻译失败');
+      }
     } finally {
       setBusy(false);
+      setTranslating(false);
+      if (ownCtrl && translateAbortRef.current === ownCtrl) {
+        translateAbortRef.current = null;
+      }
     }
   }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets]);
 
@@ -496,15 +536,26 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   /**
    * Batch variant: translate every loaded image that has editable regions,
    * sequentially. Per-image failures surface via setErrorMsg but do not
-   * abort the batch.
+   * abort the batch. One shared AbortController lets the stop button cancel
+   * the in-flight request AND skip the remaining images.
    */
   const translateAllImages = useCallback(async () => {
     if (busy) return;
     const ids = imagesRef.current
       .filter(img => pickTranslateTargets(img).length > 0)
       .map(img => img.id);
-    for (const id of ids) {
-      await translateImageRegions(id);
+    if (ids.length === 0) return;
+    const ctrl = new AbortController();
+    translateAbortRef.current = ctrl;
+    setTranslating(true);
+    try {
+      for (const id of ids) {
+        if (ctrl.signal.aborted) break;
+        await translateImageRegions(id, ctrl.signal);
+      }
+    } finally {
+      setTranslating(false);
+      if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
     }
   }, [busy, translateImageRegions, pickTranslateTargets]);
 
@@ -601,6 +652,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   return {
     busy,
+    translating,
     computedFontSizes,
     updateEditorRegion,
     setBrushLayer,
@@ -609,6 +661,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     ocrAllRegions,
     translateImageRegions,
     translateAllImages,
+    stopTranslation,
     unfreezeTranslation,
     freezeTranslation,
     whitenFrozenTextFree,

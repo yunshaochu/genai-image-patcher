@@ -1,5 +1,6 @@
 import { AppConfig, Region } from '../types';
 import { compressImageToTargetSize, releaseObjectURL, urlToBase64 } from './imageUtils';
+import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLimitGate';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -113,11 +114,19 @@ const extractJson = (text: string): any => {
  * Returns a Map keyed by Region.id. Regions the model found empty
  * (misdetections) come back with blank source/zh and are ignored by the
  * caller.
+ *
+ * `signal` lets the caller abort the request (editor stop button).
+ *
+ * Retry policy mirrors aiService.executeWithRetry: only 429 / rate-limit
+ * signals retry inline (back off coordinated through the global gate so
+ * parallel calls don't thundering-herd the endpoint); timeouts, 5xx and
+ * network errors throw immediately.
  */
 export const translateEditorRegions = async (
   imageEl: HTMLImageElement,
   regions: Region[],
-  config: AppConfig
+  config: AppConfig,
+  signal?: AbortSignal
 ): Promise<Map<string, RegionTranslation>> => {
   const { translationBaseUrl, translationApiKey, translationModel } = config;
   if (!translationApiKey || !translationBaseUrl) {
@@ -147,37 +156,71 @@ export const translateEditorRegions = async (
     let cleanBaseUrl = translationBaseUrl.replace(/\/+$/, '');
     if (!cleanBaseUrl.endsWith('/v1')) cleanBaseUrl += '/v1';
 
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), config.apiTimeout || 60000);
-    let content: string;
-    try {
-      const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${translationApiKey}`,
-        },
-        body: JSON.stringify({
-          model: translationModel,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: buildPrompt(skeleton) },
-              { type: 'image_url', image_url: { url: imageBase64 } },
-            ],
-          }],
-          max_tokens: 4096,
-        }),
-        signal: ctrl.signal,
-      });
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(`翻译 API 错误: ${err.error?.message || response.statusText} (${response.status})`);
+    // 429 inline retries are capped — the gate handles the wait, so we just
+    // loop and let `await wait()` block before each attempt.
+    const MAX_429_RETRIES = 5;
+    let content = '';
+    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      // Honour the global cool-down gate (no-op when not tripped).
+      await globalRateLimitGate.wait(signal);
+
+      // Per-attempt controller: the timeout and the caller's stop signal
+      // both cancel the underlying fetch, not just the wrapper promise.
+      const ctrl = new AbortController();
+      const onOuterAbort = () => ctrl.abort();
+      if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+      const timer = setTimeout(() => ctrl.abort(), config.apiTimeout || 60000);
+      try {
+        const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${translationApiKey}`,
+          },
+          body: JSON.stringify({
+            model: translationModel,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: buildPrompt(skeleton) },
+                { type: 'image_url', image_url: { url: imageBase64 } },
+              ],
+            }],
+            max_tokens: 4096,
+          }),
+          signal: ctrl.signal,
+        });
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          const e: any = new Error(`翻译 API 错误: ${err.error?.message || response.statusText} (${response.status})`);
+          // Preserve status / Retry-After so the 429 handling below can
+          // detect rate-limit signals and honour the server's wait hint.
+          e.status = response.status;
+          e.retryAfter = response.headers.get('Retry-After');
+          throw e;
+        }
+        const data = await response.json();
+        content = data.choices?.[0]?.message?.content || '';
+        break;
+      } catch (e: any) {
+        // Caller-cancel: never retry, propagate the abort.
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        // 429: trip the global gate and retry inline.
+        if (isRateLimitError(e) && attempt < MAX_429_RETRIES) {
+          const waitMs = globalRateLimitGate.trip(parseRetryAfter(e.retryAfter));
+          console.warn(
+            `翻译 API 被限流 (429)，退避 ${Math.round(waitMs)}ms 后重试 ` +
+            `(第 ${attempt + 2}/${MAX_429_RETRIES + 1} 次尝试)。`
+          );
+          continue;
+        }
+        // Non-429 (or retries exhausted): bail.
+        throw e;
+      } finally {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', onOuterAbort);
       }
-      const data = await response.json();
-      content = data.choices?.[0]?.message?.content || '';
-    } finally {
-      clearTimeout(timer);
     }
 
     const parsed = extractJson(content);

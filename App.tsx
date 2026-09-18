@@ -59,6 +59,7 @@ export default function App() {
   // lives on Region fields; this hook owns only caches + debounce timers.
   const {
       busy: editorBusy,
+      translating: editorTranslating,
       computedFontSizes,
       updateEditorRegion,
       setBrushLayer,
@@ -67,6 +68,7 @@ export default function App() {
       ocrAllRegions,
       translateImageRegions,
       translateAllImages,
+      stopTranslation,
       unfreezeTranslation,
       freezeTranslation,
       whitenFrozenTextFree,
@@ -645,6 +647,8 @@ export default function App() {
                     onOcrAll={() => ocrAllRegions(selectedImage.id)}
                     onTranslate={() => translateImageRegions(selectedImage.id)}
                     onTranslateAll={() => translateAllImages()}
+                    translating={editorTranslating}
+                    onStopTranslate={stopTranslation}
                     onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
                     onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
                     onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}

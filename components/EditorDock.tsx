@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AppConfig, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
-import { EraseScope, RestoreScope } from '../hooks/useMangaEditor';
+import { EraseScope, RestoreScope, isAiOwned } from '../hooks/useMangaEditor';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -40,6 +40,9 @@ interface EditorDockProps {
   onOcrAll: () => void;
   onTranslate: () => void;
   onTranslateAll: () => void;
+  /** True while an auto-translate run is in flight — shows the stop button. */
+  translating: boolean;
+  onStopTranslate: () => void;
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
   onWhitenFrozenTextFree: () => void;
@@ -275,6 +278,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
   onErase, onRestoreErase, onOcrAll, onTranslate, onTranslateAll,
+  translating, onStopTranslate,
   onUnfreeze, onFreeze, onWhitenFrozenTextFree,
 }) => {
   const lang = config.language;
@@ -310,12 +314,19 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
   // Global view: no box selected → batch operations for the whole image.
   if (!region) {
-    // Mirror the hook's scope filter so the translate button's disabled state
-    // matches what would actually be translated.
+    // Mirror the hook's pickTranslateTargets filter so the translate button's
+    // disabled state matches what would actually be translated: AI-owned
+    // regions and regions that already hold a translation (typeset or
+    // frozen) are excluded — re-translating those wastes quota.
     const scope = config.editorTranslationScope ?? 'all';
     const translateTargetCount = image.regions.filter(r =>
-      !r.contextOnly && (scope === 'bubble' ? r.detectedClass === 'text_bubble' : true)
+      !r.contextOnly && !isAiOwned(r) &&
+      !r.editorText?.trim() && !r.editorFrozenText?.trim() &&
+      (scope === 'bubble' ? r.detectedClass === 'text_bubble' : true)
     ).length;
+    // Editable but untranslatable → everything is already translated/frozen.
+    const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
+    const allTranslated = editableCount > 0 && translateTargetCount === 0;
     // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
     const frozenFreeCount = image.regions.filter(r =>
       !r.contextOnly && r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
@@ -405,24 +416,35 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   </button>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
+              {translating ? (
                 <button
-                  onClick={onTranslate}
-                  disabled={busy || translateTargetCount === 0}
-                  className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
-                  title={t(lang, 'editorTranslateTip')}
+                  onClick={onStopTranslate}
+                  className="w-full px-2 py-1.5 text-[10px] font-bold bg-red-500 text-white rounded hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center gap-1"
+                  title={t(lang, 'editorStopTranslateTip')}
                 >
-                  {t(lang, 'editorTranslateAll')}
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+                  {t(lang, 'editorStopTranslate')}
                 </button>
-                <button
-                  onClick={onTranslateAll}
-                  disabled={busy}
-                  className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
-                  title={t(lang, 'editorTranslateAllImagesTip')}
-                >
-                  {t(lang, 'editorTranslateAllImages')}
-                </button>
-              </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={onTranslate}
+                    disabled={busy || translateTargetCount === 0}
+                    className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
+                    title={allTranslated ? t(lang, 'editorTranslateDoneTip') : t(lang, 'editorTranslateTip')}
+                  >
+                    {t(lang, 'editorTranslateAll')}
+                  </button>
+                  <button
+                    onClick={onTranslateAll}
+                    disabled={busy}
+                    className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
+                    title={t(lang, 'editorTranslateAllImagesTip')}
+                  >
+                    {t(lang, 'editorTranslateAllImages')}
+                  </button>
+                </div>
+              )}
               <button
                 onClick={onWhitenFrozenTextFree}
                 disabled={busy || frozenFreeCount === 0}
