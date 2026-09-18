@@ -275,6 +275,15 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
   const textRegions = image.regions.filter(r => !r.contextOnly);
   const selectedRegion = image.regions.find(r => r.id === selectedRegionId) || null;
 
+  // Font-size stepper: ±5 per click (±1 feels imperceptible). An empty input
+  // starts from the resolved auto-fit size (16 when no reference yet), and
+  // the stepped result is committed as a manual fontSize.
+  const stepFontSize = (region: Region, delta: number) => {
+    const base = region.editorStyle?.fontSize ?? computedFontSizes?.[region.id] ?? 16;
+    const next = Math.min(400, Math.max(6, base + delta));
+    onUpdateRegion(region.id, { editorStyle: { fontSize: next } });
+  };
+
   return (
     <div className="space-y-3 animate-in fade-in slide-in-from-right-8">
       {/* Sub tabs */}
@@ -447,38 +456,56 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
                         </button>
                       ))}
                     </div>
-                    <input
-                      type="number"
-                      min={0}
-                      max={400}
-                      value={region.editorStyle?.fontSize ?? ''}
-                      placeholder={
-                        region.editorStyle?.fontSize
-                          ? t(lang, 'editorFontSizeAuto')
-                          : computedFontSizes?.[region.id]
-                            ? `${t(lang, 'editorFontSizeAuto')} ${computedFontSizes[region.id]}px`
-                            : t(lang, 'editorFontSizeAuto')
-                      }
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        // No clamping here: this is a controlled input, so
-                        // clamping mid-typing would rewrite the first digit
-                        // (e.g. typing "4" of "45" becomes "6" → "65").
-                        const raw = e.target.value;
-                        onUpdateRegion(region.id, {
-                          editorStyle: { fontSize: raw === '' ? undefined : Math.max(1, Number(raw)) },
-                        });
-                      }}
-                      onBlur={(e) => {
-                        if (e.target.value === '') return;
-                        const clamped = Math.min(400, Math.max(6, Number(e.target.value)));
-                        if (clamped !== Number(e.target.value)) {
-                          onUpdateRegion(region.id, { editorStyle: { fontSize: clamped } });
+                    <div className="w-24 ml-auto flex items-stretch">
+                      <input
+                        type="number"
+                        min={0}
+                        max={400}
+                        value={region.editorStyle?.fontSize ?? ''}
+                        placeholder={
+                          region.editorStyle?.fontSize
+                            ? t(lang, 'editorFontSizeAuto')
+                            : computedFontSizes?.[region.id]
+                              ? `${t(lang, 'editorFontSizeAuto')} ${computedFontSizes[region.id]}px`
+                              : t(lang, 'editorFontSizeAuto')
                         }
-                      }}
-                      title={t(lang, 'editorFontSizeAutoTip')}
-                      className="w-20 ml-auto px-1 py-0.5 text-[10px] text-center border border-skin-border rounded bg-skin-surface"
-                    />
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          // No clamping here: this is a controlled input, so
+                          // clamping mid-typing would rewrite the first digit
+                          // (e.g. typing "4" of "45" becomes "6" → "65").
+                          const raw = e.target.value;
+                          onUpdateRegion(region.id, {
+                            editorStyle: { fontSize: raw === '' ? undefined : Math.max(1, Number(raw)) },
+                          });
+                        }}
+                        onBlur={(e) => {
+                          if (e.target.value === '') return;
+                          const clamped = Math.min(400, Math.max(6, Number(e.target.value)));
+                          if (clamped !== Number(e.target.value)) {
+                            onUpdateRegion(region.id, { editorStyle: { fontSize: clamped } });
+                          }
+                        }}
+                        title={t(lang, 'editorFontSizeAutoTip')}
+                        className="flex-1 min-w-0 px-1 py-0.5 text-[10px] text-center border border-skin-border rounded-l bg-skin-surface [appearance:textfield] [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden"
+                      />
+                      <div className="flex flex-col border border-l-0 border-skin-border rounded-r overflow-hidden bg-skin-fill">
+                        <button
+                          onClick={() => stepFontSize(region, 5)}
+                          title="+5"
+                          className="flex-1 px-1 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all"
+                        >
+                          <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 15l7-7 7 7" /></svg>
+                        </button>
+                        <button
+                          onClick={() => stepFontSize(region, -5)}
+                          title="-5"
+                          className="flex-1 px-1 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface transition-all border-t border-skin-border"
+                        >
+                          <svg className="w-2 h-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7 7" /></svg>
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
