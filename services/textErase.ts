@@ -6,9 +6,10 @@
  * canvas ImageData:
  *
  * 1. FLAT CENTER SEEDS (_flat_seeds_center): spiral out from the crop center
- *    and pick up to 5 seeds whose 3x3 patch is flat (std < 10) and on the
- *    background side of the brightness range — avoids seeding a flood fill
- *    on top of a text stroke, which would mark the strokes as background.
+ *    and pick up to 5 seeds whose 3x3 patch is flat (std < 10) and within ±40
+ *    of the centre region's median luminance (the text-bearing surface) —
+ *    avoids seeding a flood fill on top of a text stroke, which would mark
+ *    the strokes as background.
  *
  * 2. BACKGROUND (multi-seed FIXED_RANGE flood fill): border pixels plus the
  *    flat center seeds each expand through pixels within `tolerance` of THAT
@@ -163,18 +164,26 @@ export const eraseTextInCanvas = (
 
   // ---------------------------------------------------------------------
   // Flat center seeds (Python `_flat_seeds_center`): spiral from the centre,
-  // accept 3x3 patches with std < 10 whose mean sits on the background side
-  // (bright crops → near-white, dark crops → near-black).
+  // accept 3x3 patches with std < 10 whose mean is within ±40 of the CENTRE
+  // REGION's median luminance. The centre region (not the whole crop) is the
+  // reference because art outside the box skews a whole-crop median (black
+  // narration box on a bright scene, grey bubbles) and used to flip the
+  // polarity onto the text strokes; ±40 around the surface tone works for
+  // black / white / mid-grey backgrounds alike.
   // ---------------------------------------------------------------------
   const flatCenterSeeds = (maxSeeds = 5): number[] => {
     const cx = w >> 1;
     const cy = h >> 1;
-    // Whole-crop median luminance decides bright vs dark background.
+    const qx = w >> 2;
+    const qy = h >> 2;
     const lums: number[] = [];
-    for (let i = 0; i < n; i += 7) lums.push(lumAt(i));
+    for (let yy = qy; yy < Math.max(qy + 1, h - qy); yy++) {
+      for (let xx = qx; xx < Math.max(qx + 1, w - qx); xx++) {
+        lums.push(lumAt(yy * w + xx));
+      }
+    }
     lums.sort((a, b) => a - b);
-    const bright = lums[lums.length >> 1] >= 128;
-    const th = bright ? 190 : 80;
+    const base = lums[lums.length >> 1];
 
     const seeds: number[] = [];
     const step = Math.max(2, Math.min(h, w) / 10) | 0;
@@ -198,8 +207,7 @@ export const eraseTextInCanvas = (
         }
         const mean = sum / 9;
         const std = Math.sqrt(Math.max(0, sumSq / 9 - mean * mean));
-        const ok = bright ? mean >= th : mean <= th;
-        if (std < 10 && ok) seeds.push(y * w + x);
+        if (std < 10 && Math.abs(mean - base) <= 40) seeds.push(y * w + x);
       }
     }
     if (seeds.length === 0) seeds.push(cy * w + cx);

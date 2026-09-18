@@ -143,6 +143,14 @@ const wrapWithKinsoku = (text: string, fits: (s: string) => boolean): string[] =
   return out;
 };
 
+/** Luminance check for '#rrggbb' colours (used to derive the outline). */
+const isLightHex = (c: string): boolean => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(c.trim());
+  if (!m) return false;
+  const v = parseInt(m[1], 16);
+  return 0.299 * ((v >> 16) & 0xff) + 0.587 * ((v >> 8) & 0xff) + 0.114 * (v & 0xff) >= 128;
+};
+
 const resolveStyle = (
   boxW: number,
   boxH: number,
@@ -153,10 +161,15 @@ const resolveStyle = (
   const isVertical =
     style?.isVertical ??
     (preferVerticalDefault || boxH > boxW * 1.5);
+  const color = style?.color ?? '#000000';
   return {
     isVertical,
-    color: style?.color ?? '#000000',
-    outlineColor: style?.outlineColor ?? '#ffffff',
+    color,
+    // Explicit text colour without an explicit outline → opposite colour
+    // (黑字白边，白字黑边); colourless regions keep the legacy default.
+    outlineColor:
+      style?.outlineColor ??
+      (style?.color ? (isLightHex(color) ? '#000000' : '#ffffff') : '#ffffff'),
     outlineWidth: style?.outlineWidth ?? 0,
     isBold: style?.isBold ?? true,
     fontFamily: style?.fontFamily ?? 'sans-serif',
@@ -186,6 +199,20 @@ export const measureLayoutBlock = (layout: TextLayout): { blockW: number; blockH
   }
   return { blockW: 0, blockH: lines.length * fontSize * LINE_HEIGHT_RATIO };
 };
+
+/**
+ * Auto outline: applies only when the caller explicitly set a text colour
+ * without an outline width (AI colour module / dock colour toggle) — the
+ * width scales with the resolved font size. Colourless legacy regions keep
+ * outlineWidth 0, so existing output is unchanged.
+ */
+const withAutoOutline = (
+  full: ResolvedTextStyle,
+  style?: EditorTextStyle
+): ResolvedTextStyle =>
+  style?.color && style.outlineWidth === undefined
+    ? { ...full, outlineWidth: Math.min(6, Math.max(1.5, full.fontSize * 0.12)) }
+    : full;
 
 /**
  * Lay out `text` inside a boxW×boxH box. When style.fontSize is undefined,
@@ -224,7 +251,7 @@ export const layoutText = (
 
   if (style?.fontSize && style.fontSize > 0) {
     const fontSize = style.fontSize;
-    return { lines: wrapAt(fontSize).lines, style: { ...base, fontSize } };
+    return { lines: wrapAt(fontSize).lines, style: withAutoOutline({ ...base, fontSize }, style) };
   }
 
   // Auto-fit: binary search the largest fitting font size.
@@ -249,7 +276,7 @@ export const layoutText = (
     // box slightly; better than silently dropping the text).
     best = { lines: wrapAt(8).lines, fontSize: 8 };
   }
-  return { lines: best.lines, style: { ...base, fontSize: best.fontSize } };
+  return { lines: best.lines, style: withAutoOutline({ ...base, fontSize: best.fontSize }, style) };
 };
 
 /**

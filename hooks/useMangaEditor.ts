@@ -336,18 +336,27 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
       // Compute post-update region objects up-front (updaters must stay pure,
       // and recomposite needs them explicitly — the store commit lags behind
-      // updateImage). editorStyle is left untouched apart from direction:
-      // undefined fontSize means the layout engine auto-fits the new text.
+      // updateImage). fontSize is never touched: undefined means the layout
+      // engine auto-fits the new text.
       const translated: Region[] = [];
       const frozen: Region[] = [];
       for (const r of targets) {
         const res = results.get(r.id);
         if (!res || !res.zh?.trim()) continue; // empty box / misdetection
-        // AI judges the original's direction; when it doesn't say, keep the
-        // existing style (undefined = layout auto-heuristic).
-        const style = res.vertical === undefined
-          ? r.editorStyle
-          : { ...r.editorStyle, isVertical: res.vertical };
+        // AI judges the original's direction and dominant text colour; when
+        // it doesn't say, keep the existing style (undefined = layout
+        // auto-heuristic / default black). The typeset colour matches the
+        // original; the outline is the opposite colour (黑字白边，白字黑边)
+        // and outlineWidth stays unset so the layout engine auto-sizes it
+        // from the resolved font size.
+        const textColor = res.color === 'white' ? '#ffffff' : res.color === 'black' ? '#000000' : undefined;
+        const style: Region['editorStyle'] = {
+          ...r.editorStyle,
+          ...(res.vertical === undefined ? {} : { isVertical: res.vertical }),
+          ...(textColor
+            ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000' }
+            : {}),
+        };
         if (res.freeze) {
           frozen.push({
             ...r,

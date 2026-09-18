@@ -13,16 +13,15 @@ export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
 
 /**
  * Per-region text style used by the in-place manga text editor.
- * Reserved fields (fontFamily / rotation / colors) are consumed by the
- * compositor but intentionally not exposed in the UI yet — the UI only
- * offers text content, auto font size and vertical/horizontal for now.
+ * color/outline are written by the AI colour module (translation) and the
+ * dock 字色 toggle; fontFamily / rotation remain reserved for a future UI.
  */
 export interface EditorTextStyle {
   fontSize?: number;      // px; undefined = auto-fit to the region box
   isVertical?: boolean;   // undefined = auto heuristic (tall box / global default)
-  color?: string;         // reserved, default '#000000'
-  outlineColor?: string;  // reserved, default '#ffffff'
-  outlineWidth?: number;  // reserved, default 0 (no stroke)
+  color?: string;         // set by the AI colour module / dock 字色 toggle; default '#000000'
+  outlineColor?: string;  // default: opposite of color when color is explicit, else '#ffffff'
+  outlineWidth?: number;  // default: auto (fontSize×0.12) when color is explicit, else 0
   isBold?: boolean;       // reserved, default true
   fontFamily?: string;    // reserved, default sans-serif
   rotation?: number;      // reserved, default 0

@@ -56,11 +56,18 @@ def _edge_reachable(inv):
 
 
 def _flat_seeds_center(gray, max_seeds=5):
-    """气泡中心区域找平坦底色种子点（避开文字笔画）"""
+    """气泡中心区域找平坦底色种子点（避开文字笔画）。
+
+    底色基准取中心区域（文字所在面）的中位数，而不是整图 median——
+    整图 median 会被框外画面带偏（黑底旁白框外是亮场景 / 灰底气泡），
+    导致极性判反、种子落到白色笔画上（整个擦除反相）。接受与中心底色
+    接近（±40）的平坦 3x3：黑底、白底、中间灰底都适用。
+    """
     h, w = gray.shape
     cy, cx = h // 2, w // 2
-    bright = float(np.median(gray)) >= 128
-    th = 190 if bright else 80
+    q_h, q_w = h // 4, w // 4
+    base = float(np.median(gray[q_h:max(q_h + 1, h - q_h),
+                                q_w:max(q_w + 1, w - q_w)]))
     seeds = []
     step = max(2, min(h, w) // 10)
     for r in range(0, min(h, w) // 2, step):
@@ -72,7 +79,8 @@ def _flat_seeds_center(gray, max_seeds=5):
             if not (0 <= y < h and 0 <= x < w):
                 continue
             patch = gray[max(0, y - 1):y + 2, max(0, x - 1):x + 2]
-            if patch.size >= 4 and float(patch.std()) < 10 and float(patch.mean()) >= th:
+            if (patch.size >= 4 and float(patch.std()) < 10
+                    and abs(float(patch.mean()) - base) <= 40):
                 seeds.append((x, y))
                 if len(seeds) >= max_seeds:
                     return seeds

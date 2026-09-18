@@ -602,7 +602,38 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         </div>
 
-        {/* Erase toggle + OCR */}
+        {/* Text colour: auto (AI-chosen / default black) or manual override.
+            The outline auto-derives as the opposite colour and its width
+            scales with the resolved font size. */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorTextColor')}</span>
+          <div className="flex border border-skin-border rounded overflow-hidden">
+            {(['auto', 'black', 'white'] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => onUpdateRegion(region.id, {
+                  editorStyle: v === 'auto'
+                    ? { color: undefined, outlineColor: undefined, outlineWidth: undefined }
+                    : v === 'black'
+                      ? { color: '#000000', outlineColor: '#ffffff', outlineWidth: undefined }
+                      : { color: '#ffffff', outlineColor: '#000000', outlineWidth: undefined },
+                })}
+                disabled={busy || aiLocked}
+                className={`px-2 py-1 text-[9px] font-bold transition-colors ${
+                  (region.editorStyle?.color === '#000000' ? 'black'
+                    : region.editorStyle?.color === '#ffffff' ? 'white'
+                    : 'auto') === v
+                    ? 'bg-skin-primary text-white'
+                    : 'text-skin-muted hover:bg-skin-primary/10'
+                } disabled:opacity-50`}
+              >
+                {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'black' ? 'editorColorBlack' : 'editorColorWhite')}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Erase toggle + per-region OCR */}
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased })}
