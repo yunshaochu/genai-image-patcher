@@ -2,14 +2,16 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AppConfig, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
+import { EraseScope, RestoreScope } from '../hooks/useMangaEditor';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
  *
- * Shows the currently selected region's editable properties — text content,
- * direction, font size, erase toggle, OCR — replacing the old per-region card
- * list in the left sidebar. Brush touch-up lives here too (collapsed section).
- * Prev/next buttons cycle through the image's editable regions.
+ * The dock is always present on the edit tab and is context-sensitive:
+ *  - No box selected → global batch operations (erase / restore / OCR /
+ *    translate) plus a hint to click a box.
+ *  - Box selected → that region's editable properties (text, direction,
+ *    font size, erase toggle, OCR, brush touch-up) with prev/next cycling.
  *
  * AI-owned regions (completed by the image-generation pipeline) are shown
  * read-only: the AI patch is final and the editor must not overwrite it.
@@ -18,12 +20,13 @@ import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils'
 interface EditorDockProps {
   image: UploadedImage;
   config: AppConfig;
-  selectedRegionId: string;
+  selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
   busy: boolean;
   /** regionId → last resolved font size (auto-fit or manual), shown as the
    *  font-size input placeholder so users have a reference for manual sizing. */
   computedFontSizes?: Record<string, number>;
+  onConfigChange: (key: keyof AppConfig, value: any) => void;
   onUpdateRegion: (regionId: string, updates: {
     editorText?: string;
     editorErased?: boolean;
@@ -32,6 +35,11 @@ interface EditorDockProps {
   onOcrRegion: (regionId: string) => Promise<void>;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
+  onErase: (scope: EraseScope) => void;
+  onRestoreErase: (scope: RestoreScope) => void;
+  onOcrAll: () => void;
+  onTranslate: () => void;
+  onTranslateAll: () => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -262,7 +270,8 @@ const BrushPainter: React.FC<{
 // ---------------------------------------------------------------------------
 const EditorDock: React.FC<EditorDockProps> = ({
   image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
-  onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
+  onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
+  onErase, onRestoreErase, onOcrAll, onTranslate, onTranslateAll,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -278,8 +287,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
   const region = idx >= 0 ? editableRegions[idx] : null;
 
-  // Collapsed: thin strip with an expand handle (kept visible so the user
-  // can always get the dock back while a region is selected).
+  // Collapsed: thin strip with an expand handle (always kept visible so the
+  // user can get the dock back regardless of selection state).
   if (collapsed) {
     return (
       <div className="absolute top-0 right-0 h-full z-20 flex">
@@ -295,7 +304,134 @@ const EditorDock: React.FC<EditorDockProps> = ({
     );
   }
 
-  if (!region) return null;
+  // Global view: no box selected → batch operations for the whole image.
+  if (!region) {
+    // Mirror the hook's scope filter so the translate button's disabled state
+    // matches what would actually be translated.
+    const scope = config.editorTranslationScope ?? 'all';
+    const translateTargetCount = image.regions.filter(r =>
+      !r.contextOnly && (scope === 'bubble' ? r.detectedClass === 'text_bubble' : true)
+    ).length;
+
+    return (
+      <aside className="absolute top-0 right-0 h-full w-[272px] z-20 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-skin-border">
+          <span className="text-[10px] font-bold text-skin-text">{t(lang, 'editorPanelTitle')}</span>
+          <div className="ml-auto flex items-center gap-0.5">
+            <button
+              onClick={() => setCollapsed(true)}
+              className="p-1 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+              title={t(lang, 'editorDockCollapse')}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+          {/* Erasure batch actions */}
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => onErase('bubbleOnly')}
+              disabled={busy}
+              className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
+              title={t(lang, 'editorEraseBubbleTip')}
+            >
+              {t(lang, 'editorEraseBubble')}
+            </button>
+            <button
+              onClick={() => onErase('all')}
+              disabled={busy}
+              className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
+              title={t(lang, 'editorEraseAllTip')}
+            >
+              {t(lang, 'editorEraseAll')}
+            </button>
+            <button
+              onClick={() => onRestoreErase('textFree')}
+              disabled={busy}
+              className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
+              title={t(lang, 'editorRestoreFreeTip')}
+            >
+              {t(lang, 'editorRestoreFree')}
+            </button>
+            <button
+              onClick={() => onRestoreErase('all')}
+              disabled={busy}
+              className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
+            >
+              {t(lang, 'editorRestoreAll')}
+            </button>
+          </div>
+
+          {config.enableOCR && (
+            <button
+              onClick={onOcrAll}
+              disabled={busy}
+              className="w-full px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+              {t(lang, 'editorOcrAll')}
+            </button>
+          )}
+
+          {config.enableTranslationMode && (
+            <div className="space-y-1.5">
+              {/* Translation scope: bubbles only vs all detected text */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-skin-muted whitespace-nowrap">{t(lang, 'editorTransScope')}</span>
+                <div className="flex-1 flex bg-skin-fill p-0.5 rounded border border-skin-border">
+                  <button
+                    onClick={() => onConfigChange('editorTranslationScope', 'bubble')}
+                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${scope === 'bubble' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                    title={t(lang, 'editorTransScopeBubbleTip')}
+                  >
+                    {t(lang, 'editorTransScopeBubble')}
+                  </button>
+                  <button
+                    onClick={() => onConfigChange('editorTranslationScope', 'all')}
+                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${scope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                    title={t(lang, 'editorTransScopeAllTip')}
+                  >
+                    {t(lang, 'editorTransScopeAll')}
+                  </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={onTranslate}
+                  disabled={busy || translateTargetCount === 0}
+                  className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
+                  title={t(lang, 'editorTranslateTip')}
+                >
+                  {t(lang, 'editorTranslateAll')}
+                </button>
+                <button
+                  onClick={onTranslateAll}
+                  disabled={busy}
+                  className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
+                  title={t(lang, 'editorTranslateAllImagesTip')}
+                >
+                  {t(lang, 'editorTranslateAllImages')}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {busy && (
+            <div className="flex items-center justify-center gap-2 text-[10px] text-skin-primary">
+              <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+              {t(lang, 'editorWorking')}
+            </div>
+          )}
+
+          <p className="text-[10px] text-skin-muted leading-relaxed border border-dashed border-skin-border rounded-lg p-2 bg-skin-fill/20">
+            {t(lang, 'editorEditHint')}
+          </p>
+        </div>
+      </aside>
+    );
+  }
 
   // AI-owned: completed by the image-generation pipeline — read-only here.
   const aiLocked = region.status === 'completed' && !region.editorComposited;

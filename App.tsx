@@ -1,7 +1,7 @@
 
-import React, { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
 import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
-import Sidebar, { EditorApi } from './components/Sidebar';
+import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
@@ -444,21 +444,6 @@ export default function App() {
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
 
-  // Bound API surface of the manga text editor for the Sidebar's editor panel.
-  const editorApi: EditorApi = useMemo(() => ({
-      busy: editorBusy,
-      computedFontSizes,
-      onUpdateRegion: updateEditorRegion,
-      onErase: (imageId, scope, sel) => { eraseRegions(imageId, scope, sel); },
-      onRestoreErase: (imageId, scope, sel) => { restoreErase(imageId, scope, sel); },
-      onOcrAll: (imageId) => { ocrAllRegions(imageId); },
-      onOcrRegion: handleOcrRegion,
-      onTranslateImage: (imageId) => { translateImageRegions(imageId); },
-      onTranslateAllImages: () => { translateAllImages(); },
-      buildBrushBase,
-      onBrushChange: setBrushLayer,
-  }), [editorBusy, computedFontSizes, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, translateImageRegions, translateAllImages, buildBrushBase, setBrushLayer]);
-
   return (
     <div 
       className="flex h-screen w-screen bg-skin-fill text-skin-text overflow-hidden font-sans relative"
@@ -493,7 +478,6 @@ export default function App() {
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
-        editorApi={editorApi}
         uploadProgress={uploadProgress}
         getStitchedUrl={getStitchedUrl}
       />
@@ -636,10 +620,11 @@ export default function App() {
                 />
               )}
 
-              {/* Right-side property dock on the '编辑' tab — shows the selected
-                  box's text/direction/font-size/erase/OCR/brush. AI-owned boxes
-                  render read-only inside the dock. */}
-              {isEditorMode && viewMode === 'edit' && selectedRegionId && (
+              {/* Right-side contextual dock on the '编辑' tab — always present:
+                  no box selected → global batch ops (erase/OCR/translate);
+                  box selected → that box's text/direction/font-size/erase/
+                  OCR/brush. AI-owned boxes render read-only inside the dock. */}
+              {isEditorMode && viewMode === 'edit' && (
                   <EditorDock
                     image={selectedImage}
                     config={config}
@@ -647,10 +632,16 @@ export default function App() {
                     onSelectRegion={setSelectedRegionId}
                     busy={editorBusy}
                     computedFontSizes={computedFontSizes}
+                    onConfigChange={updateConfig}
                     onUpdateRegion={(regionId, updates) => updateEditorRegion(selectedImage.id, regionId, updates)}
                     onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
                     buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
                     onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
+                    onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
+                    onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
+                    onOcrAll={() => ocrAllRegions(selectedImage.id)}
+                    onTranslate={() => translateImageRegions(selectedImage.id)}
+                    onTranslateAll={() => translateAllImages()}
                   />
               )}
             </>

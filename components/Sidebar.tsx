@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType, Region } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
 import { stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
@@ -9,29 +9,7 @@ import { Section } from './sidebar/Section';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
-import { EditorPanel } from './sidebar/EditorPanel';
-import { EraseScope, RestoreScope } from '../hooks/useMangaEditor';
 import { DEFAULT_PROMPT } from '../hooks/useConfig';
-
-/** API surface of useMangaEditor, bound to image ids by the Sidebar. */
-export interface EditorApi {
-  busy: boolean;
-  /** regionId → last resolved font size (auto-fit or manual), for display. */
-  computedFontSizes?: Record<string, number>;
-  onUpdateRegion: (imageId: string, regionId: string, updates: {
-    editorText?: string;
-    editorErased?: boolean;
-    editorStyle?: Region['editorStyle'];
-  }) => void;
-  onErase: (imageId: string, scope: EraseScope, selectedRegionId?: string | null) => void;
-  onRestoreErase: (imageId: string, scope: RestoreScope, selectedRegionId?: string | null) => void;
-  onOcrAll: (imageId: string) => void;
-  onOcrRegion: (imageId: string, regionId: string) => Promise<void>;
-  onTranslateImage: (imageId: string) => void;
-  onTranslateAllImages: () => void;
-  buildBrushBase: (imageId: string, regionId: string) => Promise<string | null>;
-  onBrushChange: (imageId: string, regionId: string, url: string | null) => void;
-}
 
 interface SidebarProps {
   config: AppConfig;
@@ -59,7 +37,6 @@ interface SidebarProps {
   onOpenHelp: () => void;
   onApplyAsOriginal: () => void;
   onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
-  editorApi: EditorApi;
   uploadProgress?: { current: number; total: number } | null;
   /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
   getStitchedUrl: (image: UploadedImage) => Promise<string>;
@@ -107,7 +84,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenHelp,
   onApplyAsOriginal,
   onUpdateImagePrompt,
-  editorApi,
   uploadProgress,
   getStitchedUrl
 }) => {
@@ -846,29 +822,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                             {t(lang, 'noRegions')}
                         </div>
                     )}
-                </div>
-            )}
-            </Section>
-        )}
-
-        {/* Manga Text Editor (editor workflow mode) */}
-        {isEditorMode && editorTabAvailable && (
-            <Section title={t(lang, 'editorPanelTitle')} isOpen={sectionsState.editor} onToggle={() => toggleSection('editor')}>
-            {currentImage ? (
-                <EditorPanel
-                    image={currentImage}
-                    config={config}
-                    busy={editorApi.busy}
-                    onConfigChange={handleConfigChange}
-                    onErase={(scope) => editorApi.onErase(currentImage.id, scope, selectedRegionId)}
-                    onRestoreErase={(scope) => editorApi.onRestoreErase(currentImage.id, scope, selectedRegionId)}
-                    onOcrAll={() => editorApi.onOcrAll(currentImage.id)}
-                    onTranslate={() => editorApi.onTranslateImage(currentImage.id)}
-                    onTranslateAll={editorApi.onTranslateAllImages}
-                />
-            ) : (
-                <div className="text-center py-8 text-skin-muted italic text-xs">
-                    {t(lang, 'uploadHint')}
                 </div>
             )}
             </Section>
