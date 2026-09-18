@@ -648,22 +648,41 @@ export const stitchImage = async (
     const aw = ((region.anchorWidth ?? region.width) / 100) * baseImg.naturalWidth;
     const ah = ((region.anchorHeight ?? region.height) / 100) * baseImg.naturalHeight;
 
+    // Editor patches may carry an overflow margin (text spilling out of the
+    // box) — the patch box is the anchor enlarged by it. Matches the
+    // EditorCanvas overlay.
+    const mx = ((region.patchMarginX ?? 0) / 100) * baseImg.naturalWidth;
+    const my = ((region.patchMarginY ?? 0) / 100) * baseImg.naturalHeight;
+    const ex = ax - mx;
+    const ey = ay - my;
+    const ew = aw + 2 * mx;
+    const eh = ah + 2 * my;
+
     // Match CSS `object-fit: contain; object-position: center` used by EditorCanvas overlay.
-    // Without this, pasted patches whose aspect ratio differs from the anchor box get
-    // stretched to fill aw×ah. AI-generated patches already match the anchor aspect, so
+    // Without this, pasted patches whose aspect ratio differs from the patch box get
+    // stretched to fill ew×eh. Editor patches already match the box aspect, so
     // this branch is a no-op for them.
     const srcW = regionImg.naturalWidth;
     const srcH = regionImg.naturalHeight;
-    const fitScale = srcW > 0 && srcH > 0 ? Math.min(aw / srcW, ah / srcH) : 1;
+    const fitScale = srcW > 0 && srcH > 0 ? Math.min(ew / srcW, eh / srcH) : 1;
     const drawW = srcW * fitScale;
     const drawH = srcH * fitScale;
-    const drawX = ax + (aw - drawW) / 2;
-    const drawY = ay + (ah - drawH) / 2;
+    const drawX = ex + (ew - drawW) / 2;
+    const drawY = ey + (eh - drawH) / 2;
+
+    // Clip to the current region rect only when the user SHRANK the frame
+    // relative to the patch box (mirrors the overlay's clipPath). Otherwise
+    // draw unclipped so text overflowing the box stays visible.
+    const shrank =
+      x > ex + 0.5 || y > ey + 0.5 ||
+      x + w < ex + ew - 0.5 || y + h < ey + eh - 0.5;
 
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(x, y, w, h);
-    ctx.clip();
+    if (shrank) {
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+    }
     ctx.drawImage(regionImg, drawX, drawY, drawW, drawH);
     ctx.restore();
 

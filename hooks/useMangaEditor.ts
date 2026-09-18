@@ -32,6 +32,8 @@ const RECOMPOSITE_DEBOUNCE_MS = 400;
  */
 export function useMangaEditor({ images, updateImage, config, setErrorMsg }: UseMangaEditorParams) {
   const [busy, setBusy] = useState(false);
+  // regionId → last resolved font size (auto-fit or manual), for panel display.
+  const [computedFontSizes, setComputedFontSizes] = useState<Record<string, number>>({});
   const imagesRef = useRef(images);
   imagesRef.current = images;
   const configRef = useRef(config);
@@ -75,19 +77,29 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
     try {
       const imageEl = await loadImage(img.previewUrl);
-      const url = await compositeRegionPatch(
+      const result = await compositeRegionPatch(
         imageEl,
         region,
         erasedCacheRef.current,
         configRef.current.enableVerticalTextDefault,
         configRef.current.editorBackendUrl
       );
+      const url = result?.url ?? null;
+
+      // Publish the resolved font size so the panel can show the auto-fit
+      // value as a reference for manual sizing.
+      setComputedFontSizes(prev => {
+        const next = { ...prev };
+        if (result?.fontSize) next[regionId] = result.fontSize;
+        else delete next[regionId];
+        return next;
+      });
 
       updateImage(imageId, current => ({
         ...current,
         regions: current.regions.map(r => {
           if (r.id !== regionId) return r;
-          if (url) {
+          if (url && result) {
             if (r.processedImageUrl && r.processedImageUrl !== url) {
               releaseObjectURL(r.processedImageUrl);
             }
@@ -96,6 +108,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
               processedImageUrl: url,
               status: 'completed' as const,
               editorComposited: true,
+              patchMarginX: result.marginXPct,
+              patchMarginY: result.marginYPct,
               anchorX: r.x,
               anchorY: r.y,
               anchorWidth: r.width,
@@ -110,6 +124,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
               processedImageUrl: undefined,
               status: 'pending' as const,
               editorComposited: false,
+              patchMarginX: undefined,
+              patchMarginY: undefined,
             };
           }
           return r;
@@ -392,17 +408,22 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const noBrush: Region = { ...region, editorBrushUrl: undefined };
     if (!regionNeedsComposite(noBrush)) return null;
     const imageEl = await loadImage(img.previewUrl);
-    return compositeRegionPatch(
+    // allowMargin=false: the painter canvas must stay exactly crop-sized so
+    // brush coordinates map 1:1 onto the crop area of the final patch.
+    const result = await compositeRegionPatch(
       imageEl,
       noBrush,
       erasedCacheRef.current,
       configRef.current.enableVerticalTextDefault,
-      configRef.current.editorBackendUrl
+      configRef.current.editorBackendUrl,
+      false
     );
+    return result?.url ?? null;
   }, [getImage]);
 
   return {
     busy,
+    computedFontSizes,
     updateEditorRegion,
     setBrushLayer,
     eraseRegions,

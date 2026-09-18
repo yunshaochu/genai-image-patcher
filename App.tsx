@@ -58,6 +58,7 @@ export default function App() {
   // lives on Region fields; this hook owns only caches + debounce timers.
   const {
       busy: editorBusy,
+      computedFontSizes,
       updateEditorRegion,
       setBrushLayer,
       eraseRegions,
@@ -436,6 +437,7 @@ export default function App() {
   // Bound API surface of the manga text editor for the Sidebar's editor panel.
   const editorApi: EditorApi = useMemo(() => ({
       busy: editorBusy,
+      computedFontSizes,
       onUpdateRegion: updateEditorRegion,
       onErase: (imageId, scope, sel) => { eraseRegions(imageId, scope, sel); },
       onRestoreErase: (imageId, scope, sel) => { restoreErase(imageId, scope, sel); },
@@ -445,7 +447,7 @@ export default function App() {
       onTranslateAllImages: () => { translateAllImages(); },
       buildBrushBase,
       onBrushChange: setBrushLayer,
-  }), [editorBusy, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, translateImageRegions, translateAllImages, buildBrushBase, setBrushLayer]);
+  }), [editorBusy, computedFontSizes, updateEditorRegion, eraseRegions, restoreErase, ocrAllRegions, handleOcrRegion, translateImageRegions, translateAllImages, buildBrushBase, setBrushLayer]);
 
   return (
     <div 

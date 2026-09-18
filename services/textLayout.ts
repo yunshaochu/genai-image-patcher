@@ -170,6 +170,24 @@ export interface TextLayout {
 }
 
 /**
+ * Pixel bounds of a laid-out text block, in the same box coordinate space as
+ * drawTextLayout. Used by the compositor to size the overflow margin when
+ * the block doesn't fit its box (manual font size / pathological input).
+ * For horizontal layouts blockW is 0 — wrapping guarantees lines fit innerW.
+ */
+export const measureLayoutBlock = (layout: TextLayout): { blockW: number; blockH: number } => {
+  const { lines, style } = layout;
+  const { fontSize, isVertical } = style;
+  if (isVertical) {
+    return {
+      blockW: lines.length * fontSize * LINE_HEIGHT_RATIO,
+      blockH: Math.max(0, ...lines.map(l => l.length * fontSize)),
+    };
+  }
+  return { blockW: 0, blockH: lines.length * fontSize * LINE_HEIGHT_RATIO };
+};
+
+/**
  * Lay out `text` inside a boxW×boxH box. When style.fontSize is undefined,
  * binary-searches the largest font size (8..cap) whose wrapped result fits.
  */

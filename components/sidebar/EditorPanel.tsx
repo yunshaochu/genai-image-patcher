@@ -20,8 +20,11 @@ interface EditorPanelProps {
   image: UploadedImage;
   config: AppConfig;
   selectedRegionId: string | null;
-  onSelectRegion: (id: string | null) => void;
+  onSelectRegion: (regionId: string | null) => void;
   busy: boolean;
+  /** regionId → last resolved font size (auto-fit or manual), shown as the
+   *  font-size input placeholder so users have a reference for manual sizing. */
+  computedFontSizes?: Record<string, number>;
   onUpdateRegion: (regionId: string, updates: {
     editorText?: string;
     editorErased?: boolean;
@@ -262,7 +265,7 @@ const BrushPainter: React.FC<{
 // Main panel
 // ---------------------------------------------------------------------------
 export const EditorPanel: React.FC<EditorPanelProps> = ({
-    image, config, selectedRegionId, onSelectRegion, busy, onUpdateRegion,
+    image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes, onUpdateRegion,
     onErase, onRestoreErase, onOcrAll, onOcrRegion, onTranslate, onTranslateAll,
     buildBrushBase, onBrushChange,
 }) => {
@@ -449,14 +452,32 @@ export const EditorPanel: React.FC<EditorPanelProps> = ({
                       min={0}
                       max={400}
                       value={region.editorStyle?.fontSize ?? ''}
-                      placeholder={t(lang, 'editorFontSizeAuto')}
+                      placeholder={
+                        region.editorStyle?.fontSize
+                          ? t(lang, 'editorFontSizeAuto')
+                          : computedFontSizes?.[region.id]
+                            ? `${t(lang, 'editorFontSizeAuto')} ${computedFontSizes[region.id]}px`
+                            : t(lang, 'editorFontSizeAuto')
+                      }
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
-                        const v = e.target.value === '' ? undefined : Math.max(6, Number(e.target.value));
-                        onUpdateRegion(region.id, { editorStyle: { fontSize: v } });
+                        // No clamping here: this is a controlled input, so
+                        // clamping mid-typing would rewrite the first digit
+                        // (e.g. typing "4" of "45" becomes "6" → "65").
+                        const raw = e.target.value;
+                        onUpdateRegion(region.id, {
+                          editorStyle: { fontSize: raw === '' ? undefined : Math.max(1, Number(raw)) },
+                        });
+                      }}
+                      onBlur={(e) => {
+                        if (e.target.value === '') return;
+                        const clamped = Math.min(400, Math.max(6, Number(e.target.value)));
+                        if (clamped !== Number(e.target.value)) {
+                          onUpdateRegion(region.id, { editorStyle: { fontSize: clamped } });
+                        }
                       }}
                       title={t(lang, 'editorFontSizeAutoTip')}
-                      className="w-14 ml-auto px-1 py-0.5 text-[10px] text-center border border-skin-border rounded bg-skin-surface"
+                      className="w-20 ml-auto px-1 py-0.5 text-[10px] text-center border border-skin-border rounded bg-skin-surface"
                     />
                   </div>
                 </div>

@@ -16,6 +16,8 @@ import { DEFAULT_PROMPT } from '../hooks/useConfig';
 /** API surface of useMangaEditor, bound to image ids by the Sidebar. */
 export interface EditorApi {
   busy: boolean;
+  /** regionId → last resolved font size (auto-fit or manual), for display. */
+  computedFontSizes?: Record<string, number>;
   onUpdateRegion: (imageId: string, regionId: string, updates: {
     editorText?: string;
     editorErased?: boolean;
@@ -859,6 +861,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={onSelectRegion}
                     busy={editorApi.busy}
+                    computedFontSizes={editorApi.computedFontSizes}
                     onUpdateRegion={(regionId, updates) => editorApi.onUpdateRegion(currentImage.id, regionId, updates)}
                     onErase={(scope) => editorApi.onErase(currentImage.id, scope, selectedRegionId)}
                     onRestoreErase={(scope) => editorApi.onRestoreErase(currentImage.id, scope, selectedRegionId)}

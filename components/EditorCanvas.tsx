@@ -749,21 +749,29 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             const ay = region.anchorY ?? region.y;
             const aw = region.anchorWidth ?? region.width;
             const ah = region.anchorHeight ?? region.height;
+            // Editor patches may carry an overflow margin (text spilling out
+            // of the box) — the patch box is the anchor enlarged by it.
+            const mx = region.patchMarginX ?? 0;
+            const my = region.patchMarginY ?? 0;
+            const ex = ax - mx;
+            const ey = ay - my;
+            const ew = aw + 2 * mx;
+            const eh = ah + 2 * my;
             const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskUrl;
-            const clipTop    = aw > 0 && ah > 0 ? Math.max(0, ((region.y - ay) / ah) * 100) : 0;
-            const clipRight  = aw > 0 && ah > 0 ? Math.max(0, ((ax + aw - region.x - region.width) / aw) * 100) : 0;
-            const clipBottom = aw > 0 && ah > 0 ? Math.max(0, ((ay + ah - region.y - region.height) / ah) * 100) : 0;
-            const clipLeft   = aw > 0 && ah > 0 ? Math.max(0, ((region.x - ax) / aw) * 100) : 0;
+            const clipTop    = ew > 0 && eh > 0 ? Math.max(0, ((region.y - ey) / eh) * 100) : 0;
+            const clipRight  = ew > 0 && eh > 0 ? Math.max(0, ((ex + ew - region.x - region.width) / ew) * 100) : 0;
+            const clipBottom = ew > 0 && eh > 0 ? Math.max(0, ((ey + eh - region.y - region.height) / eh) * 100) : 0;
+            const clipLeft   = ew > 0 && eh > 0 ? Math.max(0, ((region.x - ex) / ew) * 100) : 0;
             return (
               <img
                 key={`overlay-${region.id}`}
                 src={hasRestore ? (restoreCompositedCacheRef.current[region.id] || region.processedImageUrl) : region.processedImageUrl}
                 className="absolute pointer-events-none select-none"
                 style={{
-                  left: `${ax}%`,
-                  top: `${ay}%`,
-                  width: `${aw}%`,
-                  height: `${ah}%`,
+                  left: `${ex}%`,
+                  top: `${ey}%`,
+                  width: `${ew}%`,
+                  height: `${eh}%`,
                   objectFit: 'contain',
                   objectPosition: 'center center',
                   clipPath: `inset(${clipTop}% ${clipRight}% ${clipBottom}% ${clipLeft}%)`,

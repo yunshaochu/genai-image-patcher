@@ -1,7 +1,7 @@
 import { Region } from '../types';
 import { loadImage, releaseObjectURL } from './imageUtils';
 import { eraseTextInCanvasAuto } from './textErase';
-import { layoutText, drawTextLayout } from './textLayout';
+import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
 
 /**
  * Compositing pipeline for the in-place manga text editor.
@@ -39,10 +39,25 @@ export const getRegionEditorText = (region: Region): string =>
 export const regionNeedsComposite = (region: Region): boolean =>
   !!region.editorErased || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
 
+export interface CompositeResult {
+  url: string;
+  /** Resolved font size (also when auto-fit) — shown in the panel as reference. */
+  fontSize?: number;
+  /** Overflow margin beyond the anchor box, as % of the FULL image size.
+   *  The patch canvas extends this far past the crop on every side so text
+   *  that overflows the box stays visible (user can then shrink font size). */
+  marginXPct: number;
+  marginYPct: number;
+}
+
 /**
- * Build the composited patch for a region. Returns an Object URL, or null
- * when the region has no editor content (caller should then restore the
- * region to its un-edited state).
+ * Build the composited patch for a region. Returns null when the region has
+ * no editor content (caller should then restore its un-edited state).
+ *
+ * When the typeset text overflows the box, the patch canvas is enlarged by
+ * the overflow amount (+ slack) instead of clipping, so the user can see the
+ * overflow and adjust the font size. `allowMargin=false` forces a crop-sized
+ * patch (used for the brush-painter base, whose canvas must stay crop-sized).
  *
  * `editorBackendUrl` points at the unified Python backend; its /erase
  * endpoint (OpenCV inpaint) is preferred over the local fallback eraser.
@@ -52,8 +67,9 @@ export const compositeRegionPatch = async (
   region: Region,
   erasedCache: Map<string, ErasedCacheEntry>,
   preferVerticalDefault: boolean,
-  editorBackendUrl?: string
-): Promise<string | null> => {
+  editorBackendUrl?: string,
+  allowMargin = true
+): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
 
   const imgW = imageEl.naturalWidth;
@@ -63,12 +79,33 @@ export const compositeRegionPatch = async (
   const cropW = Math.max(1, Math.round((region.width / 100) * imgW));
   const cropH = Math.max(1, Math.round((region.height / 100) * imgH));
 
+  // Layout first: its block bounds decide the overflow margin.
+  const text = getRegionEditorText(region);
+  const layout = text.trim() ? layoutText(text, cropW, cropH, region.editorStyle, preferVerticalDefault) : null;
+
+  let mx = 0;
+  let my = 0;
+  if (layout && allowMargin) {
+    const { blockW, blockH } = measureLayoutBlock(layout);
+    const pad = layout.style.padding;
+    const innerW = Math.max(8, cropW - pad * 2);
+    const innerH = Math.max(8, cropH - pad * 2);
+    // The block is centered in the box, so overflow spills evenly on both
+    // sides. Slack (only when overflowing) covers punctuation overhang
+    // (em-box offsets, rotations).
+    const overX = Math.max(0, Math.ceil((blockW - innerW) / 2));
+    const overY = Math.max(0, Math.ceil((blockH - innerH) / 2));
+    const slack = overX > 0 || overY > 0 ? Math.ceil(layout.style.fontSize * 0.35) : 0;
+    mx = overX + slack;
+    my = overY + slack;
+  }
+
   const canvas = document.createElement('canvas');
-  canvas.width = cropW;
-  canvas.height = cropH;
+  canvas.width = cropW + mx * 2;
+  canvas.height = cropH + my * 2;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
-  ctx.drawImage(imageEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  ctx.drawImage(imageEl, cropX, cropY, cropW, cropH, mx, my, cropW, cropH);
 
   // 1. Erasure (cached per region+geometry — the expensive step)
   if (region.editorErased) {
@@ -92,27 +129,34 @@ export const compositeRegionPatch = async (
       erasedCache.set(region.id, entry);
     }
     const erasedImg = await loadImage(entry.url);
-    ctx.drawImage(erasedImg, 0, 0, cropW, cropH);
+    ctx.drawImage(erasedImg, mx, my, cropW, cropH);
   }
 
   // 2. Typeset text
-  const text = getRegionEditorText(region);
-  if (text.trim()) {
-    const layout = layoutText(text, cropW, cropH, region.editorStyle, preferVerticalDefault);
-    if (layout) drawTextLayout(ctx, layout, cropW, cropH);
+  if (layout) {
+    ctx.save();
+    ctx.translate(mx, my);
+    drawTextLayout(ctx, layout, cropW, cropH);
+    ctx.restore();
   }
 
-  // 3. Brush strokes on top (scaled if the box geometry changed since painting)
+  // 3. Brush strokes on top (crop-aligned; scaled if the box geometry
+  // changed since painting)
   if (region.editorBrushUrl) {
     try {
       const brushImg = await loadImage(region.editorBrushUrl);
-      ctx.drawImage(brushImg, 0, 0, cropW, cropH);
+      ctx.drawImage(brushImg, mx, my, cropW, cropH);
     } catch (e) {
       console.warn('Failed to load brush layer for region', region.id, e);
     }
   }
 
-  return canvasToObjectURL(canvas);
+  return {
+    url: await canvasToObjectURL(canvas),
+    fontSize: layout?.style.fontSize,
+    marginXPct: (mx / imgW) * 100,
+    marginYPct: (my / imgH) * 100,
+  };
 };
 
 /** Release a region's cached erased base (e.g. when the region is deleted). */

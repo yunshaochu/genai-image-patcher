@@ -60,6 +60,11 @@ export interface Region {
   editorStyle?: EditorTextStyle; // Typeset style overrides
   editorBrushUrl?: string;    // Transparent brush-stroke layer Object URL (region-crop sized)
   editorComposited?: boolean; // processedImageUrl was produced by the editor compositor
+  /** Editor patch overflow margin beyond the anchor box, as % of the full image
+   *  width/height (patch extends this far past the crop on each side so
+   *  overflowing text stays visible). 0/undefined = crop-sized patch. */
+  patchMarginX?: number;
+  patchMarginY?: number;
 
   // Retry diagnostics. retryCount counts failed attempts in the current run
   // (cleared when the user manually triggers a fresh processing pass on this
