@@ -16,6 +16,7 @@ BananaChange 统一后端服务
 import base64
 import io
 import json
+import threading
 
 import cv2
 import numpy as np
@@ -46,6 +47,8 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'}
 
 # 全局模型实例（懒加载，首次 /detect 时载入）
 detector = None
+# 模型加载锁：防止并发请求同时进入加载流程，导致重复加载
+_model_lock = threading.Lock()
 
 import torch
 model_config = {
@@ -57,17 +60,26 @@ model_config = {
 
 
 def init_model():
-    """初始化检测模型"""
+    """
+    初始化检测模型（线程安全，保证只加载一次）。
+
+    双重检查 + 锁：并发请求不会重复加载模型；加载失败时不缓存实例，
+    后续请求会自动重试。
+    """
     global detector
-    if detector is None:
-        print(f"Loading RT-DETR model: {model_config['model_name']}")
-        print(f"Device: {model_config['device']}")
-        detector = ComicDetector(
-            model_name=model_config['model_name'],
-            device=model_config['device'],
-            conf_threshold=model_config['conf_threshold']
-        )
-        print("Model loaded successfully!")
+    if detector is not None:
+        return detector
+    with _model_lock:
+        # 拿到锁后再检查一次：可能已被其他线程加载完成
+        if detector is None:
+            print(f"Loading RT-DETR model: {model_config['model_name']}")
+            print(f"Device: {model_config['device']}")
+            detector = ComicDetector(
+                model_name=model_config['model_name'],
+                device=model_config['device'],
+                conf_threshold=model_config['conf_threshold']
+            )
+            print("Model loaded successfully!")
     return detector
 
 
@@ -228,5 +240,14 @@ if __name__ == '__main__':
     print("  POST /detect  - 文本/气泡检测 (RT-DETR)")
     print("  POST /erase   - 区域文字擦除 (flood fill + inpaint)")
     print("=" * 60)
+
+    # 启动时预加载模型：避免首个 /detect 请求等待过久、并发导入竞争
+    try:
+        init_model()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[WARN] 模型预加载失败，将在首次 /detect 时重试: "
+              f"{type(e).__name__}: {e}")
 
     app.run(host='0.0.0.0', port=5001, debug=False, threaded=True)

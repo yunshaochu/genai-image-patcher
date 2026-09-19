@@ -86,10 +86,14 @@ class ComicDetector:
         """加载模型"""
         try:
             from transformers import RTDetrForObjectDetection, RTDetrImageProcessor
-        except ImportError:
+        except ImportError as e:
+            # 保留原始异常：可能是 transformers 版本过旧、缺少 torchvision，
+            # 或并发导入时的懒加载竞争，不能一律归结为"没装 transformers"
             raise ImportError(
-                "请安装 transformers 库: pip install transformers>=4.38.0"
-            )
+                "无法导入 RT-DETR 组件，请检查依赖: "
+                "pip install -U \"transformers>=4.38.0\" torchvision。"
+                f"原始错误: {type(e).__name__}: {e}"
+            ) from e
 
         print(f"正在加载模型: {self.model_name}")
         print(f"使用设备: {self.device}")
