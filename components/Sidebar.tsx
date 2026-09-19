@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType, isRegionPaintable } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
 import { stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
@@ -796,8 +796,9 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                     {selectedRegionId ? (() => {
                         const region = currentImage.regions.find(r => r.id === selectedRegionId);
-                        // contextOnly markers (bubble outlines) have no patch zone
-                        if (!region || region.contextOnly) {
+                        // Regions the pipeline would never paint (per the
+                        // generation source) have no patch zone.
+                        if (!region || !isRegionPaintable(region, config.generationRegionSource ?? 'text')) {
                             return !config.useFullImageMasking ? (
                                 <div className="text-center py-8 text-skin-muted italic text-xs">
                                     {t(lang, 'noRegions')}

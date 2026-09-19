@@ -75,6 +75,7 @@ export default function App() {
       unfreezeTranslation,
       freezeTranslation,
       whitenFrozenTextFree,
+      unfreezeAiBubbleRegions,
       resyncEditedRegions,
       buildBrushBase,
   } = useMangaEditor({ images, updateImage, config, setErrorMsg });
@@ -665,6 +666,8 @@ export default function App() {
                     restoreSelectedRegionId={restoreSelectedRegionId}
                     onSelectRestoreRegion={setRestoreSelectedRegionId}
                     showRetryDiagnostics={!!config.showRetryDiagnostics}
+                    regionDisplay={isEditorMode ? 'editor' : 'generation'}
+                    generationRegionSource={config.generationRegionSource}
                 />
               )}
 
@@ -697,6 +700,7 @@ export default function App() {
                     onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
                     onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
                     onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
+                    onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
                   />
               )}
             </>

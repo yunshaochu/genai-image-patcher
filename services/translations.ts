@@ -46,6 +46,11 @@ export const translations = {
     detectInflation: "气泡膨胀率",
     detectOffset: "位置偏移 (X / Y)",
     detectConfidence: "置信度阈值",
+    genSourceLabel: "AI 生图区域",
+    genSourceText: "文字框",
+    genSourceBubble: "气泡框",
+    genSourceHintText: "text_bubble + text_free 精准擦字，banana 系模型效果最佳",
+    genSourceHintBubble: "整颗气泡重绘 + text_free，各模型表现更稳定",
     
     // OCR
     ocrBtn: "OCR 识别",
@@ -151,6 +156,10 @@ export const translations = {
     editorFreezeTip: "把译文从原图撤出（恢复原图、框转回待处理），译文保留在冻结区，留待 AI 生图",
     editorWhitenFree: "涂白 text_free 并解冻",
     editorWhitenFreeTip: "无可用生图模型时的兜底：把本页所有被冻结的 text_free 暴力涂成白底，并填入被冻结的译文",
+    editorAiBaseBadge: "AI 泡底",
+    editorAiBaseBadgeTip: "底图为 AI 重绘的干净气泡：排字直接落在泡底上，无需擦除；翻译默认冻结，可随时显示",
+    editorRevealAiBase: "显示泡底翻译",
+    editorRevealAiBaseTip: "把本页所有 AI 泡底框里被保留的译文一次性排版显示（不擦除任何东西）",
     
     // Manual Workbench
     workbenchTitle: "补丁工坊",
@@ -373,6 +382,11 @@ export const translations = {
     detectInflation: "Inflation Rate",
     detectOffset: "Position Offset (X / Y)",
     detectConfidence: "Confidence Threshold",
+    genSourceLabel: "AI Redraw Regions",
+    genSourceText: "Text Boxes",
+    genSourceBubble: "Bubble Outlines",
+    genSourceHintText: "text_bubble + text_free — precise text redraw, best with banana-class models",
+    genSourceHintBubble: "Whole-bubble redraw + text_free — steadier across models",
     
     // OCR
     ocrBtn: "OCR",
@@ -478,6 +492,10 @@ export const translations = {
     editorFreezeTip: "Pull the translation out of the image (restore original, box goes back to pending) and hold it as frozen — left for AI redraw",
     editorWhitenFree: "Whiten text_free + fill",
     editorWhitenFreeTip: "Fallback when no redraw model is available: brute-force whiten every frozen text_free box on this page and typeset its frozen translation",
+    editorAiBaseBadge: "AI Base",
+    editorAiBaseBadgeTip: "Base is the AI-redrawn clean bubble: text typesets directly onto it, no erasure needed; translations are held frozen until revealed",
+    editorRevealAiBase: "Reveal AI-base translations",
+    editorRevealAiBaseTip: "Typeset every translation held back on AI-redrawn bubbles on this page (nothing is erased)",
     
     // Manual Workbench
     workbenchTitle: "Patch Workbench",

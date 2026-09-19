@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, Language, RestoreBox } from '../types';
+import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, isRegionPaintable } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL } from '../services/imageUtils';
@@ -36,6 +36,11 @@ interface EditorCanvasProps {
   restoreSelectedRegionId?: string | null;
   onSelectRestoreRegion?: (regionId: string | null) => void;
   showRetryDiagnostics?: boolean;
+  /** Editor workflow shows text regions (contextOnly bubbles hidden);
+   *  generation workflows show the paintable classes selected by
+   *  generationRegionSource. Default 'editor' preserves historical behavior. */
+  regionDisplay?: 'editor' | 'generation';
+  generationRegionSource?: GenerationRegionSource;
 }
 
 /**
@@ -75,6 +80,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     restoreSelectedRegionId = null,
     onSelectRestoreRegion,
     showRetryDiagnostics = false,
+    regionDisplay = 'editor',
+    generationRegionSource = 'text',
 }: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -685,6 +692,15 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   const showPatchOverlays = viewMode === 'result' || isEditMode;
   const isRestoreActive = restoreMode && viewMode === 'result';
 
+  // Which region boxes are drawn at all. Editor workflow: text regions
+  // (bubble outlines stay hidden visual context). Generation workflows:
+  // only the paintable classes for the configured source — e.g. 'bubble'
+  // mode shows whole-bubble boxes as the working units and hides text boxes.
+  const isRegionVisible = (region: Region): boolean =>
+    regionDisplay === 'editor'
+      ? !region.contextOnly
+      : isRegionPaintable(region, generationRegionSource);
+
   const imgW = image.originalWidth || 800;
   const imgH = image.originalHeight || 600;
 
@@ -742,10 +758,14 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
           {/* RESULT/EDIT MODE: Processed image overlays. Result shows only
               finalized (completed) patches; edit additionally shows editor
-              intermediate patches (erase/brush-only, still pending). */}
+              intermediate patches (erase/brush-only, still pending).
+              Z-order: AI patches first, editor-composited patches last so
+              typeset text always sits on top of the AI-redrawn base. */}
           {showPatchOverlays && image.regions.filter(r =>
             r.status === 'completed' && r.processedImageUrl ||
             (isEditMode && r.editorComposited && r.processedImageUrl)
+          ).sort((a, b) =>
+            Number(a.editorComposited ?? false) - Number(b.editorComposited ?? false)
           ).map((region) => {
             const ax = region.anchorX ?? region.x;
             const ay = region.anchorY ?? region.y;
@@ -786,10 +806,9 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
           {/* Regions */}
           {image.regions.map((region) => {
-            // contextOnly markers (bubble outlines) are kept in state as
-            // visual/AI context but never drawn — the dashed box is visual
-            // noise, especially on the completed view.
-            if (region.contextOnly) return null;
+            // Only the boxes relevant to this display context are drawn —
+            // editor: text regions; generation: paintable classes per source.
+            if (!isRegionVisible(region)) return null;
             const isSelected = selectedRegionId === region.id && boxesInteractive;
             const isEditable = boxesInteractive && !disabled && region.status !== 'processing';
 

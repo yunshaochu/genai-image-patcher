@@ -1,6 +1,6 @@
 
 import { useState, useRef } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
@@ -159,6 +159,12 @@ export function useImageProcessor(
     const imagesRef = useRef(images);
     imagesRef.current = images;
 
+    // Which regions the AI redraw pipeline paints, governed by
+    // config.generationRegionSource ('text' = text boxes, 'bubble' = whole
+    // bubble outlines; text_free and manual regions always paint).
+    const paintable = (r: Region): boolean =>
+        isRegionPaintable(r, config.generationRegionSource ?? 'text');
+
     const handleStop = () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
@@ -208,10 +214,33 @@ export function useImageProcessor(
             localRegionState.set(next.id, { status: next.status, retryCount: next.retryCount ?? 0 });
         };
 
+        // When a whole-bubble region gets AI-redrawn, the original text inside
+        // it is wiped — mark contained text_bubble regions so the editor
+        // typesets onto the AI bubble patch and skips erasure (aiBubbleBase).
+        // NOT for inverted masking (region pixels stay original there), so
+        // only call this on paths that actually replace the region's pixels.
+        const markBubbleContainedTexts = (bubble: Region) => {
+            if (bubble.detectedClass !== 'bubble') return;
+            const bx = bubble.anchorX ?? bubble.x;
+            const by = bubble.anchorY ?? bubble.y;
+            const bw = bubble.anchorWidth ?? bubble.width;
+            const bh = bubble.anchorHeight ?? bubble.height;
+            for (const r of regionsMap.values()) {
+                if (r.id === bubble.id || r.aiBubbleBase) continue;
+                if (r.source !== 'auto' || r.detectedClass !== 'text_bubble') continue;
+                const cx = r.x + r.width / 2;
+                const cy = r.y + r.height / 2;
+                if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+                    setRegion({ ...r, aiBubbleBase: true });
+                }
+            }
+        };
+
         let initialRegions = [...imageSnapshot.regions];
-        // contextOnly markers (bubble outlines) don't count as paintable
-        // regions — an image holding ONLY those is still "empty".
-        if (!initialRegions.some(r => !r.contextOnly) && config.processFullImageIfNoRegions) {
+        // Regions excluded by the generation source (e.g. bubble outlines in
+        // 'text' mode) don't count as paintable — an image holding ONLY those
+        // is still "empty".
+        if (!initialRegions.some(paintable) && config.processFullImageIfNoRegions) {
             const fullRegion: Region = {
                 id: crypto.randomUUID(),
                 x: 0, y: 0, width: 100, height: 100,
@@ -225,9 +254,9 @@ export function useImageProcessor(
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
-        // Mask building excludes contextOnly markers — bubble outlines are
-        // visual context for the user, never whited-out for the AI.
-        const maskRegions = allActiveRegions.filter(r => !r.contextOnly);
+        // Mask building only covers paintable regions — e.g. in 'text' mode
+        // bubble outlines are visual context, never whited-out for the AI.
+        const maskRegions = allActiveRegions.filter(paintable);
         // Cap per-region attempts at (maxRetriesPerRegion + 1). A region that's already
         // burned through its retry budget is skipped here even if its image is
         // still being passed through the outer loop (because OTHER regions in
@@ -235,7 +264,7 @@ export function useImageProcessor(
         const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
         const regionsToProcess = allActiveRegions.filter(r =>
             (r.status === 'pending' || r.status === 'failed')
-            && !r.contextOnly
+            && paintable(r)
             && (r.retryCount ?? 0) < maxAttemptsPerRegion
         );
         if (regionsToProcess.length === 0) return;
@@ -414,6 +443,7 @@ export function useImageProcessor(
                         if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
                         const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                         setRegion(completedRegion);
+                        markBubbleContainedTexts(completedRegion);
                     }
 
                     updateImage(imageSnapshot.id, img => {
@@ -629,6 +659,7 @@ export function useImageProcessor(
                 // editor treats this region as read-only (AI result wins).
                 const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
                 setRegion(completedRegion);
+                markBubbleContainedTexts(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
 
                 updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
@@ -691,18 +722,18 @@ export function useImageProcessor(
 
         // Clear retry diagnostics on regions about to be (re)processed so
         // counts/history reflect THIS run, not historical attempts. Only
-        // touches regions in scope (pending/failed, non-contextOnly).
+        // touches regions in scope (pending/failed, paintable).
         const targetIds = new Set(initialTargets.map(i => i.id));
         updateAllImages(img => {
             if (!targetIds.has(img.id)) return img;
             const anyToReset = img.regions.some(r =>
-                (r.status === 'pending' || r.status === 'failed') && !r.contextOnly
+                (r.status === 'pending' || r.status === 'failed') && paintable(r)
             );
             if (!anyToReset) return img;
             return {
                 ...img,
                 regions: img.regions.map(r =>
-                    (r.status === 'pending' || r.status === 'failed') && !r.contextOnly
+                    (r.status === 'pending' || r.status === 'failed') && paintable(r)
                         ? { ...r, retryCount: 0, errorHistory: [] }
                         : r
                 ),
@@ -726,7 +757,7 @@ export function useImageProcessor(
         for (const img of initialTargets) {
             if (img.isSkipped) continue;
             for (const r of img.regions) {
-                if (r.contextOnly) continue;
+                if (!paintable(r)) continue;
                 const inScope = r.status === 'pending' || r.status === 'failed';
                 localRegionState.set(r.id, {
                     status: r.status,
@@ -745,7 +776,7 @@ export function useImageProcessor(
                 // in localRegionState yet, so fall back to the React state for those.
                 const roundTargets = pickTargets().filter(img =>
                     img.regions.some(r => {
-                        if (r.contextOnly) return false;
+                        if (!paintable(r)) return false;
                         const local = localRegionState.get(r.id);
                         if (local) {
                             return (local.status === 'pending' || local.status === 'failed')

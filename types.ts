@@ -12,6 +12,37 @@ export interface RestoreBox {
 export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
 
 /**
+ * Which detected class the AI redraw pipeline paints.
+ * 'text'   — text_bubble + text_free (precise text boxes; best with strong
+ *            models like the banana series). Default, historical behavior.
+ * 'bubble' — whole bubble outlines + text_free (redrawing the entire bubble
+ *            is far more forgiving for weaker models).
+ * Manual regions are always paintable regardless of this setting.
+ */
+export type GenerationRegionSource = 'text' | 'bubble';
+
+/**
+ * Decides whether a region enters the AI redraw pipeline (masked + painted)
+ * and is shown as a working box in the AI-generation canvas. Editor-mode
+ * visibility is NOT governed by this — the editor always works on text
+ * regions (see contextOnly).
+ */
+export const isRegionPaintable = (
+  r: Pick<Region, 'source' | 'detectedClass' | 'contextOnly'>,
+  source: GenerationRegionSource = 'text'
+): boolean => {
+  if (r.source === 'auto' && r.detectedClass) {
+    // text_free is a work unit in both modes (no bubble outline covers it).
+    if (r.detectedClass === 'text_free') return true;
+    return source === 'bubble'
+      ? r.detectedClass === 'bubble'
+      : r.detectedClass === 'text_bubble';
+  }
+  // Manual / legacy regions keep the historical contextOnly semantics.
+  return !r.contextOnly;
+};
+
+/**
  * Per-region text style used by the in-place manga text editor.
  * color/outline are written by the AI colour module (translation) and the
  * dock 字色 toggle; fontFamily / rotation remain reserved for a future UI.
@@ -69,6 +100,14 @@ export interface Region {
    *  erasure, before text) — the no-redraw-model fallback for frozen
    *  text_free on complex backgrounds. */
   editorWhitedOut?: boolean;
+  /** Set when a completed AI-redrawn bubble (generationRegionSource='bubble')
+   *  fully contains this text region: the bubble's patch already wiped the
+   *  original text, so the region's base is clean. Effects:
+   *  - editor composites text ON TOP of the AI bubble patch (not the
+   *    original crop) and skips erasure;
+   *  - batch erase skips it; batch translation still runs but holds the
+   *    result frozen (editorFrozenText) until the user reveals it. */
+  aiBubbleBase?: boolean;
   /** Editor patch overflow margin beyond the anchor box, as % of the full image
    *  width/height (patch extends this far past the crop on each side so
    *  overflowing text stays visible). 0/undefined = crop-sized patch. */
@@ -177,6 +216,7 @@ export interface AppConfig {
   detectionOffsetXPercent: number; // e.g. 0
   detectionOffsetYPercent: number; // e.g. 0
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
+  generationRegionSource: GenerationRegionSource; // Which detected class the AI redraw pipeline paints (default 'text')
   
   // Manga Module Settings (New Structure)
   enableMangaMode: boolean;        // Master switch

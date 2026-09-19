@@ -95,6 +95,7 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
   detectionConfidenceThreshold: 30,
+  generationRegionSource: 'text', // 'text' = text_bubble+text_free; 'bubble' = whole bubble outlines+text_free
   
   // Manga Module Defaults
   enableMangaMode: false,

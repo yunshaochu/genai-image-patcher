@@ -49,6 +49,8 @@ interface EditorDockProps {
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
   onWhitenFrozenTextFree: () => void;
+  /** One-click reveal of every frozen translation sitting on an AI bubble base. */
+  onRevealAiBase: () => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -319,7 +321,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onOcrAll, onTranslate, onTranslateAll,
   translating, onStopTranslate,
-  onUnfreeze, onFreeze, onWhitenFrozenTextFree,
+  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRevealAiBase,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -371,6 +373,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
     // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
     const frozenFreeCount = image.regions.filter(r =>
       !r.contextOnly && r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
+    ).length;
+    // Frozen translations held back on AI-redrawn bubble bases — the
+    // one-click reveal typesets them all without any erasure.
+    const aiBaseFrozenCount = image.regions.filter(r =>
+      r.aiBubbleBase && !isAiOwned(r) && !!r.editorFrozenText?.trim()
     ).length;
 
     // Scope-aware dispatchers: '所有图片' routes to the batch variants.
@@ -497,6 +504,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
               >
                 {t(lang, 'editorWhitenFree')}{frozenFreeCount > 0 ? ` (${frozenFreeCount})` : ''}
               </button>
+              <button
+                onClick={onRevealAiBase}
+                disabled={busy || aiBaseFrozenCount === 0}
+                className="w-full px-2 py-1.5 text-[10px] font-bold border border-teal-300 text-teal-600 bg-teal-500/10 rounded hover:bg-teal-500/20 disabled:opacity-50 transition-colors"
+                title={t(lang, 'editorRevealAiBaseTip')}
+              >
+                {t(lang, 'editorRevealAiBase')}{aiBaseFrozenCount > 0 ? ` (${aiBaseFrozenCount})` : ''}
+              </button>
             </div>
           )}
 
@@ -544,6 +559,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
         }`}>
           {classBadge(region, lang)}
         </span>
+        {region.aiBubbleBase && (
+          <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-teal-100 text-teal-700" title={t(lang, 'editorAiBaseBadgeTip')}>
+            {t(lang, 'editorAiBaseBadge')}
+          </span>
+        )}
         {region.editorErased && (
           <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">
             {t(lang, 'editorErasedBadge')}

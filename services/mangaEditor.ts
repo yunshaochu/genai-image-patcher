@@ -135,6 +135,37 @@ export const resolveEraseRect = (
 export const getRegionEditorText = (region: Region): string =>
   region.editorText ?? (region.editorFrozenText?.trim() ? '' : region.ocrText ?? '');
 
+/**
+ * The completed, AI-redrawn bubble whose box contains `region`'s centre
+ * (closest centre wins). Used by the aiBubbleBase flow: after a whole-bubble
+ * redraw the editor typesets the contained text regions ON TOP of this
+ * bubble's patch instead of the original pixels.
+ */
+export const findCoveringCompletedBubble = (
+  regions: Region[],
+  region: Region
+): Region | undefined => {
+  const cx = region.x + region.width / 2;
+  const cy = region.y + region.height / 2;
+  let best: Region | undefined;
+  let bestDist = Infinity;
+  for (const b of regions) {
+    if (b.id === region.id || b.detectedClass !== 'bubble') continue;
+    if (b.status !== 'completed' || !b.processedImageUrl) continue;
+    const bx = b.anchorX ?? b.x;
+    const by = b.anchorY ?? b.y;
+    const bw = b.anchorWidth ?? b.width;
+    const bh = b.anchorHeight ?? b.height;
+    if (cx < bx || cx > bx + bw || cy < by || cy > by + bh) continue;
+    const d = ((bx + bw / 2) - cx) ** 2 + ((by + bh / 2) - cy) ** 2;
+    if (d < bestDist) {
+      bestDist = d;
+      best = b;
+    }
+  }
+  return best;
+};
+
 /** True when the region has anything for the compositor to render. */
 export const regionNeedsComposite = (region: Region): boolean =>
   !!region.editorErased || !!region.editorWhitedOut || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
@@ -166,7 +197,7 @@ export interface CompositeResult {
  * erasure ROI (see `resolveEraseRect`).
  */
 export const compositeRegionPatch = async (
-  imageEl: HTMLImageElement,
+  imageEl: HTMLImageElement | HTMLCanvasElement,
   region: Region,
   erasedCache: Map<string, ErasedCacheEntry>,
   preferVerticalDefault: boolean,
@@ -176,8 +207,8 @@ export const compositeRegionPatch = async (
 ): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
 
-  const imgW = imageEl.naturalWidth;
-  const imgH = imageEl.naturalHeight;
+  const imgW = imageEl instanceof HTMLImageElement ? imageEl.naturalWidth : imageEl.width;
+  const imgH = imageEl instanceof HTMLImageElement ? imageEl.naturalHeight : imageEl.height;
   const cropX = (region.x / 100) * imgW;
   const cropY = (region.y / 100) * imgH;
   const cropW = Math.max(1, Math.round((region.width / 100) * imgW));
@@ -217,7 +248,10 @@ export const compositeRegionPatch = async (
     // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
     // text box — see resolveEraseRect.
     const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
-    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}`;
+    // The base token keeps erased-ROI caches from crossing bases: a region
+    // erased on the ORIGINAL pixels must not reuse that cache once it is
+    // composited onto an AI-redrawn bubble (aiBubbleBase), and vice versa.
+    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}`;
     let entry = erasedCache.get(region.id);
     if (!entry || entry.geomKey !== key) {
       const eraseCanvas = document.createElement('canvas');

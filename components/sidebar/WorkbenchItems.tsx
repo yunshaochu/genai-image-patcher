@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region } from '../../types';
+import { UploadedImage, AppConfig, Region, isRegionPaintable } from '../../types';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
 
@@ -34,9 +34,11 @@ export const FullImageMaskRow: React.FC<{
     const generatePreview = async () => {
       try {
         const imgEl = await loadImage(image.previewUrl);
-        // contextOnly markers (bubble outlines) are visual context only —
-        // never whited out of the masked copy.
-        const maskRegions = image.regions.filter(r => !r.contextOnly);
+        // Only paintable regions (per the configured generation source) are
+        // whited out of the masked copy — everything else stays visible.
+        const maskRegions = image.regions.filter(r =>
+          isRegionPaintable(r, config.generationRegionSource ?? 'text')
+        );
         let preview: string;
         if (config.useInvertedMasking) {
             preview = await createInvertedMultiMaskedFullImage(imgEl, maskRegions);
@@ -70,7 +72,7 @@ export const FullImageMaskRow: React.FC<{
     };
     generatePreview();
     return () => { active = false; };
-  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking, config.enableSquareFill, config.squareFillSize]);
+  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking, config.enableSquareFill, config.squareFillSize, config.generationRegionSource]);
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     e.stopPropagation();

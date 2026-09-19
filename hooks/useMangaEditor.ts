@@ -6,6 +6,7 @@ import { translateEditorRegions } from '../services/editorTranslate';
 import {
   compositeRegionPatch,
   regionNeedsComposite,
+  findCoveringCompletedBubble,
   ErasedCacheEntry,
 } from '../services/mangaEditor';
 
@@ -28,6 +29,40 @@ export const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.
  */
 const getContextBubbles = (img: UploadedImage): Region[] =>
   img.regions.filter(r => r.detectedClass === 'bubble');
+
+/**
+ * Base image the compositor builds a region's patch from. Normally the plain
+ * preview; for aiBubbleBase regions the covering AI-redrawn bubble patch is
+ * drawn in first, so typeset text sits on the clean bubble (and any explicit
+ * re-erasure runs on the AI base instead of resurrecting original pixels).
+ * Falls back to the plain preview when the bubble patch is unavailable.
+ */
+const buildEditorBase = async (
+  img: UploadedImage,
+  region: Region
+): Promise<HTMLImageElement | HTMLCanvasElement> => {
+  const imageEl = await loadImage(img.previewUrl);
+  if (!region.aiBubbleBase) return imageEl;
+  const bubble = findCoveringCompletedBubble(img.regions, region);
+  if (!bubble?.processedImageUrl) return imageEl;
+  const base = document.createElement('canvas');
+  base.width = imageEl.naturalWidth;
+  base.height = imageEl.naturalHeight;
+  const bctx = base.getContext('2d');
+  if (!bctx) return imageEl;
+  bctx.drawImage(imageEl, 0, 0);
+  try {
+    const patchImg = await loadImage(bubble.processedImageUrl);
+    const ax = ((bubble.anchorX ?? bubble.x) / 100) * base.width;
+    const ay = ((bubble.anchorY ?? bubble.y) / 100) * base.height;
+    const aw = ((bubble.anchorWidth ?? bubble.width) / 100) * base.width;
+    const ah = ((bubble.anchorHeight ?? bubble.height) / 100) * base.height;
+    bctx.drawImage(patchImg, ax, ay, aw, ah);
+  } catch (e) {
+    console.warn('Failed to overlay AI bubble base for region', region.id, e);
+  }
+  return base;
+};
 
 interface UseMangaEditorParams {
   images: UploadedImage[];
@@ -106,7 +141,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     if (isAiOwned(region)) return;
 
     try {
-      const imageEl = await loadImage(img.previewUrl);
+      const imageEl = await buildEditorBase(img, region);
       const result = await compositeRegionPatch(
         imageEl,
         region,
@@ -183,6 +218,25 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }, delay));
   }, [recompositeRegion]);
 
+  // Rebase editor patches that were baked before their AI bubble base
+  // completed (or before the bubble was re-redrawn): the stale patch still
+  // carries original pixels and would cover the AI redraw. One recomposite
+  // per (region, bubble patch URL) pair — the guard map breaks the
+  // update → effect → recomposite → update loop.
+  const aiBaseRebasedRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    for (const img of images) {
+      for (const r of img.regions) {
+        if (!r.aiBubbleBase || !r.editorComposited) continue;
+        const bubble = findCoveringCompletedBubble(img.regions, r);
+        if (!bubble?.processedImageUrl) continue;
+        if (aiBaseRebasedRef.current.get(r.id) === bubble.processedImageUrl) continue;
+        aiBaseRebasedRef.current.set(r.id, bubble.processedImageUrl);
+        void recompositeRegion(img.id, r.id);
+      }
+    }
+  }, [images, recompositeRegion]);
+
   /** Merge editor field updates into a region and schedule a recomposite. */
   const updateEditorRegion = useCallback((
     imageId: string,
@@ -243,6 +297,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
     return img.regions.filter(r => {
       if (r.contextOnly || r.editorErased || isAiOwned(r)) return false;
+      // aiBubbleBase regions sit on an AI-redrawn (already text-free) bubble —
+      // batch erasure would burn the expensive flood fill for nothing. The
+      // single-region 'selected' scope above stays available as a manual
+      // override when the AI redraw left residue.
+      if (r.aiBubbleBase) return false;
       if (scope === 'bubbleOnly') return r.detectedClass === 'text_bubble';
       return true; // 'all' — manual boxes + text_bubble + text_free
     });
@@ -453,7 +512,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000' }
             : {}),
         };
-        if (res.freeze) {
+        if (res.freeze || r.aiBubbleBase) {
+          // aiBubbleBase forces the frozen landing even when the AI would
+          // typeset: the translation is held back (editorFrozenText) so the
+          // AI-redrawn bubble stays untouched until the user reveals the
+          // text. The frozen branch's field clearing is exactly right here —
+          // no erasure/whiteout may touch the AI base.
           frozen.push({
             ...r,
             ocrText: res.source ?? r.ocrText,
@@ -518,6 +582,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   /**
    * Manual unfreeze (fix an AI false positive): move the frozen translation
    * into editorText, erase the original and typeset — the regular path.
+   * aiBubbleBase regions skip the erasure: their base is the AI-redrawn
+   * bubble, which is already text-free (residue can be erased manually via
+   * the single-region erase afterwards).
    */
   const unfreezeTranslation = useCallback(async (imageId: string, regionId: string) => {
     const img = getImage(imageId);
@@ -528,7 +595,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       ...region,
       editorText: region.editorFrozenText,
       editorFrozenText: undefined,
-      editorErased: true,
+      editorErased: region.aiBubbleBase ? false : true,
     };
     updateImage(imageId, current => ({
       ...current,
@@ -586,6 +653,40 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         editorWhitedOut: true,
         // Whitening already covers everything; erasure would only waste the
         // expensive flood fill under an opaque white box.
+        editorErased: false,
+      }));
+      const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
+      updateImage(imageId, current => ({
+        ...current,
+        regions: current.regions.map(r => byId.get(r.id) ?? r),
+      }));
+      for (const nr of nextList) {
+        await recompositeRegion(imageId, nr.id, nr);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, getImage, recompositeRegion, updateImage]);
+
+  /**
+   * One-click reveal of every held-back translation on aiBubbleBase regions:
+   * typeset all frozen translations onto their (already text-free) AI bubble
+   * base — no erasure anywhere.
+   */
+  const unfreezeAiBubbleRegions = useCallback(async (imageId: string) => {
+    const img = getImage(imageId);
+    if (!img || busy) return;
+    const targets = img.regions.filter(r =>
+      r.aiBubbleBase && !isAiOwned(r) && !!r.editorFrozenText?.trim()
+    );
+    if (targets.length === 0) return;
+
+    setBusy(true);
+    try {
+      const nextList = targets.map(r => ({
+        ...r,
+        editorText: r.editorFrozenText,
+        editorFrozenText: undefined,
         editorErased: false,
       }));
       const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
@@ -703,7 +804,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     if (!img || !region || isAiOwned(region)) return null;
     const noBrush: Region = { ...region, editorBrushUrl: undefined };
     if (!regionNeedsComposite(noBrush)) return null;
-    const imageEl = await loadImage(img.previewUrl);
+    const imageEl = await buildEditorBase(img, region);
     // allowMargin=false: the painter canvas must stay exactly crop-sized so
     // brush coordinates map 1:1 onto the crop area of the final patch.
     const result = await compositeRegionPatch(
@@ -736,6 +837,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     unfreezeTranslation,
     freezeTranslation,
     whitenFrozenTextFree,
+    unfreezeAiBubbleRegions,
     resyncEditedRegions,
     buildBrushBase,
   };
