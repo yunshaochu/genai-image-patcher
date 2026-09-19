@@ -208,10 +208,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     scheduleRecomposite(imageId, regionId);
   }, [getImage, updateImage, scheduleRecomposite]);
 
-  /** Replace (or clear) the brush-stroke layer of a region. */
-  const setBrushLayer = useCallback((imageId: string, regionId: string, brushUrl: string | null) => {
+  /**
+   * Replace (or clear) the brush-stroke layer of a region.
+   *
+   * The recomposite runs immediately with the explicitly-built next region
+   * (no debounce): a debounced/timer-based call would read imagesRef, which
+   * lags one React commit behind updateImage — the first paint after a
+   * geometry/text change then composed the OLD region and the strokes never
+   * made it into the patch (paint, release, nothing written back).
+   */
+  const setBrushLayer = useCallback(async (imageId: string, regionId: string, brushUrl: string | null) => {
     const target = getImage(imageId)?.regions.find(r => r.id === regionId);
-    if (target && isAiOwned(target)) return;
+    if (!target || isAiOwned(target)) return;
+    const next: Region = { ...target, editorBrushUrl: brushUrl ?? undefined };
     updateImage(imageId, img => ({
       ...img,
       regions: img.regions.map(r => {
@@ -220,8 +229,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         return { ...r, editorBrushUrl: brushUrl ?? undefined };
       }),
     }));
-    scheduleRecomposite(imageId, regionId, 0);
-  }, [getImage, updateImage, scheduleRecomposite]);
+    await recompositeRegion(imageId, regionId, next);
+  }, [getImage, updateImage, recompositeRegion]);
 
   const pickEraseTargets = useCallback((
     img: UploadedImage,
@@ -239,44 +248,68 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     });
   }, []);
 
-  /** Erase the original text inside regions (flood-fill, frontend-only). */
-  const eraseRegions = useCallback(async (
+  /** Erase the original text inside one image (flood-fill, frontend-only).
+   *  Busy bookkeeping is owned by the public wrappers below. */
+  const eraseInImage = useCallback(async (
     imageId: string,
     scope: EraseScope,
     selectedRegionId?: string | null
   ) => {
     const img = getImage(imageId);
-    if (!img || busy) return;
+    if (!img) return;
     const targets = pickEraseTargets(img, scope, selectedRegionId);
     if (targets.length === 0) return;
 
+    // Flag first so recomposite reads consistent state.
+    const ids = new Set(targets.map(t => t.id));
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: true } : r),
+    }));
+    // Recomposite sequentially (erasure is CPU-bound per region). Pass the
+    // flipped region explicitly — the store commit lags behind updateImage.
+    for (const t of targets) {
+      await recompositeRegion(imageId, t.id, { ...t, editorErased: true });
+    }
+  }, [getImage, pickEraseTargets, recompositeRegion, updateImage]);
+
+  /** Erase regions of the current image. */
+  const eraseRegions = useCallback(async (
+    imageId: string,
+    scope: EraseScope,
+    selectedRegionId?: string | null
+  ) => {
+    if (busy) return;
     setBusy(true);
     try {
-      // Flag first so recomposite reads consistent state.
-      const ids = new Set(targets.map(t => t.id));
-      updateImage(imageId, current => ({
-        ...current,
-        regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: true } : r),
-      }));
-      // Recomposite sequentially (erasure is CPU-bound per region). Pass the
-      // flipped region explicitly — the store commit lags behind updateImage.
-      for (const t of targets) {
-        await recompositeRegion(imageId, t.id, { ...t, editorErased: true });
+      await eraseInImage(imageId, scope, selectedRegionId);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, eraseInImage]);
+
+  /** Batch: same erasure over every loaded image, in gallery order. */
+  const eraseAllImages = useCallback(async (scope: EraseScope) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      for (const img of imagesRef.current) {
+        await eraseInImage(img.id, scope, null);
       }
     } finally {
       setBusy(false);
     }
-  }, [busy, getImage, pickEraseTargets, recompositeRegion, updateImage]);
+  }, [busy, eraseInImage]);
 
-  /** Undo erasure: 'all' restores every region, 'textFree' only text_free,
-   *  'selected' only the selected region. Typeset text is kept. */
-  const restoreErase = useCallback(async (
+  /** Restore erasure inside one image ('all' / 'textFree' / 'selected').
+   *  Typeset text is kept. Busy bookkeeping is owned by the wrappers. */
+  const restoreEraseInImage = useCallback(async (
     imageId: string,
     scope: RestoreScope,
     selectedRegionId?: string | null
   ) => {
     const img = getImage(imageId);
-    if (!img || busy) return;
+    if (!img) return;
     const targets = img.regions.filter(r => {
       if (!r.editorErased || isAiOwned(r)) return false;
       if (scope === 'selected') return r.id === selectedRegionId;
@@ -285,27 +318,65 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     });
     if (targets.length === 0) return;
 
+    const ids = new Set(targets.map(t => t.id));
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: false } : r),
+    }));
+    // Pass the flipped region explicitly — the store commit lags behind
+    // updateImage, so reading it here would see the pre-restore state.
+    for (const t of targets) {
+      await recompositeRegion(imageId, t.id, { ...t, editorErased: false });
+    }
+  }, [getImage, recompositeRegion, updateImage]);
+
+  /** Undo erasure on the current image. */
+  const restoreErase = useCallback(async (
+    imageId: string,
+    scope: RestoreScope,
+    selectedRegionId?: string | null
+  ) => {
+    if (busy) return;
     setBusy(true);
     try {
-      const ids = new Set(targets.map(t => t.id));
-      updateImage(imageId, current => ({
-        ...current,
-        regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: false } : r),
-      }));
-      // Pass the flipped region explicitly — the store commit lags behind
-      // updateImage, so reading it here would see the pre-restore state.
-      for (const t of targets) {
-        await recompositeRegion(imageId, t.id, { ...t, editorErased: false });
+      await restoreEraseInImage(imageId, scope, selectedRegionId);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, restoreEraseInImage]);
+
+  /** Batch: undo erasure on every loaded image. */
+  const restoreEraseAllImages = useCallback(async (scope: RestoreScope) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      for (const img of imagesRef.current) {
+        await restoreEraseInImage(img.id, scope, null);
       }
     } finally {
       setBusy(false);
     }
-  }, [busy, getImage, recompositeRegion, updateImage]);
+  }, [busy, restoreEraseInImage]);
+
+  /** Drop the per-region erase cache + any pending composite (region deleted). */
+  const dropRegionCache = useCallback((imageId: string, regionId: string) => {
+    const entry = erasedCacheRef.current.get(regionId);
+    if (entry) {
+      releaseObjectURL(entry.url);
+      erasedCacheRef.current.delete(regionId);
+    }
+    const key = `${imageId}|${regionId}`;
+    const timer = debounceRef.current.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      debounceRef.current.delete(key);
+    }
+  }, []);
 
   /**
-   * Translate-target picker honoring the configured scope:
-   *  - 'bubble': only detected text_bubble regions
-   *  - 'all':    every editable text region (text_bubble + text_free + manual)
+   * Translate-target picker: every editable text region (text_bubble +
+   * text_free + manual boxes) — the AI translates the whole page in one call,
+   * so a bubble-only scope would just drop text without saving anything.
    * AI-owned regions are always excluded (their content is final), and so are
    * regions that already hold a translation (editorText typeset / manually
    * typed, or editorFrozenText held back) — re-sending those would burn API
@@ -313,15 +384,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * done therefore yields zero targets and the whole call is skipped.
    * To force a re-translation of one box, clear its text first.
    */
-  const pickTranslateTargets = useCallback((img: UploadedImage): Region[] => {
-    const scope = configRef.current.editorTranslationScope ?? 'all';
-    return img.regions.filter(r => {
+  const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
+    img.regions.filter(r => {
       if (r.contextOnly || isAiOwned(r)) return false;
       if (r.editorText?.trim() || r.editorFrozenText?.trim()) return false;
-      if (scope === 'bubble') return r.detectedClass === 'text_bubble';
       return true;
-    });
-  }, []);
+    }), []);
 
   /** Stop button: aborts the in-flight translation (single page or batch). */
   const stopTranslation = useCallback(() => {
@@ -657,7 +725,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     updateEditorRegion,
     setBrushLayer,
     eraseRegions,
+    eraseAllImages,
     restoreErase,
+    restoreEraseAllImages,
+    dropRegionCache,
     ocrAllRegions,
     translateImageRegions,
     translateAllImages,

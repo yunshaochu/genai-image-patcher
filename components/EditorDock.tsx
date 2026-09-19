@@ -36,7 +36,10 @@ interface EditorDockProps {
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
   onErase: (scope: EraseScope) => void;
+  /** Batch variants: apply the same operation to every loaded image. */
+  onEraseAllImages: (scope: EraseScope) => void;
   onRestoreErase: (scope: RestoreScope) => void;
+  onRestoreEraseAllImages: (scope: RestoreScope) => void;
   onOcrAll: () => void;
   onTranslate: () => void;
   onTranslateAll: () => void;
@@ -167,6 +170,7 @@ const BrushPainter: React.FC<{
     const brush = brushCanvasRef.current;
     const ctx = brush?.getContext('2d');
     if (!brush || !ctx) return;
+    ctx.globalCompositeOperation = 'source-over';
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = brushColor;
@@ -187,6 +191,23 @@ const BrushPainter: React.FC<{
       brush.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
     });
     if (url) onBrushChange(region.id, url);
+  };
+
+  /** One-click whole-box white / black out: fill the entire brush layer with a
+   *  single colour (same result as painting the box over with a huge brush)
+   *  and write it back to the patch right away. */
+  const fillWholeRegion = async (color: string) => {
+    const brush = brushCanvasRef.current;
+    const ctx = brush?.getContext('2d');
+    if (!brush || !ctx) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, brush.width, brush.height);
+    ctx.restore();
+    setHasStrokes(true);
+    redraw();
+    await exportBrushLayer();
   };
 
   const base = baseImgRef.current;
@@ -234,6 +255,24 @@ const BrushPainter: React.FC<{
         </button>
       </div>
 
+      {/* One-click whole-box fill (fast cover-up without brushing) */}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={() => fillWholeRegion('#ffffff')}
+          className="flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded hover:border-skin-primary hover:text-skin-primary transition-colors"
+          title={t(lang, 'editorBrushFillTip')}
+        >
+          {t(lang, 'editorBrushFillWhite')}
+        </button>
+        <button
+          onClick={() => fillWholeRegion('#000000')}
+          className="flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded hover:border-skin-primary hover:text-skin-primary transition-colors"
+          title={t(lang, 'editorBrushFillTip')}
+        >
+          {t(lang, 'editorBrushFillBlack')}
+        </button>
+      </div>
+
       <div className="border border-skin-border rounded overflow-hidden bg-checkerboard flex justify-center">
         {ready ? (
           <canvas
@@ -277,7 +316,8 @@ const BrushPainter: React.FC<{
 const EditorDock: React.FC<EditorDockProps> = ({
   image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
-  onErase, onRestoreErase, onOcrAll, onTranslate, onTranslateAll,
+  onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
+  onOcrAll, onTranslate, onTranslateAll,
   translating, onStopTranslate,
   onUnfreeze, onFreeze, onWhitenFrozenTextFree,
 }) => {
@@ -286,6 +326,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
     try { return localStorage.getItem(COLLAPSE_STORAGE_KEY) === '1'; } catch { return false; }
   });
   const [brushOpen, setBrushOpen] = useState(false);
+  /** Batch scope of the no-selection actions: the current image only, or every
+   *  loaded image (erase / restore / translate all respect it). */
+  const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
 
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
@@ -318,11 +361,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
     // disabled state matches what would actually be translated: AI-owned
     // regions and regions that already hold a translation (typeset or
     // frozen) are excluded — re-translating those wastes quota.
-    const scope = config.editorTranslationScope ?? 'all';
     const translateTargetCount = image.regions.filter(r =>
       !r.contextOnly && !isAiOwned(r) &&
-      !r.editorText?.trim() && !r.editorFrozenText?.trim() &&
-      (scope === 'bubble' ? r.detectedClass === 'text_bubble' : true)
+      !r.editorText?.trim() && !r.editorFrozenText?.trim()
     ).length;
     // Editable but untranslatable → everything is already translated/frozen.
     const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
@@ -331,6 +372,13 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const frozenFreeCount = image.regions.filter(r =>
       !r.contextOnly && r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
     ).length;
+
+    // Scope-aware dispatchers: '所有图片' routes to the batch variants.
+    const runErase = (scope: EraseScope) =>
+      imageScope === 'all' ? onEraseAllImages(scope) : onErase(scope);
+    const runRestore = (scope: RestoreScope) =>
+      imageScope === 'all' ? onRestoreEraseAllImages(scope) : onRestoreErase(scope);
+    const runTranslate = () => (imageScope === 'all' ? onTranslateAll() : onTranslate());
 
     return (
       <aside className="absolute top-0 right-0 h-full w-[272px] z-20 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
@@ -348,10 +396,32 @@ const EditorDock: React.FC<EditorDockProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+          {/* Batch scope: erase / restore / translate below apply to the
+              current image only, or to every loaded image. */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-skin-muted whitespace-nowrap">{t(lang, 'editorScope')}</span>
+            <div className="flex-1 flex bg-skin-fill p-0.5 rounded border border-skin-border">
+              <button
+                onClick={() => setImageScope('current')}
+                className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${imageScope === 'current' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                title={t(lang, 'editorScopeCurrentTip')}
+              >
+                {t(lang, 'editorScopeCurrent')}
+              </button>
+              <button
+                onClick={() => setImageScope('all')}
+                className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${imageScope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                title={t(lang, 'editorScopeAllTip')}
+              >
+                {t(lang, 'editorScopeAll')}
+              </button>
+            </div>
+          </div>
+
           {/* Erasure batch actions */}
           <div className="grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => onErase('bubbleOnly')}
+              onClick={() => runErase('bubbleOnly')}
               disabled={busy}
               className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
               title={t(lang, 'editorEraseBubbleTip')}
@@ -359,7 +429,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               {t(lang, 'editorEraseBubble')}
             </button>
             <button
-              onClick={() => onErase('all')}
+              onClick={() => runErase('all')}
               disabled={busy}
               className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
               title={t(lang, 'editorEraseAllTip')}
@@ -367,7 +437,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               {t(lang, 'editorEraseAll')}
             </button>
             <button
-              onClick={() => onRestoreErase('textFree')}
+              onClick={() => runRestore('textFree')}
               disabled={busy}
               className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
               title={t(lang, 'editorRestoreFreeTip')}
@@ -375,7 +445,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               {t(lang, 'editorRestoreFree')}
             </button>
             <button
-              onClick={() => onRestoreErase('all')}
+              onClick={() => runRestore('all')}
               disabled={busy}
               className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
             >
@@ -396,26 +466,6 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
           {config.enableTranslationMode && (
             <div className="space-y-1.5">
-              {/* Translation scope: bubbles only vs all detected text */}
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] text-skin-muted whitespace-nowrap">{t(lang, 'editorTransScope')}</span>
-                <div className="flex-1 flex bg-skin-fill p-0.5 rounded border border-skin-border">
-                  <button
-                    onClick={() => onConfigChange('editorTranslationScope', 'bubble')}
-                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${scope === 'bubble' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
-                    title={t(lang, 'editorTransScopeBubbleTip')}
-                  >
-                    {t(lang, 'editorTransScopeBubble')}
-                  </button>
-                  <button
-                    onClick={() => onConfigChange('editorTranslationScope', 'all')}
-                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${scope === 'all' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
-                    title={t(lang, 'editorTransScopeAllTip')}
-                  >
-                    {t(lang, 'editorTransScopeAll')}
-                  </button>
-                </div>
-              </div>
               {translating ? (
                 <button
                   onClick={onStopTranslate}
@@ -426,24 +476,18 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   {t(lang, 'editorStopTranslate')}
                 </button>
               ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    onClick={onTranslate}
-                    disabled={busy || translateTargetCount === 0}
-                    className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
-                    title={allTranslated ? t(lang, 'editorTranslateDoneTip') : t(lang, 'editorTranslateTip')}
-                  >
-                    {t(lang, 'editorTranslateAll')}
-                  </button>
-                  <button
-                    onClick={onTranslateAll}
-                    disabled={busy}
-                    className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
-                    title={t(lang, 'editorTranslateAllImagesTip')}
-                  >
-                    {t(lang, 'editorTranslateAllImages')}
-                  </button>
-                </div>
+                <button
+                  onClick={runTranslate}
+                  disabled={busy || (imageScope === 'current' && translateTargetCount === 0)}
+                  className="w-full px-2 py-1.5 text-[10px] font-bold bg-skin-primary text-white rounded hover:brightness-110 active:scale-95 disabled:opacity-50 transition-all"
+                  title={
+                    imageScope === 'all'
+                      ? t(lang, 'editorScopeAllTip')
+                      : allTranslated ? t(lang, 'editorTranslateDoneTip') : t(lang, 'editorTranslateTip')
+                  }
+                >
+                  {t(lang, 'editorTranslateAll')}
+                </button>
               )}
               <button
                 onClick={onWhitenFrozenTextFree}

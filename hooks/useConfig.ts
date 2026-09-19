@@ -3,6 +3,9 @@ import { useState, useEffect } from 'react';
 import { AppConfig } from '../types';
 
 const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
+/** Records that the user's config has already been migrated to the opt-in
+ *  session-persistence default (see useConfig). */
+const SESSION_PERSISTENCE_OPTIN_KEY = 'genai_patcher_session_persistence_optin_v1';
 export const DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体。
 2. 生成一张只有中文的图
 3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
@@ -71,7 +74,7 @@ const DEFAULT_CONFIG: AppConfig = {
   language: 'zh',
   provider: 'openai',
   performanceMode: 'unlimited',
-  enableSessionPersistence: true, // persist editing session to IndexedDB (anti tab-discard)
+  enableSessionPersistence: false, // opt-in: persisting the session occupies local disk space
   openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
@@ -107,7 +110,6 @@ const DEFAULT_CONFIG: AppConfig = {
 
   // Translation Defaults
   enableTranslationMode: false,
-  editorTranslationScope: 'all',
   sendMaskedContextForTranslation: false,
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
@@ -241,9 +243,17 @@ export function useConfig() {
             migratedConfig.showRetryDiagnostics = false;
         }
 
-        // Ensure session persistence toggle exists
-        if (typeof migratedConfig.enableSessionPersistence === 'undefined') {
-            migratedConfig.enableSessionPersistence = true;
+        // Session persistence is opt-in now (it writes the whole session to
+        // local disk). Configs saved before the switch existed carry the old
+        // default (true), which is indistinguishable from a deliberate choice,
+        // so the new default (OFF) is applied once per install — the marker
+        // records that the user has seen the switch, after which their own
+        // toggle value always wins.
+        if (!localStorage.getItem(SESSION_PERSISTENCE_OPTIN_KEY)) {
+            migratedConfig.enableSessionPersistence = false;
+            try {
+                localStorage.setItem(SESSION_PERSISTENCE_OPTIN_KEY, '1');
+            } catch { /* ignore — private mode */ }
         }
 
         return migratedConfig;
@@ -251,6 +261,12 @@ export function useConfig() {
     } catch (e) {
       console.error("Failed to load config from localStorage", e);
     }
+    // No stored config (or unreadable): the defaults already have session
+    // persistence OFF. Record the marker so the one-time reset above never
+    // fires again and a later opt-in keeps winning.
+    try {
+      localStorage.setItem(SESSION_PERSISTENCE_OPTIN_KEY, '1');
+    } catch { /* ignore — private mode */ }
     return DEFAULT_CONFIG;
   });
 

@@ -192,9 +192,6 @@ export interface AppConfig {
 
   // Translation Mode Settings
   enableTranslationMode: boolean;
-  /** Editor auto-translate scope: 'bubble' = text_bubble only, 'all' = every
-   *  editable text region (text_bubble + text_free + manual boxes). */
-  editorTranslationScope: 'bubble' | 'all';
   sendMaskedContextForTranslation: boolean;
   translationBaseUrl: string;
   translationApiKey: string;

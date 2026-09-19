@@ -17,7 +17,7 @@ type ImageStore = {
 
 const EMPTY_STORE: ImageStore = { byId: {}, order: [] };
 
-export function useImageManager(performanceMode: PerformanceMode, enableSessionPersistence: boolean = true) {
+export function useImageManager(performanceMode: PerformanceMode, enableSessionPersistence: boolean = false) {
   const [store, setStore] = useState<ImageStore>(EMPTY_STORE);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);

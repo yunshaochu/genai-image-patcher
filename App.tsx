@@ -64,7 +64,10 @@ export default function App() {
       updateEditorRegion,
       setBrushLayer,
       eraseRegions,
+      eraseAllImages,
       restoreErase,
+      restoreEraseAllImages,
+      dropRegionCache,
       ocrAllRegions,
       translateImageRegions,
       translateAllImages,
@@ -94,6 +97,17 @@ export default function App() {
   useEffect(() => {
       if (!isEditorMode && viewMode === 'edit') setViewMode('original');
   }, [isEditorMode, viewMode, setViewMode]);
+
+  // Entering the editor workflow lands on the '编辑' tab — that tab is what
+  // the whole workflow is built around. Switching images later keeps whatever
+  // tab is active (viewMode is global); only a fresh entry re-selects '编辑'.
+  // The ref starts false so mounting straight into the editor workflow (a
+  // persisted processingMode) also lands on '编辑'.
+  const prevIsEditorRef = useRef(false);
+  useEffect(() => {
+      if (isEditorMode && !prevIsEditorRef.current) setViewMode('edit');
+      prevIsEditorRef.current = isEditorMode;
+  }, [isEditorMode, setViewMode]);
 
   // Debounce Timer Ref for Heavy Operations
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -200,6 +214,15 @@ export default function App() {
   // Green frame resize/move no longer re-crops processedImageUrl.
   // The processed image stays at its anchor size; the green frame acts as a viewport window.
   const onRegionsChanged = useCallback((imageId: string, newRegions: Region[]) => {
+      // Regions the user deleted (canvas ✕ / Delete key) no longer need their
+      // editor caches — drop them here so every delete path stays consistent.
+      const prevImage = images.find(img => img.id === imageId);
+      if (prevImage) {
+          const nextIds = new Set(newRegions.map(r => r.id));
+          for (const r of prevImage.regions) {
+              if (!nextIds.has(r.id)) dropRegionCache(imageId, r.id);
+          }
+      }
       handleUpdateRegions(imageId, newRegions);
 
       // Editor mode: geometry changes of edited regions trigger a debounced
@@ -221,7 +244,7 @@ export default function App() {
           }
           return;
       }
-  }, [handleUpdateRegions, config.useInvertedMasking, config.processingMode, images, updateImage, resyncEditedRegions]);
+  }, [handleUpdateRegions, config.useInvertedMasking, config.processingMode, images, updateImage, resyncEditedRegions, dropRegionCache]);
 
   // --- Handlers ---
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -255,11 +278,31 @@ export default function App() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [addImageFiles]); 
 
+  // Delete / Backspace removes the selected box — mirrors the canvas' ✕ button.
+  const handleDeleteSelectedRegion = useCallback(() => {
+      if (!selectedImage || !selectedRegionId) return;
+      const region = selectedImage.regions.find(r => r.id === selectedRegionId);
+      // Processing boxes stay locked (same rule as the in-canvas delete button).
+      if (!region || region.status === 'processing') return;
+      dropRegionCache(selectedImage.id, selectedRegionId);
+      handleUpdateRegions(
+        selectedImage.id,
+        selectedImage.regions.filter(r => r.id !== selectedRegionId)
+      );
+      setSelectedRegionId(null);
+  }, [selectedImage, selectedRegionId, dropRegionCache, handleUpdateRegions, setSelectedRegionId]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
         const target = e.target as HTMLElement;
         if (target.matches('input, textarea') || target.isContentEditable) return;
         if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+            if (!selectedRegionId) return;
+            e.preventDefault();
+            handleDeleteSelectedRegion();
+            return;
+        }
         if (e.key === 'ArrowUp' || e.key === 'ArrowLeft' || e.key === 'ArrowDown' || e.key === 'ArrowRight') {
             e.preventDefault();
             if (images.length === 0) return;
@@ -281,7 +324,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [images, selectedImageId, handleSelectImage]);
+  }, [images, selectedImageId, handleSelectImage, selectedRegionId, handleDeleteSelectedRegion]);
 
   const handleOcrRegion = useCallback(async (imageId: string, regionId: string) => {
      const img = images.find(i => i.id === imageId);
@@ -643,7 +686,9 @@ export default function App() {
                     buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
                     onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
                     onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
+                    onEraseAllImages={(scope) => eraseAllImages(scope)}
                     onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
+                    onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
                     onOcrAll={() => ocrAllRegions(selectedImage.id)}
                     onTranslate={() => translateImageRegions(selectedImage.id)}
                     onTranslateAll={() => translateAllImages()}
