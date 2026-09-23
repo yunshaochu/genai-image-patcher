@@ -217,17 +217,12 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     return url;
   }, []);
 
-  // Fallback: if the current image has no result to show, revert to original view
-  useEffect(() => {
-    const hasResult =
-      !!selectedImage &&
-      (selectedImage.regions.some(r => r.status === 'completed') ||
-        selectedImage.isSkipped ||
-        !!selectedImage.finalResultUrl);
-    if (!hasResult && viewMode === 'result') {
-      setViewMode('original');
-    }
-  }, [selectedImage, viewMode]);
+  // NOTE: there used to be a guard here that bounced viewMode back to
+  // 'original' whenever the selected image had nothing to show in the result
+  // view. The result tab is now always rendered (consistent tab set across
+  // images, see App.tsx) and shows the untouched original when there is no
+  // patch yet, so the guard only made the tab look broken — clicking it flipped
+  // the state and was reverted by this effect in the same commit.
 
   const addImageFiles = async (fileList: File[]) => {
     const imageFiles = fileList.filter(f => f.type.startsWith('image/') && !f.name.startsWith('.'));

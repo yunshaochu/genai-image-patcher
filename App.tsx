@@ -99,6 +99,13 @@ export default function App() {
 
   const isEditorMode = config.processingMode === 'editor';
 
+  // Whether the selected image has anything to show in the result view. The
+  // result tab is always rendered (consistent tab set across images); this flag
+  // only drives the "nothing generated yet" hint on top of it.
+  const selectedHasResult = !!selectedImage && (
+      selectedImage.regions.some(r => r.status === 'completed') || !!selectedImage.finalResultUrl
+  );
+
   // The '编辑' canvas tab only exists in the editor workflow. Leaving the
   // workflow while sitting on that tab falls back to 'original' so the
   // canvas never gets stuck on a hidden view.
@@ -557,14 +564,16 @@ export default function App() {
                          {t(config.language, 'editorEditTab')}
                      </button>
                   )}
-                  {(selectedImage.regions.some(r => r.status === 'completed') || selectedImage.isSkipped || selectedImage.finalResultUrl) && (
-                     <button 
-                         onClick={() => { setViewMode('result'); setRestoreMode(false); }}
-                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'result' && !restoreMode ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
-                     >
-                         {t(config.language, 'status_completed')}
-                     </button>
-                  )}
+                  {/* The result tab is ALWAYS available so the tab set is the same
+                      for every image (a fresh image used to hide it, which made the
+                      header jump around between images). With nothing generated it
+                      simply shows the untouched picture, flagged by the hint below. */}
+                  <button
+                      onClick={() => { setViewMode('result'); setRestoreMode(false); }}
+                      className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'result' && !restoreMode ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                  >
+                      {t(config.language, 'status_completed')}
+                  </button>
                   {viewMode === 'result' && selectedImage.regions.some(r => r.status === 'completed') && (
                      <button 
                          onClick={() => { setRestoreMode(!restoreMode); setRestoreBrushMode(false); setRestoreSelectedRegionId(null); }}
@@ -634,6 +643,15 @@ export default function App() {
                     </button>
                  </div>
              </div>
+
+             {/* The result tab is always clickable, so say why it can look empty
+                 on an image nothing has been redrawn for yet. Skipped images
+                 already carry their own "skipped" chip — no hint there. */}
+             {viewMode === 'result' && !selectedHasResult && !selectedImage.isSkipped && (
+                 <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-3 py-1 rounded-full border border-skin-border bg-skin-surface/90 backdrop-blur-sm text-[11px] text-skin-muted shadow-sm animate-in fade-in">
+                     {t(config.language, 'noResultYet')}
+                 </div>
+             )}
 
              {viewMode === 'result' && config.useInvertedMasking && selectedImage.finalResultUrl ? (
                  // Special Render for Inverted Mode Result: Just the full stitched image

@@ -889,7 +889,7 @@ const Sidebar: React.FC<SidebarProps> = ({
          {!isProcessing ? (
            <div className="space-y-2">
              {/* Editor mode is fully local (erase/typeset/brush) — no API call,
-                 so no Generate button. Results surface via Download / Apply. */}
+                 so no Redraw button. Results surface via Download / Apply. */}
              {!isEditorMode && (
                <>
                  <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
@@ -902,8 +902,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                     <span className="text-xs text-skin-muted">{t(lang, 'applyAll', { count: images.length })}</span>
                  </label>
 
-                 {/* Translation stage — fully independent from generation: run it
-                     first to fill the cache (and grow the glossary), then generate. */}
+                 {/* Translation stage — fully independent from the redraw stage: run
+                     it first to fill the cache (and grow the glossary), then redraw. */}
                  <button
                     onClick={() => onTranslate(processAll)}
                     disabled={!!getTranslateDisabledReason()}
