@@ -124,9 +124,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
 
   const gating = useRunGating({ config, images, currentImage, processingState, processAll });
 
-  // Collapsed: thin rail. The run buttons now live ONLY in this dock (they used
-  // to sit in the left sidebar), so collapsing must not put them out of reach —
-  // 翻译 / 重绘 / 停止 stay as icons next to the expand handle.
+  // Collapsed: thin rail. The run AND save buttons now live ONLY in this dock
+  // (they used to sit in the left sidebar), so collapsing must not put them out
+  // of reach: 翻译 / 重绘 / 停止 plus 应用为原图 / 下载 stay as icons.
   if (collapsed) {
     return (
       <div className="h-full shrink-0 w-7 bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center">
@@ -157,14 +157,39 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
               </button>
-              <button
-                onClick={() => onProcess(processAll)}
-                disabled={!!gating.generateReason}
-                title={gating.generateReason || t(lang, processAll ? 'generateAll' : 'generate')}
-                className="w-6 h-6 rounded-md bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed flex items-center justify-center transition-all"
-              >
-                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-              </button>
+              {/* 补丁工坊 composites its patches locally — no API run to start. */}
+              {!isManualMode && (
+                <button
+                  onClick={() => onProcess(processAll)}
+                  disabled={!!gating.generateReason}
+                  title={gating.generateReason || t(lang, processAll ? 'generateAll' : 'generate')}
+                  className="w-6 h-6 rounded-md bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed flex items-center justify-center transition-all"
+                >
+                  <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                </button>
+              )}
+
+              {/* Save actions, same gating as the pinned footer (hidden while a
+                  run is in flight, exactly like the footer's result row). */}
+              {gating.hasResult && (
+                <>
+                  <span className="w-4 h-px bg-skin-border my-0.5" />
+                  <button
+                    onClick={() => onApplyAsOriginal(processAll)}
+                    title={processAll ? t(lang, 'applyAsOriginalAllHint') : t(lang, 'applyAsOriginal')}
+                    className="w-6 h-6 rounded-md border border-skin-border text-skin-muted hover:text-skin-primary hover:bg-skin-fill flex items-center justify-center transition-colors"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+                  </button>
+                  <button
+                    onClick={() => onDownload(processAll)}
+                    title={processAll ? t(lang, 'downloadResultAllHint') : t(lang, 'downloadResult')}
+                    className="w-6 h-6 rounded-md border border-skin-border text-skin-muted hover:text-skin-primary hover:bg-skin-fill flex items-center justify-center transition-colors"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>

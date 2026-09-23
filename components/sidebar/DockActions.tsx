@@ -27,14 +27,16 @@ export const useRunGating = ({
   config,
   images = [],
   currentImage,
-  processingState,
+  processingState = ProcessingStep.IDLE,
   processAll = false,
   resultOnly = false,
 }: {
   config: AppConfig;
   images?: UploadedImage[];
   currentImage?: UploadedImage;
-  processingState: ProcessingStep;
+  /** Defaults to IDLE — callers that only need the result gating (e.g. the
+   *  edit dock's collapsed rail) have no API run state to pass. */
+  processingState?: ProcessingStep;
   processAll?: boolean;
   resultOnly?: boolean;
 }): RunGating => {
@@ -86,8 +88,13 @@ export const useRunGating = ({
     return '';
   })();
 
-  const hasResult = !!currentImage
-    && (!!currentImage.finalResultUrl || currentImage.regions.some(r => r.status === 'completed'));
+  // Scope-aware: with 「全部」 the result actions stay available as long as ANY
+  // image has a result — otherwise they would vanish just because the selected
+  // picture happens to be untouched, even though there is a gallery to export.
+  const hasResult = processAll
+    ? images.some(img => !!img.finalResultUrl || img.regions.some(r => r.status === 'completed'))
+    : !!currentImage
+      && (!!currentImage.finalResultUrl || currentImage.regions.some(r => r.status === 'completed'));
 
   return {
     isProcessing,
@@ -104,7 +111,8 @@ interface DockActionsProps {
   /** Gallery — only needed when the scope is "all images". */
   images?: UploadedImage[];
   currentImage?: UploadedImage;
-  processingState: ProcessingStep;
+  /** Only meaningful while an API job runs; the edit-mode footer has no run. */
+  processingState?: ProcessingStep;
   processAll?: boolean;
   onProcessAllChange?: (value: boolean) => void;
   onTranslate?: (processAll: boolean) => void;
@@ -131,7 +139,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
   config,
   images = [],
   currentImage,
-  processingState,
+  processingState = ProcessingStep.IDLE,
   processAll = false,
   onProcessAllChange,
   onTranslate,
@@ -145,6 +153,11 @@ export const DockActions: React.FC<DockActionsProps> = ({
   const { isProcessing, isDone, hasResult, generateReason, translateReason, statusKey } = useRunGating({
     config, images, currentImage, processingState, processAll, resultOnly,
   });
+  // 补丁工坊 ('manual') has no API stage: its patches are composited locally
+  // (App.handleManualPatchUpdate writes the region straight to 'completed'), so
+  // a 开始重绘 button there would start an AI run the mode is not about. 翻译
+  // stays — it is a genuinely useful local-aid operation in that workflow.
+  const showGenerate = config.processingMode !== 'manual';
 
   const segBtn = (active: boolean) =>
     `px-2 py-1 text-[10px] font-bold rounded-md transition-all ${active
@@ -220,26 +233,30 @@ export const DockActions: React.FC<DockActionsProps> = ({
                 {t(lang, processAll ? 'translateAll' : 'translate')}
               </button>
 
-              <button
-                onClick={() => onProcess?.(processAll)}
-                disabled={!!generateReason}
-                title={generateReason}
-                className="w-full h-10 rounded-lg bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed text-xs font-bold shadow-sm shadow-skin-primary/25 transition-all active:scale-[0.98] disabled:active:scale-100 flex items-center justify-center gap-1.5"
-              >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                {t(lang, processAll ? 'generateAll' : 'generate')}
-              </button>
+              {showGenerate && (
+                <>
+                  <button
+                    onClick={() => onProcess?.(processAll)}
+                    disabled={!!generateReason}
+                    title={generateReason}
+                    className="w-full h-10 rounded-lg bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed text-xs font-bold shadow-sm shadow-skin-primary/25 transition-all active:scale-[0.98] disabled:active:scale-100 flex items-center justify-center gap-1.5"
+                  >
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                    {t(lang, processAll ? 'generateAll' : 'generate')}
+                  </button>
 
-              {/* Surfaced only while the primary action is blocked — a hover
-                  title alone is easy to miss on a disabled button. */}
-              {generateReason && (
-                <p className="text-[10px] text-center text-skin-muted leading-tight">{generateReason}</p>
-              )}
-              {config.enableTranslationMode && config.requireTranslationForGeneration && (
-                <p className="flex items-start justify-center gap-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
-                  <svg className="w-3 h-3 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path></svg>
-                  <span>{t(lang, 'requireTranslation')}</span>
-                </p>
+                  {/* Surfaced only while the primary action is blocked — a hover
+                      title alone is easy to miss on a disabled button. */}
+                  {generateReason && (
+                    <p className="text-[10px] text-center text-skin-muted leading-tight">{generateReason}</p>
+                  )}
+                  {config.enableTranslationMode && config.requireTranslationForGeneration && (
+                    <p className="flex items-start justify-center gap-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
+                      <svg className="w-3 h-3 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path></svg>
+                      <span>{t(lang, 'requireTranslation')}</span>
+                    </p>
+                  )}
+                </>
               )}
             </>
           )}

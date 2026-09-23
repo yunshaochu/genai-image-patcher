@@ -6,7 +6,10 @@ import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
-import { downloadImagesAsZip, ResolvedResultUrl } from './services/downloadZip';
+import { downloadImagesAsZip } from './services/downloadZip';
+// Type-only: mixing an interface into a value import makes the dev server emit a
+// runtime import for a name that does not exist ('does not provide an export named …').
+import type { ResolvedResultUrl } from './services/downloadZip';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -632,9 +635,7 @@ export default function App() {
         selectedImageId={selectedImageId}
         onSelectImage={handleSelectImage}
         onUpload={handleUpload}
-        processingState={processingState}
         currentImage={selectedImage}
-        onDownload={handleDownload}
         onDeleteImage={handleDeleteImage}
         onClearAllImages={handleClearAllImages} 
         onToggleSkip={handleToggleSkip}
@@ -642,7 +643,6 @@ export default function App() {
         isDetecting={isDetecting}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
-        onApplyAsOriginal={handleApplyAsOriginalWrapper}
         onDownloadAllZip={handleDownloadAllZip}
         isZipping={isZipping}
         uploadProgress={uploadProgress}
@@ -839,6 +839,7 @@ export default function App() {
         {isEditorMode && viewMode === 'edit' && selectedImage && (
           <EditorDock
             image={selectedImage}
+            images={images}
             config={config}
             selectedRegionId={selectedRegionId}
             onSelectRegion={setSelectedRegionId}
@@ -863,6 +864,8 @@ export default function App() {
             onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
             onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
             onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
+            onDownload={handleDownload}
+            onApplyAsOriginal={handleApplyAsOriginalWrapper}
           />
         )}
 

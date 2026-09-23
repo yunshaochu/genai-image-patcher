@@ -5,6 +5,7 @@ import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils'
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
 import { getRegionEditorText, resolveAutoFontSize } from '../services/mangaEditor';
 import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
+import { DockActions, useRunGating } from './sidebar/DockActions';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -21,6 +22,8 @@ import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE
 
 interface EditorDockProps {
   image: UploadedImage;
+  /** Gallery — needed by the footer's result actions when 作用范围 is 「全部」. */
+  images: UploadedImage[];
   config: AppConfig;
   selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
@@ -56,6 +59,9 @@ interface EditorDockProps {
   onRefreezeWhitedTextFree: () => void;
   /** One-click reveal of every frozen translation sitting on an AI bubble base. */
   onRevealAiBase: () => void;
+  /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
+  onDownload: (processAll: boolean) => void;
+  onApplyAsOriginal: (processAll: boolean) => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -388,12 +394,13 @@ const BrushPainter: React.FC<{
 // Dock
 // ---------------------------------------------------------------------------
 const EditorDock: React.FC<EditorDockProps> = ({
-  image, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
+  image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onOcrAll, onTranslate, onTranslateAll,
   translating, onStopTranslate,
   onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRefreezeWhitedTextFree, onRevealAiBase,
+  onDownload, onApplyAsOriginal,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -412,19 +419,48 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
   const region = idx >= 0 ? editableRegions[idx] : null;
 
-  // Collapsed: thin strip with an expand handle (always kept visible so the
-  // user can get the dock back regardless of selection state).
+  // Result gating for the collapsed rail (same rule as the pinned footer, so the
+  // icon rail and the footer can never disagree about what is available).
+  const gating = useRunGating({
+    config, images, currentImage: image, processAll: imageScope === 'all', resultOnly: true,
+  });
+
+  // Collapsed: rail with an expand handle plus the two result actions as icons.
+  // Save actions are the one thing this dock owns that has no equivalent
+  // elsewhere, so they must survive collapsing — same treatment as WorkflowDock.
   if (collapsed) {
     return (
-      <div className="h-full shrink-0 flex">
+      <div className="h-full shrink-0 w-7 bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center">
         <button
           onClick={() => setCollapsed(false)}
-          className="w-7 h-full bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center justify-center gap-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+          className="w-full h-8 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
           title={t(lang, 'editorDockProps')}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" /></svg>
-          <span className="text-[9px] font-bold tracking-widest" style={{ writingMode: 'vertical-rl' }}>{t(lang, 'editorDockProps')}</span>
         </button>
+
+        {gating.hasResult && (
+          <div className="w-full border-t border-skin-border px-0.5 py-2 flex flex-col items-center gap-1.5">
+            <button
+              onClick={() => onApplyAsOriginal(imageScope === 'all')}
+              title={imageScope === 'all' ? t(lang, 'applyAsOriginalAllHint') : t(lang, 'applyAsOriginal')}
+              className="w-6 h-6 rounded-md border border-skin-border text-skin-muted hover:text-skin-primary hover:bg-skin-fill flex items-center justify-center transition-colors"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+            </button>
+            <button
+              onClick={() => onDownload(imageScope === 'all')}
+              title={imageScope === 'all' ? t(lang, 'downloadResultAllHint') : t(lang, 'downloadResult')}
+              className="w-6 h-6 rounded-md border border-skin-border text-skin-muted hover:text-skin-primary hover:bg-skin-fill flex items-center justify-center transition-colors"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+            </button>
+          </div>
+        )}
+
+        <span className="mt-auto mb-3 text-[9px] font-bold tracking-widest text-skin-muted" style={{ writingMode: 'vertical-rl' }}>
+          {t(lang, 'editorDockProps')}
+        </span>
       </div>
     );
   }
@@ -611,6 +647,20 @@ const EditorDock: React.FC<EditorDockProps> = ({
             {t(lang, 'editorEditHint')}
           </p>
         </div>
+
+        {/* Result actions pinned to the dock's bottom edge — the editor's own
+            save path. They follow the 作用范围 control at the top of this dock:
+            「全部」applies every image that has a result, and ZIPs the finished
+            ones for download. */}
+        <DockActions
+          resultOnly
+          config={config}
+          images={images}
+          currentImage={image}
+          processAll={imageScope === 'all'}
+          onDownload={onDownload}
+          onApplyAsOriginal={onApplyAsOriginal}
+        />
       </aside>
     );
   }
@@ -931,6 +981,17 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         )}
       </div>
+
+      {/* Same pinned result actions as the global view — see the note there. */}
+      <DockActions
+        resultOnly
+        config={config}
+        images={images}
+        currentImage={image}
+        processAll={imageScope === 'all'}
+        onDownload={onDownload}
+        onApplyAsOriginal={onApplyAsOriginal}
+      />
     </aside>
   );
 };

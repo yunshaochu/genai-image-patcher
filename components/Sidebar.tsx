@@ -1,11 +1,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
+import { AppConfig, UploadedImage, ThemeType } from '../types';
 import { t } from '../services/translations';
 import { Section } from './sidebar/Section';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
 import { HelpTip } from './sidebar/HelpTip';
-import { DockActions } from './sidebar/DockActions';
 
 interface SidebarProps {
   config: AppConfig;
@@ -15,10 +14,7 @@ interface SidebarProps {
   selectedRegionId: string | null;
   onSelectImage: (id: string) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  processingState: ProcessingStep;
   currentImage?: UploadedImage;
-  /** Scope-aware (see DockActions): false = the selected image, true = gallery. */
-  onDownload: (processAll: boolean) => void;
   onDeleteImage: (imageId: string) => void;
   onClearAllImages: () => void;
   onToggleSkip: (imageId: string) => void;
@@ -26,9 +22,9 @@ interface SidebarProps {
   isDetecting: boolean;
   onOpenGlobalSettings: () => void;
   onOpenHelp: () => void;
-  onApplyAsOriginal: (processAll: boolean) => void;
   /** Gallery export: every image, each as its 已完成 rendering. App owns it —
-   *  it needs the same result-URL resolver as Download / Apply. */
+   *  it needs the same result-URL resolver as Download / Apply (both of which
+   *  now live in the right-hand dock). */
   onDownloadAllZip: () => void;
   isZipping: boolean;
   uploadProgress?: { current: number; total: number } | null;
@@ -137,9 +133,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   selectedImageId,
   onSelectImage,
   onUpload,
-  processingState,
   currentImage,
-  onDownload,
   onDeleteImage,
   onClearAllImages,
   onToggleSkip,
@@ -147,7 +141,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   isDetecting,
   onOpenGlobalSettings,
   onOpenHelp,
-  onApplyAsOriginal,
   onDownloadAllZip,
   isZipping,
   uploadProgress,
@@ -511,21 +504,6 @@ const Sidebar: React.FC<SidebarProps> = ({
         )}
 
       </div>
-
-      {/* Footer — edit mode only. In the API workflows (AI 重绘 / 补丁工坊) the
-          run and save actions live in the right-hand dock, next to the canvas
-          they act on. The editor pipeline is local, so only its two result
-          actions stay here, with the gallery that owns the images. */}
-      {isEditorMode && (
-        <DockActions
-          resultOnly
-          config={config}
-          currentImage={currentImage}
-          processingState={processingState}
-          onDownload={onDownload}
-          onApplyAsOriginal={onApplyAsOriginal}
-        />
-      )}
 
     </aside>
   );
