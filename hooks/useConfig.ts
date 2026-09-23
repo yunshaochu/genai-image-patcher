@@ -91,7 +91,7 @@ const DEFAULT_CONFIG: AppConfig = {
   ocrApiUrl: 'http://localhost:5000/ocr',
   
   // Detection Tuning Defaults
-  detectionInflationPercent: 10,
+  detectionInflationPercent: 5,
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
   detectionConfidenceThreshold: 30,
