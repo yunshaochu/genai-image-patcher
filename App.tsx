@@ -4,6 +4,7 @@ import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
+import WorkflowDock from './components/WorkflowDock';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
@@ -520,7 +521,6 @@ export default function App() {
         setConfig={setConfig}
         images={images}
         selectedImageId={selectedImageId}
-        selectedRegionId={selectedRegionId}
         onSelectImage={handleSelectImage}
         onUpload={handleUpload}
         onProcess={handleProcess}
@@ -529,16 +529,11 @@ export default function App() {
         processingState={processingState}
         currentImage={selectedImage}
         onDownload={handleDownload}
-        onManualPatchUpdate={handleManualPatchUpdate}
-        onUpdateRegionPrompt={handleUpdateRegionPrompt}
-        onUpdateImagePrompt={handleUpdateImagePrompt}
         onDeleteImage={handleDeleteImage}
         onClearAllImages={handleClearAllImages} 
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
-        onOcrRegion={handleOcrRegion}
-        onSelectRegion={setSelectedRegionId}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
@@ -738,6 +733,24 @@ export default function App() {
             <p className="text-lg font-medium">{t(config.language, 'readyToCreate')}</p>
             <p className="text-sm opacity-60">{t(config.language, 'uploadHint')}</p>
           </div>
+        )}
+
+        {/* Right-side dock for the API workflows (AI 重绘 / 手动修补工坊) —
+            mirrors EditorDock's placement: the panels that configure a run sit
+            next to the canvas instead of in the left sidebar. Rendered outside
+            the image branch so 提示词 / 连接设置 / 处理选项 are reachable with
+            an empty gallery too. */}
+        {!isEditorMode && (
+          <WorkflowDock
+            config={config}
+            onConfigChange={updateConfig}
+            currentImage={selectedImage}
+            selectedRegionId={selectedRegionId}
+            onUpdateRegionPrompt={handleUpdateRegionPrompt}
+            onUpdateImagePrompt={handleUpdateImagePrompt}
+            onManualPatchUpdate={handleManualPatchUpdate}
+            onOcrRegion={handleOcrRegion}
+          />
         )}
 
         {errorMsg && (

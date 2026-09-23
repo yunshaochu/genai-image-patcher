@@ -307,6 +307,8 @@ export const translations = {
     reset: "重置",
     resetToDefault: "恢复默认提示词",
     close: "关闭",
+    dockCollapse: "收起面板",
+    dockExpand: "展开面板",
 
     // AI Payload Compression
     aiPayloadCompression: "压缩发送给 AI 的图片",
@@ -674,6 +676,8 @@ export const translations = {
     reset: "Reset",
     resetToDefault: "Reset to Default",
     close: "Close",
+    dockCollapse: "Collapse panel",
+    dockExpand: "Expand panel",
 
     // AI Payload Compression
     aiPayloadCompression: "Compress images sent to AI",

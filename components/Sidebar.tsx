@@ -1,17 +1,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, isRegionPaintable } from '../types';
-import { fetchOpenAIModels } from '../services/aiService';
 import { stitchImageInverted } from '../services/imageUtils';
 import { hasCachedTranslation } from '../services/translationCache';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 import { Section } from './sidebar/Section';
-import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
-import { SettingsPanel } from './sidebar/SettingsPanel';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
 import { HelpTip } from './sidebar/HelpTip';
-import { DEFAULT_PROMPT } from '../hooks/useConfig';
 
 interface SidebarProps {
   config: AppConfig;
@@ -29,19 +25,14 @@ interface SidebarProps {
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
   onDownload: () => void;
-  onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
-  onUpdateRegionPrompt: (imageId: string, regionId: string, prompt: string) => void;
   onDeleteImage: (imageId: string) => void;
   onClearAllImages: () => void;
   onToggleSkip: (imageId: string) => void;
   onAutoDetect: (scope: 'current' | 'all') => void;
   isDetecting: boolean;
-  onOcrRegion: (imageId: string, regionId: string) => void;
-  onSelectRegion: (regionId: string | null) => void;
   onOpenGlobalSettings: () => void;
   onOpenHelp: () => void;
   onApplyAsOriginal: () => void;
-  onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
   uploadProgress?: { current: number; total: number } | null;
   /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
   getStitchedUrl: (image: UploadedImage) => Promise<string>;
@@ -68,7 +59,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   setConfig,
   images,
   selectedImageId,
-  selectedRegionId,
   onSelectImage,
   onUpload,
   onProcess,
@@ -77,24 +67,17 @@ const Sidebar: React.FC<SidebarProps> = ({
   processingState,
   currentImage,
   onDownload,
-  onManualPatchUpdate,
-  onUpdateRegionPrompt,
   onDeleteImage,
   onClearAllImages,
   onToggleSkip,
   onAutoDetect,
   isDetecting,
-  onOcrRegion,
-  onSelectRegion,
   onOpenGlobalSettings,
   onOpenHelp,
   onApplyAsOriginal,
-  onUpdateImagePrompt,
   uploadProgress,
   getStitchedUrl
 }) => {
-  const [modelList, setModelList] = useState<string[]>([]);
-  const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
   const [processAll, setProcessAll] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
@@ -135,19 +118,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       gallery: true,
       manga: false,
       workflow: true, // DEFAULT: TRUE
-      prompt: false,
-      settings: false, 
-      execution: false,
-      manual: false,
       editor: true
     };
   });
-
-  const selectedRegion = currentImage && selectedRegionId 
-    ? currentImage.regions.find(r => r.id === selectedRegionId) 
-    : null;
-
-  const showFullImagePrompt = config.processFullImageIfNoRegions && currentImage && currentImage.regions.length === 0;
 
   // Persist sections state when changed
   useEffect(() => {
@@ -177,25 +150,6 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const handleConfigChange = (key: keyof AppConfig, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
-  };
-
-  const handleFetchOpenAIModels = async () => {
-    if (!config.openaiApiKey || !config.openaiBaseUrl) {
-      alert("Please enter API Key and Base URL first.");
-      return;
-    }
-    setIsLoadingModels(true);
-    try {
-      const models = await fetchOpenAIModels(config.openaiBaseUrl, config.openaiApiKey);
-      setModelList(models);
-      if (models.length > 0 && !models.includes(config.openaiModel)) {
-        handleConfigChange('openaiModel', models[0]);
-      }
-    } catch (e: any) {
-      alert("Failed to fetch models: " + e.message);
-    } finally {
-      setIsLoadingModels(false);
-    }
   };
 
   const handleDownloadAllZip = async () => {
@@ -328,7 +282,6 @@ const Sidebar: React.FC<SidebarProps> = ({
       return "";
   };
 
-  const isManualMode = config.processingMode === 'manual';
   const isEditorMode = config.processingMode === 'editor';
   // The editor workflow tab is gated behind the manga module + 修补编辑器 switch.
   const editorTabAvailable = config.enableMangaMode && config.enableManualEditor;
@@ -554,14 +507,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                  .map(m => (
                  <button
                    key={m}
-                   onClick={() => {
-                       handleConfigChange('processingMode', m);
-                       if (m === 'manual') {
-                           setSectionsState(prev => ({ ...prev, manual: true }));
-                       } else if (m === 'editor') {
-                           setSectionsState(prev => ({ ...prev, editor: true }));
-                       }
-                   }}
+                   onClick={() => handleConfigChange('processingMode', m)}
                    className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${config.processingMode === m ? 'bg-skin-surface text-skin-primary shadow-sm' : 'text-skin-muted hover:text-skin-text'}`}
                  >
                     {m === 'api' ? t(lang, 'modeApi') : m === 'manual' ? t(lang, 'modeManual') : t(lang, 'modeEditor')}
@@ -647,229 +593,6 @@ const Sidebar: React.FC<SidebarProps> = ({
             </Section>
         )}
 
-        {!isManualMode && !isEditorMode && (
-          <Section title={t(lang, 'promptTitle')} isOpen={sectionsState.prompt} onToggle={() => toggleSection('prompt')}>
-             <div className="space-y-3">
-               <div>
-                   <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center justify-between">
-                     <span>{t(lang, 'promptGlobalLabel')}</span>
-                     <button 
-                       onClick={() => handleConfigChange('prompt', DEFAULT_PROMPT)}
-                       className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
-                       title={t(lang, 'resetToDefault')}
-                     >
-                       <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                       {t(lang, 'reset')}
-                     </button>
-                   </label>
-                  <textarea 
-                    value={config.prompt}
-                    onChange={(e) => handleConfigChange('prompt', e.target.value)}
-                    className="w-full h-20 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
-                    placeholder={t(lang, 'promptPlaceholder')}
-                  />
-               </div>
-               
-               {currentImage && (
-                 <div className="pt-2 border-t border-skin-border border-dashed transition-all">
-                    {showFullImagePrompt ? (
-                       <>
-                           <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
-                                {t(lang, 'promptFullImageLabel')}
-                                <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
-                                Full Image
-                                </span>
-                           </label>
-                           <textarea 
-                                key={`full-${currentImage.id}`}
-                                value={currentImage.customPrompt || ''}
-                                onChange={(e) => onUpdateImagePrompt && onUpdateImagePrompt(currentImage.id, e.target.value)}
-                                className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
-                                placeholder={t(lang, 'promptFullImagePlaceholder')}
-                           />
-                       </>
-                    ) : (
-                       <>
-                           <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
-                                {t(lang, 'promptSpecificLabel')}
-                                {selectedRegion && (
-                                    <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
-                                    ID: {selectedRegion.id.slice(0, 4)}
-                                    </span>
-                                )}
-                           </label>
-                           
-                           {selectedRegion ? (
-                                <textarea
-                                key={selectedRegion.id}
-                                value={selectedRegion.customPrompt || ''}
-                                onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
-                                // Lock the textarea while THIS region is being processed
-                                // (its prompt is already in flight to the API; mid-flight
-                                // edits would be silently ignored). Other regions remain
-                                // editable even during batch processing.
-                                readOnly={selectedRegion.status === 'processing'}
-                                className={`w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in ${selectedRegion.status === 'processing' ? 'opacity-60 cursor-not-allowed' : ''}`}
-                                placeholder={t(lang, 'promptSpecificPlaceholder')}
-                                />
-                           ) : (
-                                <div className="w-full h-16 p-2 text-xs border border-dashed border-skin-border rounded-lg bg-skin-fill/20 flex items-center justify-center text-skin-muted text-center italic">
-                                Select a region to customize its prompt
-                                </div>
-                           )}
-                       </>
-                    )}
-                 </div>
-               )}
-             </div>
-          </Section>
-        )}
-
-        {!isManualMode && !isEditorMode && (
-          <Section title={t(lang, 'settingsTitle')} isOpen={sectionsState.settings} onToggle={() => toggleSection('settings')}>
-             <SettingsPanel 
-                config={config}
-                onChange={handleConfigChange}
-                onFetchModels={handleFetchOpenAIModels}
-                modelList={modelList}
-                isLoadingModels={isLoadingModels}
-             />
-          </Section>
-        )}
-        
-        {/* Execution Settings */}
-        {!isManualMode && !isEditorMode && (
-          <Section title={t(lang, 'executionTitle')} isOpen={sectionsState.execution} onToggle={() => toggleSection('execution')}>
-              <div className="space-y-3">
-                 <div>
-                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'mode')}</label>
-                    <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
-                       <button 
-                         onClick={() => handleConfigChange('executionMode', 'concurrent')}
-                         className={`flex-1 py-1 text-[10px] rounded transition-all ${config.executionMode === 'concurrent' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted'}`}
-                       >
-                         {t(lang, 'modeConcurrent')}
-                       </button>
-                       <button 
-                         onClick={() => handleConfigChange('executionMode', 'serial')}
-                         className={`flex-1 py-1 text-[10px] rounded transition-all ${config.executionMode === 'serial' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted'}`}
-                       >
-                         {t(lang, 'modeSerial')}
-                       </button>
-                    </div>
-                 </div>
-                 
-                 {config.executionMode === 'concurrent' && (
-                    <div>
-                       <div className="flex justify-between">
-                         <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(lang, 'concurrency')}</label>
-                         <span className="text-[10px] font-mono">{config.concurrencyLimit}</span>
-                       </div>
-                       <input 
-                         type="number" min="1" step="1"
-                         value={config.concurrencyLimit}
-                         onChange={(e) => handleConfigChange('concurrencyLimit', Math.max(1, Number(e.target.value)))}
-                         className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
-                       />
-                    </div>
-                 )}
-                 
-                 <div className="flex gap-2">
-                     <div className="flex-1">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'timeoutLabel')}</label>
-                        <input 
-                          type="number" value={config.apiTimeout / 1000}
-                          onChange={(e) => handleConfigChange('apiTimeout', Number(e.target.value) * 1000)}
-                          className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
-                        />
-                     </div>
-                     <div className="flex-1">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'retriesLabel')}</label>
-                        <input
-                          type="number" value={config.maxRetriesPerRegion}
-                          onChange={(e) => handleConfigChange('maxRetriesPerRegion', Number(e.target.value))}
-                          className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
-                        />
-                     </div>
-                 </div>
-                 
-                 <div className="pt-2 border-t border-skin-border/50 space-y-2">
-                    <label className="flex items-start gap-2 cursor-pointer group">
-                        <input
-                          type="checkbox"
-                          checked={config.processFullImageIfNoRegions}
-                          onChange={(e) => handleConfigChange('processFullImageIfNoRegions', e.target.checked)}
-                          className="mt-0.5"
-                        />
-                        <div>
-                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'processFullImage')}</span>
-                           <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'processFullImageDesc')}</span>
-                        </div>
-                    </label>
-                    <label className="flex items-start gap-2 cursor-pointer group">
-                        <input
-                          type="checkbox"
-                          checked={config.showRetryDiagnostics}
-                          onChange={(e) => handleConfigChange('showRetryDiagnostics', e.target.checked)}
-                          className="mt-0.5"
-                        />
-                        <div>
-                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'showRetryDiagnostics')}</span>
-                           <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">{t(lang, 'showRetryDiagnosticsDesc')}</span>
-                        </div>
-                    </label>
-                 </div>
-              </div>
-          </Section>
-        )}
-
-        {/* Manual Workbench */}
-        {isManualMode && (
-            <Section title={t(lang, 'workbenchTitle')} isOpen={sectionsState.manual} onToggle={() => toggleSection('manual')}>
-            {currentImage && (
-                <div className="space-y-3 animate-in fade-in slide-in-from-right-8">
-                    {/* Render Full Image Mask Row FIRST if enabled */}
-                    {config.useFullImageMasking && (
-                        <FullImageMaskRow
-                            image={currentImage}
-                            config={config}
-                            onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, 'special-full-image-mask', base64)}
-                        />
-                    )}
-
-                    {selectedRegionId ? (() => {
-                        const region = currentImage.regions.find(r => r.id === selectedRegionId);
-                        // Regions the pipeline would never paint (per the
-                        // generation source) have no patch zone.
-                        if (!region || !isRegionPaintable(region, config.generationRegionSource ?? 'text')) {
-                            return !config.useFullImageMasking ? (
-                                <div className="text-center py-8 text-skin-muted italic text-xs">
-                                    {t(lang, 'noRegions')}
-                                </div>
-                            ) : null;
-                        }
-                        return (
-                            <ManualPatchRow
-                                key={region.id}
-                                region={region}
-                                image={currentImage}
-                                config={config}
-                                onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
-                                lang={lang}
-                                onOcr={() => onOcrRegion(currentImage.id, region.id)}
-                                showOcr={config.enableMangaMode && config.enableOCR}
-                                showRetryDiagnostics={!!config.showRetryDiagnostics}
-                            />
-                        );
-                    })() : !config.useFullImageMasking && (
-                        <div className="text-center py-8 text-skin-muted italic text-xs">
-                            {t(lang, 'noRegions')}
-                        </div>
-                    )}
-                </div>
-            )}
-            </Section>
-        )}
       </div>
 
       {/* Footer */}
