@@ -6,12 +6,12 @@ const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
 /** Records that the user's config has already been migrated to the opt-in
  *  session-persistence default (see useConfig). */
 const SESSION_PERSISTENCE_OPTIN_KEY = 'genai_patcher_session_persistence_optin_v1';
-export const DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体。
+export const DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。
 2. 生成一张只有中文的图
 3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
 4. 图片大小和比例不许变，必须严格维持我发给你的比例，包括高斯模糊的地方的分界线也不能变。这种严格的比例控制对我的项目来说是必要的。`;
 
-export const TRANSLATION_MODE_IMAGE_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体。
+export const TRANSLATION_MODE_IMAGE_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。
 2. 生成一张只有中文的图
 3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
 4. 图片大小和比例不许变，必须严格维持我发给你的比例，包括高斯模糊的地方的分界线也不能变。这种严格的比例控制对我的项目来说是必要的。`;
