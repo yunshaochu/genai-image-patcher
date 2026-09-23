@@ -556,7 +556,12 @@ export default function App() {
         getStitchedUrl={getStitchedUrl}
       />
       
-      <main className="flex-1 relative bg-checkerboard flex flex-col">
+      <main className="flex-1 min-w-0 relative bg-checkerboard flex">
+        {/* Canvas column. The right-hand docks are IN FLOW (not overlays), so the
+            canvas viewport really shrinks by their width and EditorCanvas
+            re-fits / re-centres the picture inside the visible area — the dock
+            never covers the artwork and the fit-zoom accounts for the space. */}
+        <div className="flex-1 min-w-0 relative flex flex-col">
         {selectedImage ? (
            <>
              <div className="absolute top-4 left-4 z-10 flex gap-2">
@@ -708,40 +713,6 @@ export default function App() {
                     onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
                 />
               )}
-
-              {/* Right-side contextual dock on the '编辑' tab — always present:
-                  no box selected → global batch ops (erase/OCR/translate);
-                  box selected → that box's text/direction/font-size/erase/
-                  OCR/brush. AI-owned boxes render read-only inside the dock. */}
-              {isEditorMode && viewMode === 'edit' && (
-                  <EditorDock
-                    image={selectedImage}
-                    config={config}
-                    selectedRegionId={selectedRegionId}
-                    onSelectRegion={setSelectedRegionId}
-                    busy={editorBusy}
-                    computedFontSizes={computedFontSizes}
-                    onConfigChange={updateConfig}
-                    onUpdateRegion={(regionId, updates) => updateEditorRegion(selectedImage.id, regionId, updates)}
-                    onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
-                    buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
-                    onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
-                    onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
-                    onEraseAllImages={(scope) => eraseAllImages(scope)}
-                    onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
-                    onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
-                    onOcrAll={() => ocrAllRegions(selectedImage.id)}
-                    onTranslate={() => translateImageRegions(selectedImage.id)}
-                    onTranslateAll={() => translateAllImages()}
-                    translating={editorTranslating}
-                    onStopTranslate={stopTranslation}
-                    onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
-                    onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
-                    onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
-                    onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
-                    onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
-                  />
-              )}
             </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-skin-muted select-none">
@@ -753,11 +724,55 @@ export default function App() {
           </div>
         )}
 
+        {/* Global error toast — inside the canvas column so it centres over the
+            visible canvas rather than over the dock. */}
+        {errorMsg && (
+            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-rose-500 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-medium animate-in fade-in slide-in-from-bottom-4 flex items-center gap-2 z-50">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                {errorMsg}
+                <button onClick={() => setErrorMsg(null)} className="ml-2 opacity-80 hover:opacity-100">✕</button>
+            </div>
+        )}
+        </div>
+
+        {/* Editor dock (editor workflow, '编辑' tab) — always present there:
+            no box selected → global batch ops (erase/OCR/translate); box
+            selected → that box's text/direction/font-size/erase/OCR/brush.
+            AI-owned boxes render read-only inside the dock. */}
+        {isEditorMode && viewMode === 'edit' && selectedImage && (
+          <EditorDock
+            image={selectedImage}
+            config={config}
+            selectedRegionId={selectedRegionId}
+            onSelectRegion={setSelectedRegionId}
+            busy={editorBusy}
+            computedFontSizes={computedFontSizes}
+            onConfigChange={updateConfig}
+            onUpdateRegion={(regionId, updates) => updateEditorRegion(selectedImage.id, regionId, updates)}
+            onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
+            buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
+            onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
+            onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
+            onEraseAllImages={(scope) => eraseAllImages(scope)}
+            onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
+            onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
+            onOcrAll={() => ocrAllRegions(selectedImage.id)}
+            onTranslate={() => translateImageRegions(selectedImage.id)}
+            onTranslateAll={() => translateAllImages()}
+            translating={editorTranslating}
+            onStopTranslate={stopTranslation}
+            onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
+            onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
+            onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
+            onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
+            onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
+          />
+        )}
+
         {/* Right-side dock for the API workflows (AI 重绘 / 手动修补工坊) —
-            mirrors EditorDock's placement: the panels that configure a run sit
-            next to the canvas instead of in the left sidebar. Rendered outside
-            the image branch so 提示词 / 连接设置 / 处理选项 are reachable with
-            an empty gallery too. */}
+            the panels that configure a run sit next to the canvas instead of in
+            the left sidebar. Rendered outside the image branch so 提示词 /
+            连接设置 / 处理选项 are reachable with an empty gallery too. */}
         {!isEditorMode && (
           <WorkflowDock
             config={config}
@@ -769,14 +784,6 @@ export default function App() {
             onManualPatchUpdate={handleManualPatchUpdate}
             onOcrRegion={handleOcrRegion}
           />
-        )}
-
-        {errorMsg && (
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-rose-500 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-medium animate-in fade-in slide-in-from-bottom-4 flex items-center gap-2 z-50">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                {errorMsg}
-                <button onClick={() => setErrorMsg(null)} className="ml-2 opacity-80 hover:opacity-100">✕</button>
-            </div>
         )}
       </main>
       

@@ -101,7 +101,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   // Collapsed: thin strip with an expand handle, same affordance as EditorDock.
   if (collapsed) {
     return (
-      <div className="absolute top-0 right-0 h-full z-20 flex">
+      <div className="h-full shrink-0 flex">
         <button
           onClick={() => setCollapsed(false)}
           className="w-7 h-full bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center justify-center gap-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
@@ -117,7 +117,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   }
 
   return (
-    <aside className="absolute top-0 right-0 h-full w-[272px] z-20 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
+    <aside className="h-full w-[272px] shrink-0 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-skin-border shrink-0">
         <span className="text-[10px] font-bold text-skin-text">{t(lang, isManualMode ? 'modeManual' : 'modeApi')}</span>
         <button
