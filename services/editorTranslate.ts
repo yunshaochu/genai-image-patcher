@@ -99,18 +99,34 @@ const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskO
     const label = String(i + 1);
     ctx.strokeStyle = '#e11d48';
     ctx.lineWidth = lineWidth;
-    ctx.strokeRect(rx, ry, rw, rh);
+    // Inflated by half the stroke width so the frame lies entirely OUTSIDE the
+    // region — a centred stroke would eat into the first/last characters of a
+    // narrow box.
+    const inset = lineWidth / 2;
+    ctx.strokeRect(rx - inset, ry - inset, rw + lineWidth, rh + lineWidth);
 
     const textW = ctx.measureText(label).width;
     const pad = Math.round(fontSize / 4);
     const boxW = textW + pad * 2;
     const boxH = fontSize + pad * 2;
-    // Label sits above the box, or inside the top edge when near the top.
-    const labelY = ry - boxH >= 0 ? ry - boxH : ry;
+    // The badge must never cover the text the model has to read, so it goes
+    // OUTSIDE the region whenever there is room for it. (Previously a box
+    // touching the top edge got the label inside its own corner — on a narrow
+    // vertical text box that hides a whole column of the original.) Tried in
+    // order: above → below → right → left; inside the corner only when the
+    // region spans the whole image.
+    const candidates = [
+      { x: rx, y: ry - boxH, fits: ry - boxH >= 0 },            // above
+      { x: rx, y: ry + rh, fits: ry + rh + boxH <= h },         // below
+      { x: rx + rw, y: ry, fits: rx + rw + boxW <= w },         // right
+      { x: rx - boxW, y: ry, fits: rx - boxW >= 0 },            // left
+      { x: rx, y: ry, fits: true },                             // last resort
+    ];
+    const badge = candidates.find(c => c.fits) ?? candidates[candidates.length - 1];
     ctx.fillStyle = '#e11d48';
-    ctx.fillRect(rx, labelY, boxW, boxH);
+    ctx.fillRect(badge.x, badge.y, boxW, boxH);
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(label, rx + pad, labelY + pad);
+    ctx.fillText(label, badge.x + pad, badge.y + pad);
   });
 
   return canvas.toDataURL('image/png');
