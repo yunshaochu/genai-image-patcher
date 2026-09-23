@@ -72,6 +72,33 @@ interface UseMangaEditorParams {
 }
 
 const RECOMPOSITE_DEBOUNCE_MS = 200;
+/**
+ * Debounce for DISCRETE editor actions (± font size, direction flip, erase
+ * toggle, Ctrl+wheel step). They always come in short bursts (rapid clicks /
+ * a wheel gesture), so a shorter window still coalesces them into one
+ * composite while cutting the feedback latency from ~285 ms to ~150 ms.
+ */
+export const DISCRETE_RECOMPOSITE_DEBOUNCE_MS = 80;
+
+// ---------------------------------------------------------------------------
+// Timing instrumentation for the recomposite pipeline (temporary — delete this
+// block and its call sites once tuned, or silence it at runtime with
+// `window.__editorPerf = false` in the console).
+//
+// Every composite logs one line:
+//   输入→开始合成(=防抖) | 合成[各阶段明细] | 提交→上屏 | 总计
+// and emits performance marks for the DevTools timeline, so the perceived
+// "edit → the picture actually changes" delay can be attributed to a stage.
+// ---------------------------------------------------------------------------
+export const editorPerfOn = (): boolean =>
+  (globalThis as { __editorPerf?: boolean }).__editorPerf !== false;
+
+const editorPerfMark = (name: string) => {
+  try { performance.mark(name); } catch { /* ignore */ }
+};
+
+/** 0.1 ms resolution — keeps the console lines short. */
+const perfMs = (v: number) => Math.round(v * 10) / 10;
 
 /**
  * State engine for the in-place manga text editor (editor workflow mode).
@@ -101,6 +128,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   // regionId → { geomKey, url } — cache of the erased base crop.
   const erasedCacheRef = useRef<Map<string, ErasedCacheEntry>>(new Map());
   const debounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  /** `imageId|regionId` → timestamp of that box's last user edit, consumed by
+   *  the recomposite timing (measures the whole input → painted latency). */
+  const editStampRef = useRef<Map<string, number>>(new Map());
 
   // Release all cached erased bases on unmount.
   useEffect(() => {
@@ -140,15 +170,35 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     if (!img || !region) return;
     if (isAiOwned(region)) return;
 
+    // --- timing: last input → debounce → stages → commit → painted frame ----
+    const perfKey = `${imageId}|${regionId}`;
+    const editedAt = editStampRef.current.get(perfKey);
+    editStampRef.current.delete(perfKey);
+    const t0 = performance.now();
+    let stageAt = t0;
+    const stages: string[] = [];
+    const onStage = (stage: string) => {
+      const now = performance.now();
+      if (editorPerfOn()) {
+        stages.push(`${stage} ${perfMs(now - stageAt)}ms`);
+        editorPerfMark(`editor:${stage}`);
+      }
+      stageAt = now;
+    };
+
     try {
       const imageEl = await buildEditorBase(img, region);
+      onStage('预览解码+底色');
       const result = await compositeRegionPatch(
         imageEl,
         region,
         erasedCacheRef.current,
         configRef.current.enableVerticalTextDefault,
         configRef.current.pythonBackendUrl,
-        getContextBubbles(img)
+        getContextBubbles(img),
+        true,
+        true,
+        onStage
       );
       const url = result?.url ?? null;
 
@@ -202,6 +252,25 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
           return r;
         }),
       }));
+
+      // --- timing: state written → ~first painted frame ---------------------
+      // Two rAFs ≈ React commit + the browser decoding the new patch blob and
+      // painting it (an approximation — the decode can land one frame later).
+      onStage('写回状态');
+      if (editorPerfOn()) {
+        const commitAt = performance.now();
+        const label = `${img.file?.name ?? ''}#${regionId.slice(0, 6)}`;
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          const paintedAt = performance.now();
+          const wait = editedAt !== undefined ? `${perfMs(t0 - editedAt)}ms` : '—(非防抖路径)';
+          console.log(
+            `[editorPerf] ${label} | 输入→合成 ${wait} | ` +
+            `合成 ${perfMs(commitAt - t0)}ms [${stages.join(', ')}] | ` +
+            `提交→上屏 ${perfMs(paintedAt - commitAt)}ms | ` +
+            `总计 ${perfMs(paintedAt - (editedAt ?? t0))}ms`
+          );
+        }));
+      }
     } catch (e: any) {
       console.error('Editor composite failed', e);
       setErrorMsg('Editor composite failed: ' + (e?.message || e));
@@ -210,6 +279,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   const scheduleRecomposite = useCallback((imageId: string, regionId: string, delay = RECOMPOSITE_DEBOUNCE_MS) => {
     const key = `${imageId}|${regionId}`;
+    // Timing: remember when the user touched this box, so the composite can
+    // report the full "input → painted" latency (see recompositeRegion).
+    editStampRef.current.set(key, performance.now());
     const existing = debounceRef.current.get(key);
     if (existing) clearTimeout(existing);
     debounceRef.current.set(key, setTimeout(() => {
@@ -237,11 +309,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [images, recompositeRegion]);
 
-  /** Merge editor field updates into a region and schedule a recomposite. */
+  /**
+   * Merge editor field updates into a region and schedule a recomposite.
+   *
+   * `opts.debounceMs` overrides the wait before that recomposite: typing wants
+   * the long window (every keystroke restarts it, so nothing composites until
+   * the user pauses), while discrete actions want the short one — see
+   * DISCRETE_RECOMPOSITE_DEBOUNCE_MS.
+   */
   const updateEditorRegion = useCallback((
     imageId: string,
     regionId: string,
-    updates: Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] }
+    updates: Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] },
+    opts?: { debounceMs?: number }
   ) => {
     const target = getImage(imageId)?.regions.find(r => r.id === regionId);
     if (target && isAiOwned(target)) return;
@@ -259,7 +339,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         return next;
       }),
     }));
-    scheduleRecomposite(imageId, regionId);
+    scheduleRecomposite(imageId, regionId, opts?.debounceMs);
   }, [getImage, updateImage, scheduleRecomposite]);
 
   /**

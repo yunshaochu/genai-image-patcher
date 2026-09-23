@@ -4,7 +4,7 @@ import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
 import { getRegionEditorText, resolveAutoFontSize } from '../services/mangaEditor';
-import { EraseScope, RestoreScope, isAiOwned } from '../hooks/useMangaEditor';
+import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -33,7 +33,7 @@ interface EditorDockProps {
     editorText?: string;
     editorErased?: boolean;
     editorStyle?: Region['editorStyle'];
-  }) => void;
+  }, opts?: { debounceMs?: number }) => void;
   onOcrRegion: (regionId: string) => Promise<void>;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
@@ -64,6 +64,20 @@ const classBadge = (region: Region, lang: 'zh' | 'en'): string => {
   if (region.detectedClass === 'text_bubble') return t(lang, 'editorClassBubble');
   if (region.detectedClass === 'text_free') return t(lang, 'editorClassFree');
   return t(lang, 'editorClassManual');
+};
+
+/**
+ * Temporary timing probe (companion to useMangaEditor's recomposite timing):
+ * logs when an input takes longer than 30 ms to reach the next painted frame,
+ * which covers the handler plus the App re-render it triggers. Only slow ones
+ * are logged so typing stays readable; silence with `window.__editorPerf = false`.
+ */
+const perfProbe = (label: string, startedAt: number) => {
+  if (!editorPerfOn()) return;
+  requestAnimationFrame(() => {
+    const dt = performance.now() - startedAt;
+    if (dt > 30) console.log(`[editorPerf] ${label}→上屏 ${Math.round(dt)}ms`);
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -290,8 +304,10 @@ const BrushPainter: React.FC<{
   const exportBrushLayer = async () => {
     const brush = brushCanvasRef.current;
     if (!brush) return;
+    // WebP (not PNG): the canvas is re-encoded on every pointer-up, and PNG's
+    // encoder is slow enough to stall the brush. Alpha is preserved.
     const url = await new Promise<string | null>((resolve) => {
-      brush.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
+      brush.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/webp', 0.94);
     });
     if (url) {
       // Remember it: the prop change this triggers must not re-seed the canvas.
@@ -628,7 +644,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const base = region.editorStyle?.fontSize ?? computedFontSizes?.[region.id] ?? autoFontSize ?? 16;
     // Round so an auto-fit start (e.g. 17.4) doesn't leave fractions in the field.
     const next = Math.min(400, Math.max(6, Math.round(base + delta)));
-    onUpdateRegion(region.id, { editorStyle: { fontSize: next } });
+    const probeStart = performance.now();
+    onUpdateRegion(region.id, { editorStyle: { fontSize: next } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS });
+    perfProbe('字号步进', probeStart);
   };
 
   const gotoRegion = (delta: number) => {
@@ -703,7 +721,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
         {/* Text content */}
         <textarea
           value={text}
-          onChange={(e) => onUpdateRegion(region.id, { editorText: e.target.value })}
+          onChange={(e) => {
+            const probeStart = performance.now();
+            onUpdateRegion(region.id, { editorText: e.target.value });
+            perfProbe('按键', probeStart);
+          }}
           rows={4}
           disabled={aiLocked}
           placeholder={t(lang, 'editorTextPlaceholder')}
@@ -716,7 +738,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             {([undefined, true, false] as const).map((v, i) => (
               <button
                 key={i}
-                onClick={() => onUpdateRegion(region.id, { editorStyle: { isVertical: v } })}
+                onClick={() => onUpdateRegion(region.id, { editorStyle: { isVertical: v } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
                 disabled={aiLocked}
                 className={`px-1.5 py-0.5 text-[9px] rounded transition-all disabled:opacity-40 ${vertical === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
               >
@@ -749,7 +771,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 if (e.target.value === '') return;
                 const clamped = Math.min(400, Math.max(6, Number(e.target.value)));
                 if (clamped !== Number(e.target.value)) {
-                  onUpdateRegion(region.id, { editorStyle: { fontSize: clamped } });
+                  onUpdateRegion(region.id, { editorStyle: { fontSize: clamped } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS });
                 }
               }}
               title={t(lang, 'editorFontSizeAutoTip')}
@@ -810,7 +832,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
         {/* Erase toggle + per-region OCR */}
         <div className="grid grid-cols-2 gap-1.5">
           <button
-            onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased })}
+            onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
             disabled={busy || aiLocked}
             className={`px-2 py-1.5 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
               region.editorErased
@@ -824,7 +846,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             <button
               onClick={async () => {
                 await onOcrRegion(region.id);
-                onUpdateRegion(region.id, {});
+                onUpdateRegion(region.id, {}, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS });
               }}
               disabled={busy || aiLocked || region.isOcrLoading}
               className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-50 transition-colors flex items-center justify-center gap-1"

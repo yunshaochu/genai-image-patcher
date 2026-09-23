@@ -16,17 +16,37 @@ import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
  * region+geometry because erasure is the only expensive step.
  */
 
-const canvasToObjectURL = (canvas: HTMLCanvasElement): Promise<string> =>
+/**
+ * Encoding for the patch blobs.
+ *
+ * PNG is lossless, but its encoder dominated interactive editing: measured
+ * 0.4–2.8 s per text edit (the patch canvas grows with the text-overflow
+ * margin) against ~10–50 ms for WebP at this quality. Each patch is rebuilt
+ * from the original pixels, so the lossy encode never compounds; WebP keeps
+ * the alpha the brush layer needs. Switch back to 'image/png' for pixel-exact
+ * patches — browsers that cannot encode WebP fall back to PNG on their own.
+ */
+const PATCH_IMAGE_TYPE = 'image/webp';
+const PATCH_IMAGE_QUALITY = 0.94;
+
+const canvasToObjectURL = (
+  canvas: HTMLCanvasElement,
+  type: string = PATCH_IMAGE_TYPE,
+  quality: number = PATCH_IMAGE_QUALITY
+): Promise<string> =>
   new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(URL.createObjectURL(blob));
       else reject(new Error('canvas.toBlob returned null'));
-    }, 'image/png');
+    }, type, quality);
   });
 
 export interface ErasedCacheEntry {
   geomKey: string;
   url: string;
+  /** Decoded copy of `url`: every later patch redraws this ROI, so keeping the
+   *  element avoids a blob decode (~20 ms measured) per composite. */
+  img?: HTMLImageElement;
   /** Offset of the region crop inside the cached ROI image (px). */
   dx: number;
   dy: number;
@@ -245,7 +265,9 @@ export const compositeRegionPatch = async (
   pythonBackendUrl?: string,
   contextBubbles?: Region[],
   allowMargin = true,
-  includeText = true
+  includeText = true,
+  /** Optional stage sink for the editor's recomposite timing instrumentation. */
+  onStage?: (stage: string) => void
 ): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
 
@@ -276,6 +298,7 @@ export const compositeRegionPatch = async (
     mx = overX + slack;
     my = overY + slack;
   }
+  onStage?.('layout+margin');
 
   const canvas = document.createElement('canvas');
   canvas.width = cropW + mx * 2;
@@ -283,6 +306,7 @@ export const compositeRegionPatch = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
   ctx.drawImage(imageEl, cropX, cropY, cropW, cropH, mx, my, cropW, cropH);
+  onStage?.('base-draw');
 
   // 1. Erasure (cached per region+geometry — the expensive step)
   if (region.editorErased) {
@@ -307,7 +331,10 @@ export const compositeRegionPatch = async (
         dilate: ERASE_DILATE,
         inpaintRadius: ERASE_INPAINT_RADIUS,
       });
-      const url = await canvasToObjectURL(eraseCanvas);
+      // Keep the erased base LOSSLESS: it is computed once per geometry but
+      // redrawn into every later patch, so a lossy copy would bleed artifacts
+      // into each re-composite.
+      const url = await canvasToObjectURL(eraseCanvas, 'image/png');
       if (entry) releaseObjectURL(entry.url);
       entry = {
         geomKey: key,
@@ -319,7 +346,10 @@ export const compositeRegionPatch = async (
       };
       erasedCache.set(region.id, entry);
     }
-    const erasedImg = await loadImage(entry.url);
+    // Decode once per cache entry — every composite redraws this ROI, and a
+    // fresh loadImage() per composite measured ~20 ms.
+    if (!entry.img) entry.img = await loadImage(entry.url);
+    const erasedImg = entry.img;
     // Paste-back isolation: only the region's own bbox is taken from the
     // erased ROI (same guard as whiten_regions.py's final `final[y1:y2,x1:x2]
     // = erased[...]`). Whatever the eraser did outside the box is discarded,
@@ -336,6 +366,7 @@ export const compositeRegionPatch = async (
       );
     }
   }
+  onStage?.('erase');
 
   // 1.5 Brute-force whiteout (text_free quick fix: covers the whole crop —
   // complex background included — so typeset text sits on a clean white box)
@@ -366,9 +397,13 @@ export const compositeRegionPatch = async (
     drawTextLayout(ctx, layout, cropW, cropH);
     ctx.restore();
   }
+  onStage?.('layers(text/brush)');
+
+  const url = await canvasToObjectURL(canvas);
+  onStage?.('encode(webp)');
 
   return {
-    url: await canvasToObjectURL(canvas),
+    url,
     fontSize: layout?.style.fontSize,
     marginXPct: (mx / imgW) * 100,
     marginYPct: (my / imgH) * 100,

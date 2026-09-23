@@ -13,7 +13,7 @@ import { resolveAutoFontSize } from './services/mangaEditor';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
-import { useMangaEditor } from './hooks/useMangaEditor';
+import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from './hooks/useMangaEditor';
 
 // Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
@@ -529,7 +529,14 @@ export default function App() {
           ?? 16;
       const next = Math.min(400, Math.max(6, Math.round(base + delta)));
       if (next === Math.round(base)) return;
-      updateEditorRegion(selectedImage.id, region.id, { editorStyle: { fontSize: next } });
+      // A wheel step is a discrete action: short debounce (still coalesces a
+      // continuous gesture into one composite) instead of the typing window.
+      updateEditorRegion(
+          selectedImage.id,
+          region.id,
+          { editorStyle: { fontSize: next } },
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
   }, [selectedImage, selectedRegionId, computedFontSizes, config.enableVerticalTextDefault, updateEditorRegion]);
 
   // Stable adapters for Sidebar.
@@ -761,7 +768,7 @@ export default function App() {
             busy={editorBusy}
             computedFontSizes={computedFontSizes}
             onConfigChange={updateConfig}
-            onUpdateRegion={(regionId, updates) => updateEditorRegion(selectedImage.id, regionId, updates)}
+            onUpdateRegion={(regionId, updates, opts) => updateEditorRegion(selectedImage.id, regionId, updates, opts)}
             onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
             buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
             onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
