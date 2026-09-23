@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, isRegionPaintable } from '../types';
 import { stitchImageInverted } from '../services/imageUtils';
 import { hasCachedTranslation } from '../services/translationCache';
@@ -53,6 +53,81 @@ const formatBytes = (bytes: number): string => {
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
+
+/**
+ * One gallery thumbnail, memoized on its own props.
+ *
+ * Editing in the editor replaces the edited image object — and with it the
+ * whole `images` array — so the grid used to re-render every row on every
+ * keystroke. With this memo (plus the stable handlers App passes down) only the
+ * touched row re-renders. Props must stay primitive/stable: inline closures
+ * created per row would defeat the memo.
+ */
+const ThumbnailItem = React.memo(function ThumbnailItem({
+  img,
+  lang,
+  isSelected,
+  onSelectImage,
+  onToggleSkip,
+  onDeleteImage,
+}: {
+  img: UploadedImage;
+  lang: AppConfig['language'];
+  isSelected: boolean;
+  onSelectImage: (id: string) => void;
+  onToggleSkip: (imageId: string) => void;
+  onDeleteImage: (imageId: string) => void;
+}) {
+  return (
+    <div
+      data-image-id={img.id}
+      className={`group relative flex flex-col p-2 rounded-lg border transition-all cursor-pointer overflow-hidden ${isSelected ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
+      onClick={() => onSelectImage(img.id)}
+    >
+      <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
+        <img src={img.thumbnailUrl || img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} loading="lazy" decoding="async" />
+
+        {img.isSkipped && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/20 z-0">
+            <span className="text-[9px] text-white font-bold bg-black/50 px-1 rounded">SKIP</span>
+          </div>
+        )}
+
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleSkip(img.id); }}
+          className={`absolute top-1 left-1 p-1 rounded-sm shadow-sm transition-all z-10 ${img.isSkipped ? 'bg-skin-primary text-white' : 'bg-skin-surface/90 text-skin-muted hover:text-skin-primary hover:bg-white'}`}
+          title={img.isSkipped ? t(lang, 'enableImage') : t(lang, 'skipImage')}
+        >
+          {img.isSkipped ? (
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
+          ) : (
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+          )}
+        </button>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); onDeleteImage(img.id); }}
+          className="absolute top-1 right-1 p-1 rounded-sm bg-skin-surface/90 hover:bg-rose-500 hover:text-white text-rose-500 shadow-sm transition-all z-10"
+          title={t(lang, 'deleteImage')}
+        >
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+
+        {(img.regions.some(r => r.status === 'completed') || img.finalResultUrl) && (
+          <div className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm border border-white z-10" title="Completed"></div>
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0 w-full px-0.5">
+        <div className="text-[10px] font-medium truncate text-skin-text leading-tight" title={img.file.name}>{img.file.name}</div>
+        <div className="flex items-center justify-between gap-1 mt-1">
+          <span className="text-[9px] text-skin-muted truncate">{img.originalWidth}x{img.originalHeight}</span>
+          {img.regions.length > 0 && <span className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted whitespace-nowrap">{img.regions.length} reg</span>}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 const Sidebar: React.FC<SidebarProps> = ({
   config,
@@ -148,9 +223,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   
   const lang = config.language;
 
-  const handleConfigChange = (key: keyof AppConfig, value: any) => {
+  // Stable identity: the memoized sub-panels receive it as a prop, so an inline
+  // closure here would re-render them on every keystroke.
+  const handleConfigChange = useCallback((key: keyof AppConfig, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
-  };
+  }, [setConfig]);
 
   const handleDownloadAllZip = async () => {
     let imagesToZip: UploadedImage[] = [];
@@ -431,54 +508,15 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 <div className="grid grid-cols-2 gap-2 max-h-[240px] overflow-y-auto custom-scrollbar pr-1 border border-skin-border/30 rounded-lg p-1 bg-skin-fill/10">
                   {images.map(img => (
-                    <div 
+                    <ThumbnailItem
                       key={img.id}
-                      data-image-id={img.id}
-                      className={`group relative flex flex-col p-2 rounded-lg border transition-all cursor-pointer overflow-hidden ${selectedImageId === img.id ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
-                      onClick={() => onSelectImage(img.id)}
-                    >
-                        <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
-                          <img src={img.thumbnailUrl || img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} loading="lazy" decoding="async" />
-                          
-                          {img.isSkipped && (
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 z-0">
-                              <span className="text-[9px] text-white font-bold bg-black/50 px-1 rounded">SKIP</span>
-                            </div>
-                          )}
-                          
-                          <button 
-                             onClick={(e) => { e.stopPropagation(); onToggleSkip(img.id); }}
-                             className={`absolute top-1 left-1 p-1 rounded-sm shadow-sm transition-all z-10 ${img.isSkipped ? 'bg-skin-primary text-white' : 'bg-skin-surface/90 text-skin-muted hover:text-skin-primary hover:bg-white'}`}
-                             title={img.isSkipped ? t(lang, 'enableImage') : t(lang, 'skipImage')}
-                          >
-                             {img.isSkipped ? (
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>
-                             ) : (
-                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
-                             )}
-                          </button>
-
-                          <button 
-                             onClick={(e) => { e.stopPropagation(); onDeleteImage(img.id); }}
-                             className="absolute top-1 right-1 p-1 rounded-sm bg-skin-surface/90 hover:bg-rose-500 hover:text-white text-rose-500 shadow-sm transition-all z-10"
-                             title={t(lang, 'deleteImage')}
-                          >
-                             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
-                          </button>
-
-                          {(img.regions.some(r => r.status === 'completed') || img.finalResultUrl) && (
-                             <div className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm border border-white z-10" title="Completed"></div>
-                          )}
-                        </div>
-
-                        <div className="flex-1 min-w-0 w-full px-0.5">
-                           <div className="text-[10px] font-medium truncate text-skin-text leading-tight" title={img.file.name}>{img.file.name}</div>
-                           <div className="flex items-center justify-between gap-1 mt-1">
-                              <span className="text-[9px] text-skin-muted truncate">{img.originalWidth}x{img.originalHeight}</span>
-                              {img.regions.length > 0 && <span className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted whitespace-nowrap">{img.regions.length} reg</span>}
-                           </div>
-                        </div>
-                    </div>
+                      img={img}
+                      lang={lang}
+                      isSelected={selectedImageId === img.id}
+                      onSelectImage={onSelectImage}
+                      onToggleSkip={onToggleSkip}
+                      onDeleteImage={onDeleteImage}
+                    />
                   ))}
                 </div>
 
@@ -581,12 +619,12 @@ const Sidebar: React.FC<SidebarProps> = ({
 
         {showMangaToolkit && (
             <Section title={t(lang, 'mangaTitle')} isOpen={sectionsState.manga} onToggle={() => toggleSection('manga')}>
-               <MangaToolsPanel 
-                  config={config}
-                  onChange={handleConfigChange}
-                  onAutoDetect={onAutoDetect}
-                  isDetecting={isDetecting}
-                  currentImage={currentImage}
+               <MangaToolsPanel
+                   config={config}
+                   onChange={handleConfigChange}
+                   onAutoDetect={onAutoDetect}
+                   isDetecting={isDetecting}
+                   hasCurrentImage={!!currentImage}
                   detectScope={detectScope}
                   setDetectScope={setDetectScope}
                />

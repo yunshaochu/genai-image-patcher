@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AppConfig, UploadedImage } from '../../types';
+import { AppConfig } from '../../types';
 import { t } from '../../services/translations';
 
 interface MangaToolsPanelProps {
@@ -7,17 +7,19 @@ interface MangaToolsPanelProps {
     onChange: (key: keyof AppConfig, value: any) => void;
     onAutoDetect: (scope: 'current' | 'all') => void;
     isDetecting: boolean;
-    currentImage?: UploadedImage;
+    /** Whether an image is selected — a boolean (not the image object) so the
+     *  memo below survives the per-keystroke image replacement. */
+    hasCurrentImage: boolean;
     detectScope: 'current' | 'all';
     setDetectScope: (scope: 'current' | 'all') => void;
 }
 
-export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
+const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
     config,
     onChange,
     onAutoDetect,
     isDetecting,
-    currentImage,
+    hasCurrentImage,
     detectScope,
     setDetectScope
 }) => {
@@ -49,7 +51,7 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
                         </div>
                         <button
                             onClick={() => onAutoDetect(detectScope)}
-                            disabled={isDetecting || (detectScope === 'current' && !currentImage)}
+                            disabled={isDetecting || (detectScope === 'current' && !hasCurrentImage)}
                             className="flex-1 py-1.5 text-xs font-bold bg-skin-primary text-white rounded-md shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1.5 hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isDetecting ? (
@@ -187,3 +189,10 @@ export const MangaToolsPanel: React.FC<MangaToolsPanelProps> = ({
         </>
     );
 };
+
+/**
+ * Memoized: the sidebar re-renders on every editor keystroke (the edited image
+ * object changes, so Sidebar's own memo cannot hold), while this panel's own
+ * props stay stable in that case - so it can skip those re-renders entirely.
+ */
+export const MangaToolsPanel = React.memo(MangaToolsPanelInner);

@@ -71,7 +71,16 @@ interface UseMangaEditorParams {
   setErrorMsg: (msg: string | null) => void;
 }
 
-const RECOMPOSITE_DEBOUNCE_MS = 200;
+/**
+ * Wait after the last keystroke before a text/style edit is composited.
+ *
+ * Was 200 ms. Measured (see the editorPerf instrumentation): a composite costs
+ * ~10–38 ms wall time, of which only the canvas draws (~1–5 ms) block the main
+ * thread — the WebP encode in toBlob runs off it. Coalescing is still useful
+ * (it keeps one composite per typing pause), but 200 ms made the debounce 80%
+ * of the perceived "type → see it" latency, so it is down to 120 ms.
+ */
+const RECOMPOSITE_DEBOUNCE_MS = 120;
 /**
  * Debounce for DISCRETE editor actions (± font size, direction flip, erase
  * toggle, Ctrl+wheel step). They always come in short bursts (rapid clicks /
@@ -99,6 +108,29 @@ const editorPerfMark = (name: string) => {
 
 /** 0.1 ms resolution — keeps the console lines short. */
 const perfMs = (v: number) => Math.round(v * 10) / 10;
+
+/** Editor fields a caller may merge into a region. */
+type EditorFieldUpdates =
+  Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] };
+
+/**
+ * Apply editor field updates to a region.
+ *
+ * Shared by the state update and by the explicit region handed to an IMMEDIATE
+ * composite: a composite that runs before React commits the update would
+ * otherwise read the previous region out of the store and re-render the old
+ * content (the "picture is one edit behind" bug).
+ */
+const mergeEditorUpdates = (region: Region, updates: EditorFieldUpdates): Region => {
+  const next: Region = { ...region, ...updates };
+  // Typing text into a frozen region is an implicit unfreeze — the held-back
+  // translation is superseded by the user's own text.
+  if (updates.editorText?.trim()) next.editorFrozenText = undefined;
+  if (updates.editorStyle !== undefined) {
+    next.editorStyle = { ...region.editorStyle, ...updates.editorStyle };
+  }
+  return next;
+};
 
 /**
  * State engine for the in-place manga text editor (editor workflow mode).
@@ -131,6 +163,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   /** `imageId|regionId` → timestamp of that box's last user edit, consumed by
    *  the recomposite timing (measures the whole input → painted latency). */
   const editStampRef = useRef<Map<string, number>>(new Map());
+  /** Regions whose composite is currently running — two overlapping composites
+   *  could write their patches out of order and leave the older one on screen. */
+  const compositingRef = useRef<Set<string>>(new Set());
+  /** Key → when its last composite STARTED (drives the leading-edge rule). */
+  const compositedAtRef = useRef<Map<string, number>>(new Map());
 
   // Release all cached erased bases on unmount.
   useEffect(() => {
@@ -203,11 +240,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       const url = result?.url ?? null;
 
       // Publish the resolved font size so the panel can show the auto-fit
-      // value as a reference for manual sizing.
+      // value as a reference for manual sizing. Keep the record's identity when
+      // nothing changed: the dock is memo'd on this prop, so publishing a fresh
+      // object on every recomposite would re-render the whole panel.
       setComputedFontSizes(prev => {
+        if (result?.fontSize) {
+          if (prev[regionId] === result.fontSize) return prev;
+          return { ...prev, [regionId]: result.fontSize };
+        }
+        if (!(regionId in prev)) return prev;
         const next = { ...prev };
-        if (result?.fontSize) next[regionId] = result.fontSize;
-        else delete next[regionId];
+        delete next[regionId];
         return next;
       });
 
@@ -277,18 +320,58 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [getImage, updateImage, setErrorMsg]);
 
-  const scheduleRecomposite = useCallback((imageId: string, regionId: string, delay = RECOMPOSITE_DEBOUNCE_MS) => {
+  /** Run one composite, tracking the region as "compositing" while it runs. */
+  const runRecomposite = useCallback((imageId: string, regionId: string, regionOverride?: Region) => {
+    const key = `${imageId}|${regionId}`;
+    compositedAtRef.current.set(key, performance.now());
+    compositingRef.current.add(key);
+    void recompositeRegion(imageId, regionId, regionOverride).finally(() => compositingRef.current.delete(key));
+  }, [recompositeRegion]);
+
+  /**
+   * Schedule a recomposite for one region.
+   *
+   * Trailing edge (as before): edits within `delay` of each other collapse into
+   * one composite, so continuous typing costs a single pass on the final text.
+   * It reads the region back from the store, which is correct there because the
+   * timer always fires after React committed the update.
+   *
+   * Leading edge: an ISOLATED edit — nothing composited recently, nothing in
+   * flight — runs immediately, so "change one character / press ± once and
+   * stop" does not wait for a window that has nothing to coalesce. Because it
+   * runs BEFORE React commits, the caller MUST pass the updated region as
+   * `regionOverride` (that is what the store will hold a moment later);
+   * otherwise the composite re-renders the previous content.
+   */
+  const scheduleRecomposite = useCallback((
+    imageId: string,
+    regionId: string,
+    delay = RECOMPOSITE_DEBOUNCE_MS,
+    regionOverride?: Region
+  ) => {
     const key = `${imageId}|${regionId}`;
     // Timing: remember when the user touched this box, so the composite can
     // report the full "input → painted" latency (see recompositeRegion).
     editStampRef.current.set(key, performance.now());
-    const existing = debounceRef.current.get(key);
-    if (existing) clearTimeout(existing);
-    debounceRef.current.set(key, setTimeout(() => {
+    const pending = debounceRef.current.get(key);
+    const idleFor = performance.now() - (compositedAtRef.current.get(key) ?? -Infinity);
+    if (!pending && !compositingRef.current.has(key) && idleFor >= delay) {
+      runRecomposite(imageId, regionId, regionOverride);
+      return;
+    }
+    if (pending) clearTimeout(pending);
+    const fire = () => {
       debounceRef.current.delete(key);
-      recompositeRegion(imageId, regionId);
-    }, delay));
-  }, [recompositeRegion]);
+      // Never overlap composites for one region — re-queue briefly instead.
+      if (compositingRef.current.has(key)) {
+        debounceRef.current.set(key, setTimeout(fire, 40));
+        return;
+      }
+      // Post-commit: read the (newer) region back instead of a stale override.
+      runRecomposite(imageId, regionId);
+    };
+    debounceRef.current.set(key, setTimeout(fire, delay));
+  }, [runRecomposite]);
 
   // Rebase editor patches that were baked before their AI bubble base
   // completed (or before the bubble was re-redrawn): the stale patch still
@@ -320,26 +403,21 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const updateEditorRegion = useCallback((
     imageId: string,
     regionId: string,
-    updates: Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] },
+    updates: EditorFieldUpdates,
     opts?: { debounceMs?: number }
   ) => {
     const target = getImage(imageId)?.regions.find(r => r.id === regionId);
     if (target && isAiOwned(target)) return;
+    // The region as it will look once this update commits. It is handed to
+    // scheduleRecomposite because the leading-edge composite may run before
+    // React commits, and reading the store back at that point would compose the
+    // PREVIOUS content (the "picture is one edit behind" bug).
+    const nextRegion = target ? mergeEditorUpdates(target, updates) : undefined;
     updateImage(imageId, img => ({
       ...img,
-      regions: img.regions.map(r => {
-        if (r.id !== regionId) return r;
-        const next: Region = { ...r, ...updates };
-        // Typing text into a frozen region is an implicit unfreeze — the
-        // held-back translation is superseded by the user's own text.
-        if (updates.editorText?.trim()) next.editorFrozenText = undefined;
-        if (updates.editorStyle !== undefined) {
-          next.editorStyle = { ...r.editorStyle, ...updates.editorStyle };
-        }
-        return next;
-      }),
+      regions: img.regions.map(r => (r.id === regionId ? mergeEditorUpdates(r, updates) : r)),
     }));
-    scheduleRecomposite(imageId, regionId, opts?.debounceMs);
+    scheduleRecomposite(imageId, regionId, opts?.debounceMs, nextRegion);
   }, [getImage, updateImage, scheduleRecomposite]);
 
   /**
@@ -888,8 +966,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             ...current,
             regions: current.regions.map(r => r.id === region.id ? { ...r, ocrText: text, isOcrLoading: false } : r),
           }));
-          // OCR text becomes the typeset source — refresh the patch.
-          await recompositeRegion(imageId, region.id);
+          // OCR text becomes the typeset source — refresh the patch with the
+          // region as it now stands (it was just written to the store).
+          await recompositeRegion(imageId, region.id, { ...region, ocrText: text, isOcrLoading: false });
         } catch (e: any) {
           console.error('OCR failed for region', region.id, e);
           updateImage(imageId, current => ({
@@ -923,7 +1002,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         Math.abs((r.anchorY ?? 0) - r.y) > 0.01 ||
         Math.abs((r.anchorWidth ?? 0) - r.width) > 0.01 ||
         Math.abs((r.anchorHeight ?? 0) - r.height) > 0.01;
-      if (moved) scheduleRecomposite(imageId, r.id, 600);
+      // `r` comes from the just-committed region array: pass it explicitly so an
+      // immediate composite can't read the pre-drag geometry back out of the store.
+      if (moved) scheduleRecomposite(imageId, r.id, 600, r);
     }
   }, [getImage, scheduleRecomposite]);
 

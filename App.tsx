@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
 import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
@@ -13,7 +13,7 @@ import { resolveAutoFontSize } from './services/mangaEditor';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
-import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from './hooks/useMangaEditor';
+import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn } from './hooks/useMangaEditor';
 
 // Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
@@ -543,6 +543,13 @@ export default function App() {
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
 
+  // Temporary (companion to the editorPerf pipeline timing): attributes the
+  // per-keystroke re-render cost to a subtree. Logs only >10 ms renders.
+  const onRenderPerf = useCallback((id: string, phase: string, actualDuration: number) => {
+    if (!editorPerfOn() || actualDuration <= 10) return;
+    console.log(`[editorPerf] render ${id} (${phase}) ${actualDuration.toFixed(1)}ms`);
+  }, []);
+
   return (
     <div 
       className="flex h-screen w-screen bg-skin-fill text-skin-text overflow-hidden font-sans relative"
@@ -551,6 +558,7 @@ export default function App() {
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      <Profiler id="Sidebar" onRender={onRenderPerf}>
       <Sidebar
         config={config}
         setConfig={setConfig}
@@ -575,6 +583,7 @@ export default function App() {
         uploadProgress={uploadProgress}
         getStitchedUrl={getStitchedUrl}
       />
+      </Profiler>
       
       <main className="flex-1 min-w-0 relative bg-checkerboard flex">
         {/* Canvas column. The right-hand docks are IN FLOW (not overlays), so the
@@ -701,7 +710,8 @@ export default function App() {
                  </div>
               ) : (
                   // Standard Mode (Original & Result using EditorCanvas) or Inverted Mode Original
-                  <EditorCanvas
+                  <Profiler id="EditorCanvas" onRender={onRenderPerf}>
+                <EditorCanvas
                     key={selectedImage.id}
                     image={selectedImage}
                     onUpdateRegions={editorOnUpdateRegions}
@@ -732,6 +742,7 @@ export default function App() {
                     // Editor tab only: Ctrl+wheel over the selected box = 字号 ±5.
                     onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
                 />
+                </Profiler>
               )}
             </>
         ) : (
