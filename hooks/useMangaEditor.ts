@@ -528,6 +528,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             editorText: undefined,
             editorErased: false,
             editorWhitedOut: false,
+            // A fresh AI decision owns the box again — drop any earlier manual
+            // freeze/unfreeze exemption so the batch quick-fix applies to it.
+            freezeManual: undefined,
             editorStyle: style,
           });
         } else {
@@ -537,6 +540,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             editorText: res.zh,
             editorFrozenText: undefined,
             editorErased: true,
+            freezeManual: undefined,
             editorStyle: style,
           });
         }
@@ -596,6 +600,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       editorText: region.editorFrozenText,
       editorFrozenText: undefined,
       editorErased: region.aiBubbleBase ? false : true,
+      // Explicit manual decision: the batch 涂白 / 再次冻结 shortcuts must skip it.
+      freezeManual: true,
     };
     updateImage(imageId, current => ({
       ...current,
@@ -621,6 +627,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       editorText: undefined,
       editorErased: false,
       editorWhitedOut: false,
+      // Explicit manual decision: the batch 涂白 / 再次冻结 shortcuts must skip it.
+      freezeManual: true,
     };
     updateImage(imageId, current => ({
       ...current,
@@ -634,12 +642,16 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * No-redraw-model fallback for frozen text_free: brute-force whiten the
    * whole box (editorWhitedOut — flood-fill erasure can't handle complex
    * backgrounds) and fill in the frozen translation, all in one click.
+   *
+   * Manual decisions win: boxes the user froze / unfroze explicitly from the
+   * dock (freezeManual) are skipped, so a page-wide quick fix never overrides
+   * a per-box choice. The reverse direction lives in refreezeWhitedTextFree.
    */
   const whitenFrozenTextFree = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img || busy) return;
     const targets = img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) &&
+      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
       r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
     );
     if (targets.length === 0) return;
@@ -660,6 +672,49 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         ...current,
         regions: current.regions.map(r => byId.get(r.id) ?? r),
       }));
+      for (const nr of nextList) {
+        await recompositeRegion(imageId, nr.id, nr);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, getImage, recompositeRegion, updateImage]);
+
+  /**
+   * Reverse of the whiten quick-fix: freeze the text_free boxes that
+   * 「涂白并解冻」whitened back up — the whiteout and the typeset text are
+   * removed (the original artwork comes back) and the translation is held in
+   * editorFrozenText again, ready for the AI redraw pipeline.
+   *
+   * Recognition is state-based, not remembered: editorWhitedOut is only ever
+   * set by whitenFrozenTextFree, so "whited out + has text" is exactly its
+   * output. Boxes the user froze / unfroze by hand (freezeManual) are excluded
+   * in both directions.
+   */
+  const refreezeWhitedTextFree = useCallback(async (imageId: string) => {
+    const img = getImage(imageId);
+    if (!img || busy) return;
+    const targets = img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
+      r.detectedClass === 'text_free' && !!r.editorWhitedOut && !!r.editorText?.trim()
+    );
+    if (targets.length === 0) return;
+
+    setBusy(true);
+    try {
+      const nextList = targets.map(r => ({
+        ...r,
+        editorFrozenText: r.editorText,
+        editorText: undefined,
+        editorWhitedOut: false,
+        editorErased: false,
+      }));
+      const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
+      updateImage(imageId, current => ({
+        ...current,
+        regions: current.regions.map(r => byId.get(r.id) ?? r),
+      }));
+      // Nothing left to render → each recomposite tears its patch back down.
       for (const nr of nextList) {
         await recompositeRegion(imageId, nr.id, nr);
       }
@@ -837,6 +892,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     unfreezeTranslation,
     freezeTranslation,
     whitenFrozenTextFree,
+    refreezeWhitedTextFree,
     unfreezeAiBubbleRegions,
     resyncEditedRegions,
     buildBrushBase,

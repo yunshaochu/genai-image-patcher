@@ -48,7 +48,10 @@ interface EditorDockProps {
   onStopTranslate: () => void;
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
+  /** Batch quick-fix for frozen text_free: whiten the box + typeset. */
   onWhitenFrozenTextFree: () => void;
+  /** Its reverse: re-freeze the boxes that quick-fix whitened. */
+  onRefreezeWhitedTextFree: () => void;
   /** One-click reveal of every frozen translation sitting on an AI bubble base. */
   onRevealAiBase: () => void;
 }
@@ -321,7 +324,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onOcrAll, onTranslate, onTranslateAll,
   translating, onStopTranslate,
-  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRevealAiBase,
+  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRefreezeWhitedTextFree, onRevealAiBase,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -371,9 +374,22 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
     const allTranslated = editableCount > 0 && translateTargetCount === 0;
     // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
+    // Boxes the user froze / unfroze by hand are left alone (freezeManual): an
+    // explicit per-box decision outranks a page-wide shortcut.
     const frozenFreeCount = image.regions.filter(r =>
-      !r.contextOnly && r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
+      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
+      r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
     ).length;
+    // The reverse direction: text_free boxes this quick-fix whitened and
+    // unfroze earlier (editorWhitedOut is only ever set by it).
+    const whitedFreeCount = image.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
+      r.detectedClass === 'text_free' && !!r.editorWhitedOut && !!r.editorText?.trim()
+    ).length;
+    // One button, two directions: 涂白解冻 when there is anything still frozen,
+    // otherwise 再次冻结 undoes what the button did before.
+    const whitenDirection = frozenFreeCount > 0;
+    const whitenCount = whitenDirection ? frozenFreeCount : whitedFreeCount;
     // Frozen translations held back on AI-redrawn bubble bases — the
     // one-click reveal typesets them all without any erasure.
     const aiBaseFrozenCount = image.regions.filter(r =>
@@ -497,12 +513,12 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 </button>
               )}
               <button
-                onClick={onWhitenFrozenTextFree}
-                disabled={busy || frozenFreeCount === 0}
+                onClick={whitenDirection ? onWhitenFrozenTextFree : onRefreezeWhitedTextFree}
+                disabled={busy || whitenCount === 0}
                 className="w-full px-2 py-1.5 text-[10px] font-bold border border-violet-300 text-violet-600 bg-violet-500/10 rounded hover:bg-violet-500/20 disabled:opacity-50 transition-colors"
-                title={t(lang, 'editorWhitenFreeTip')}
+                title={whitenDirection ? t(lang, 'editorWhitenFreeTip') : t(lang, 'editorRefreezeFreeTip')}
               >
-                {t(lang, 'editorWhitenFree')}{frozenFreeCount > 0 ? ` (${frozenFreeCount})` : ''}
+                {t(lang, whitenDirection ? 'editorWhitenFree' : 'editorRefreezeFree')}{whitenCount > 0 ? ` (${whitenCount})` : ''}
               </button>
               <button
                 onClick={onRevealAiBase}
@@ -537,7 +553,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
   const stepFontSize = (delta: number) => {
     const base = region.editorStyle?.fontSize ?? computedFontSizes?.[region.id] ?? 16;
-    const next = Math.min(400, Math.max(6, base + delta));
+    // Round so an auto-fit start (e.g. 17.4) doesn't leave fractions in the field.
+    const next = Math.min(400, Math.max(6, Math.round(base + delta)));
     onUpdateRegion(region.id, { editorStyle: { fontSize: next } });
   };
 

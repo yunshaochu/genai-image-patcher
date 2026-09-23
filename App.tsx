@@ -83,6 +83,7 @@ export default function App() {
       unfreezeTranslation,
       freezeTranslation,
       whitenFrozenTextFree,
+      refreezeWhitedTextFree,
       unfreezeAiBubbleRegions,
       resyncEditedRegions,
       buildBrushBase,
@@ -504,6 +505,20 @@ export default function App() {
       if (selectedImageId_safe) handleAdjustRegion(selectedImageId_safe, regionId, isExpand);
   }, [selectedImageId_safe, handleAdjustRegion]);
 
+  // Ctrl+wheel over the SELECTED box in the editor workflow steps its font
+  // size by ±5 — the same step the dock's ± buttons use (EditorDock
+  // stepFontSize). Starts from the resolved auto-fit size when no explicit
+  // size has been chosen yet.
+  const editorOnStepFontSize = useCallback((delta: number) => {
+      if (!selectedImage || !selectedRegionId) return;
+      const region = selectedImage.regions.find(r => r.id === selectedRegionId);
+      if (!region) return;
+      const base = region.editorStyle?.fontSize ?? computedFontSizes[selectedRegionId] ?? 16;
+      const next = Math.min(400, Math.max(6, Math.round(base + delta)));
+      if (next === Math.round(base)) return;
+      updateEditorRegion(selectedImage.id, region.id, { editorStyle: { fontSize: next } });
+  }, [selectedImage, selectedRegionId, computedFontSizes, updateEditorRegion]);
+
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
@@ -689,6 +704,8 @@ export default function App() {
                     showRetryDiagnostics={!!config.showRetryDiagnostics}
                     regionDisplay={isEditorMode ? 'editor' : 'generation'}
                     generationRegionSource={config.generationRegionSource}
+                    // Editor tab only: Ctrl+wheel over the selected box = 字号 ±5.
+                    onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
                 />
               )}
 
@@ -721,6 +738,7 @@ export default function App() {
                     onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
                     onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
                     onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
+                    onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
                     onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
                   />
               )}

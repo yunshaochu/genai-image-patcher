@@ -41,6 +41,13 @@ interface EditorCanvasProps {
    *  generationRegionSource. Default 'editor' preserves historical behavior. */
   regionDisplay?: 'editor' | 'generation';
   generationRegionSource?: GenerationRegionSource;
+  /**
+   * Editor workflow only. When provided, Ctrl+wheel with the cursor over the
+   * SELECTED box steps its font size by `delta` px (passed as ±5) instead of
+   * zooming the canvas; anywhere else Ctrl+wheel keeps zooming. Undefined in
+   * the other workflows, where Ctrl+wheel always zooms.
+   */
+  onStepSelectedFontSize?: (delta: number) => void;
 }
 
 /**
@@ -82,6 +89,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     showRetryDiagnostics = false,
     regionDisplay = 'editor',
     generationRegionSource = 'text',
+    onStepSelectedFontSize,
 }: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -182,12 +190,43 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   }, [calculateFitZoom]);
 
   // --- Ctrl+Wheel zoom (zoom towards cursor) ---
+  // In the editor workflow the same gesture over the SELECTED box steps its
+  // font size instead (see onStepSelectedFontSize); everywhere else it zooms.
+  /** Fractional wheel delta accumulated for font-size stepping. */
+  const fontSizeWheelAccumRef = useRef(0);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || restoreMode) return;
 
+    /** Region id under a screen point, via the DOM (data-region-id is set on
+     *  every box) — immune to stale zoom/pan values in this closure. */
+    const regionIdAt = (clientX: number, clientY: number): string | null => {
+      const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+      return el?.closest('[data-region-id]')?.getAttribute('data-region-id') ?? null;
+    };
+
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
+        // Font-size stepping: ONE mouse notch = ONE ±5 step. Trackpads fire
+        // dozens of small-delta events per gesture, so deltas are normalised to
+        // pixels and accumulated; a step is emitted once a notch worth has
+        // built up. Chrome sends ~100px per notch, Firefox ~3 lines
+        // (deltaMode 1) — 34px/line makes both land on the same threshold.
+        if (onStepSelectedFontSize && selectedRegionId && regionIdAt(e.clientX, e.clientY) === selectedRegionId) {
+          e.preventDefault();
+          e.stopPropagation();
+          const unit = e.deltaMode === 1 ? 34 : e.deltaMode === 2 ? 100 : 1;
+          fontSizeWheelAccumRef.current += e.deltaY * unit;
+          const STEP_UNITS = 100;
+          const STEP_PX = 5;
+          while (Math.abs(fontSizeWheelAccumRef.current) >= STEP_UNITS) {
+            const up = fontSizeWheelAccumRef.current < 0; // wheel up = bigger
+            fontSizeWheelAccumRef.current -= up ? -STEP_UNITS : STEP_UNITS;
+            onStepSelectedFontSize(up ? STEP_PX : -STEP_PX);
+          }
+          return;
+        }
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -236,7 +275,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
     viewport.addEventListener('wheel', handleWheel, { passive: false });
     return () => viewport.removeEventListener('wheel', handleWheel);
-  }, [restoreMode, image.originalWidth, image.originalHeight]);
+  }, [restoreMode, image.originalWidth, image.originalHeight, onStepSelectedFontSize, selectedRegionId]);
 
   // Ref for wheel zoom adjustment data
   const wheelAdjustRef = useRef<{
