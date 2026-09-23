@@ -97,6 +97,11 @@ export default function App() {
   const [restoreBrushMode, setRestoreBrushMode] = useState(false);
   const [restoreBrushSize, setRestoreBrushSize] = useState(8);
   const [restoreSelectedRegionId, setRestoreSelectedRegionId] = useState<string | null>(null);
+  // Run scope + the "gallery can be cleared now" nudge. Both belong to the run
+  // actions, which now live in the right-hand dock (WorkflowDock) — while the
+  // gallery header they highlight is still in the left sidebar.
+  const [processAll, setProcessAll] = useState(false);
+  const [clearHighlight, setClearHighlight] = useState(false);
 
   const [transModels, setTransModels] = useState<string[]>([]);
 
@@ -406,6 +411,8 @@ export default function App() {
           document.body.removeChild(link);
           // Only release if we created the URL here; cached URLs are owned by useImageManager.
           if (!isCached) releaseObjectURL(stitchedUrl);
+          // Result is on disk — nudge the user to free the local session.
+          setClearHighlight(true);
       } catch (e) {
           console.error("Failed to stitch for download", e);
           setErrorMsg("Failed to generate download image.");
@@ -566,9 +573,6 @@ export default function App() {
         selectedImageId={selectedImageId}
         onSelectImage={handleSelectImage}
         onUpload={handleUpload}
-        onProcess={handleProcess}
-        onTranslate={handleTranslate}
-        onStop={handleStop}
         processingState={processingState}
         currentImage={selectedImage}
         onDownload={handleDownload}
@@ -582,6 +586,8 @@ export default function App() {
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
         uploadProgress={uploadProgress}
         getStitchedUrl={getStitchedUrl}
+        clearHighlight={clearHighlight}
+        setClearHighlight={setClearHighlight}
       />
       </Profiler>
       
@@ -814,6 +820,15 @@ export default function App() {
             onUpdateImagePrompt={handleUpdateImagePrompt}
             onManualPatchUpdate={handleManualPatchUpdate}
             onOcrRegion={handleOcrRegion}
+            images={images}
+            processingState={processingState}
+            processAll={processAll}
+            onProcessAllChange={setProcessAll}
+            onTranslate={handleTranslate}
+            onProcess={handleProcess}
+            onStop={handleStop}
+            onDownload={handleDownload}
+            onApplyAsOriginal={handleApplyAsOriginalWrapper}
           />
         )}
       </main>

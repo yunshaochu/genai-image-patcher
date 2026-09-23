@@ -1,0 +1,272 @@
+
+import React from 'react';
+import { AppConfig, ProcessingStep, UploadedImage, isRegionPaintable } from '../../types';
+import { hasCachedTranslation } from '../../services/translationCache';
+import { t } from '../../services/translations';
+import { HelpTip } from './HelpTip';
+
+/**
+ * Gate shared by every place that can start a run, so the compact rail (dock
+ * collapsed) and the full block can never disagree about what is clickable.
+ *
+ * Scope = selected image or the whole (non-skipped) gallery; translation needs
+ * the translation endpoint and something left to translate; generation needs a
+ * key and at least one region (unless 无选区时处理全图 is on).
+ */
+export interface RunGating {
+  isProcessing: boolean;
+  isDone: boolean;
+  hasResult: boolean;
+  /** Non-empty when the redraw button must stay disabled (doubles as tooltip). */
+  generateReason: string;
+  translateReason: string;
+  statusKey: string;
+}
+
+export const useRunGating = ({
+  config,
+  images = [],
+  currentImage,
+  processingState,
+  processAll = false,
+  resultOnly = false,
+}: {
+  config: AppConfig;
+  images?: UploadedImage[];
+  currentImage?: UploadedImage;
+  processingState: ProcessingStep;
+  processAll?: boolean;
+  resultOnly?: boolean;
+}): RunGating => {
+  const lang = config.language;
+  const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
+  const isDone = processingState === ProcessingStep.DONE;
+
+  const hasValidKey = config.provider === 'openai' ? !!config.openaiApiKey : !!config.geminiApiKey;
+  const targetImageExists = processAll ? images.length > 0 : !!currentImage;
+  const hasRegions = processAll
+    ? images.some(i => i.regions.length > 0)
+    : (currentImage?.regions.length ?? 0) > 0;
+  const canProceedWithEmptyRegions = config.processFullImageIfNoRegions === true;
+
+  const scopedImages = processAll
+    ? images.filter(img => !img.isSkipped)
+    : (currentImage ? [currentImage] : []);
+  const isGenPaintable = (r: UploadedImage['regions'][number]) =>
+    isRegionPaintable(r, config.generationRegionSource ?? 'text');
+  const translationReady = scopedImages.some(img =>
+    config.useFullImageMasking
+      ? img.regions.some(isGenPaintable) && hasCachedTranslation(img.customPrompt)
+      : img.regions.some(r => isGenPaintable(r) && hasCachedTranslation(r.customPrompt))
+  );
+  const translationWorkLeft = scopedImages.some(img =>
+    config.useFullImageMasking
+      ? img.regions.some(isGenPaintable) && !hasCachedTranslation(img.customPrompt)
+      : img.regions.some(r => isGenPaintable(r) && !hasCachedTranslation(r.customPrompt))
+  );
+
+  const generateReason = resultOnly ? '' : (() => {
+    if (!targetImageExists) return 'No image selected';
+    if (!hasValidKey) return 'Missing API Key (Check Settings)';
+    if (!hasRegions && !canProceedWithEmptyRegions) return 'No regions selected';
+    // 必须翻译 on but nothing translated yet: generating would only skip
+    // everything, so point the user at the translate stage instead.
+    if (config.enableTranslationMode && config.requireTranslationForGeneration && !translationReady) {
+      return t(lang, 'requireTranslationNone');
+    }
+    return '';
+  })();
+
+  const translateReason = resultOnly ? '' : (() => {
+    if (!config.enableTranslationMode || !config.translationApiKey || !config.translationBaseUrl) {
+      return t(lang, 'translateMissingConfig');
+    }
+    if (scopedImages.length === 0) return t(lang, 'translateNoTarget');
+    if (!translationWorkLeft) return t(lang, 'translateNothingToDo');
+    return '';
+  })();
+
+  const hasResult = !!currentImage
+    && (!!currentImage.finalResultUrl || currentImage.regions.some(r => r.status === 'completed'));
+
+  return {
+    isProcessing,
+    isDone,
+    hasResult,
+    generateReason,
+    translateReason,
+    statusKey: processingState.toLowerCase(),
+  };
+};
+
+interface DockActionsProps {
+  config: AppConfig;
+  /** Gallery — only needed when the scope is "all images". */
+  images?: UploadedImage[];
+  currentImage?: UploadedImage;
+  processingState: ProcessingStep;
+  processAll?: boolean;
+  onProcessAllChange?: (value: boolean) => void;
+  onTranslate?: (processAll: boolean) => void;
+  onProcess?: (processAll: boolean) => void;
+  onStop?: () => void;
+  onDownload: () => void;
+  onApplyAsOriginal: () => void;
+  /** Edit mode: no API run at all — render the result actions only. */
+  resultOnly?: boolean;
+}
+
+/**
+ * Run / result actions, shared by the two hosts that can own them:
+ *
+ *  - WorkflowDock (AI 重绘 / 补丁工坊): the full block, pinned to the dock's
+ *    bottom edge. It used to sit at the bottom of the left sidebar — i.e. at the
+ *    end of a long scroll and far from the canvas it acts on, while every
+ *    setting it depends on lives in the right-hand dock.
+ *  - Sidebar (edit mode only, `resultOnly`): just 应用为原图 / 下载最终结果. The
+ *    editor pipeline is local and its per-box controls live in EditorDock.
+ */
+export const DockActions: React.FC<DockActionsProps> = ({
+  config,
+  images = [],
+  currentImage,
+  processingState,
+  processAll = false,
+  onProcessAllChange,
+  onTranslate,
+  onProcess,
+  onStop,
+  onDownload,
+  onApplyAsOriginal,
+  resultOnly = false,
+}) => {
+  const lang = config.language;
+  const { isProcessing, isDone, hasResult, generateReason, translateReason, statusKey } = useRunGating({
+    config, images, currentImage, processingState, processAll, resultOnly,
+  });
+
+  const segBtn = (active: boolean) =>
+    `px-2 py-1 text-[10px] font-bold rounded-md transition-all ${active
+      ? 'bg-skin-surface shadow-sm text-skin-primary'
+      : 'text-skin-muted hover:text-skin-text'}`;
+
+  // Edit mode before any result has nothing to offer — don't leave an empty
+  // bordered strip at the bottom of the sidebar.
+  if (resultOnly && !hasResult && processingState === ProcessingStep.IDLE) return null;
+
+  return (
+    <div className="shrink-0 border-t border-skin-border bg-skin-surface">
+      {/* Run status: dot + label + hairline bar. Replaces the old boxed block,
+          which spent two stacked rows of chrome on one line of information. */}
+      {processingState !== ProcessingStep.IDLE && (
+        <div className="px-3 pt-3">
+          <div className="flex items-center gap-2">
+            <span className={`w-1.5 h-1.5 rounded-full ${isDone ? 'bg-emerald-500' : 'bg-skin-primary animate-pulse'}`} />
+            <span className="text-[11px] font-bold text-skin-text">{t(lang, statusKey as any)}</span>
+            {!isDone && <span className="ml-auto text-[10px] text-skin-muted animate-pulse tracking-widest">···</span>}
+          </div>
+          <div className="mt-2 h-1 rounded-full bg-skin-fill overflow-hidden">
+            <div className={`h-full rounded-full transition-all duration-300 ${isDone ? 'w-full bg-emerald-500' : 'w-2/3 bg-skin-primary animate-progress-indeterminate'}`} />
+          </div>
+        </div>
+      )}
+
+      {isProcessing ? (
+        <div className="p-3">
+          <button
+            onClick={onStop}
+            className="w-full h-9 rounded-lg bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold shadow-sm shadow-rose-500/30 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            {t(lang, 'stop')}
+          </button>
+        </div>
+      ) : (
+        <div className="p-3 space-y-2">
+          {!resultOnly && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-skin-muted">{t(lang, 'runTitle')}</span>
+                {/* The two-stage explainer used to be a 3-line paragraph under
+                    the buttons; it now lives behind this "?". */}
+                {config.enableTranslationMode && (
+                  <HelpTip className="ml-auto" text={t(lang, 'translateStageHint')} />
+                )}
+              </div>
+
+              {/* Scope as a segmented control. The old checkbox read
+                  "作用范围: 全部 12 张图片" and never made clear whether a checked
+                  box meant "all" or described the current state. */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-skin-muted">{t(lang, 'scope')}</span>
+                <div className="ml-auto flex items-center gap-0.5 p-0.5 rounded-lg bg-skin-fill border border-skin-border">
+                  <button onClick={() => onProcessAllChange?.(false)} className={segBtn(!processAll)}>
+                    {t(lang, 'scopeCurrent')}
+                  </button>
+                  <button onClick={() => onProcessAllChange?.(true)} className={segBtn(processAll)}>
+                    {t(lang, 'scopeAll', { count: images.length })}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={() => onTranslate?.(processAll)}
+                disabled={!!translateReason}
+                title={translateReason || t(lang, 'translateStageHint')}
+                className="w-full h-9 rounded-lg border border-sky-500/50 bg-sky-500/5 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 hover:border-sky-500 text-[11px] font-bold transition-colors disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:bg-sky-500/5 disabled:hover:border-sky-500/50 flex items-center justify-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+                {t(lang, processAll ? 'translateAll' : 'translate')}
+              </button>
+
+              <button
+                onClick={() => onProcess?.(processAll)}
+                disabled={!!generateReason}
+                title={generateReason}
+                className="w-full h-10 rounded-lg bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed text-xs font-bold shadow-sm shadow-skin-primary/25 transition-all active:scale-[0.98] disabled:active:scale-100 flex items-center justify-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                {t(lang, processAll ? 'generateAll' : 'generate')}
+              </button>
+
+              {/* Surfaced only while the primary action is blocked — a hover
+                  title alone is easy to miss on a disabled button. */}
+              {generateReason && (
+                <p className="text-[10px] text-center text-skin-muted leading-tight">{generateReason}</p>
+              )}
+              {config.enableTranslationMode && config.requireTranslationForGeneration && (
+                <p className="flex items-start justify-center gap-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
+                  <svg className="w-3 h-3 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path></svg>
+                  <span>{t(lang, 'requireTranslation')}</span>
+                </p>
+              )}
+            </>
+          )}
+
+          {hasResult && (
+            <div className={`grid grid-cols-2 gap-2 ${resultOnly ? '' : 'pt-2 border-t border-skin-border/60'}`}>
+              <button
+                onClick={onApplyAsOriginal}
+                title={t(lang, 'applyAsOriginal')}
+                className="h-8 rounded-lg border border-skin-border bg-skin-fill/40 hover:bg-skin-fill hover:border-skin-primary/50 hover:text-skin-primary text-skin-muted text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5 px-2"
+              >
+                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
+                <span className="truncate">{t(lang, 'applyAsOriginal')}</span>
+              </button>
+              <button
+                onClick={onDownload}
+                title={t(lang, 'downloadResult')}
+                className="h-8 rounded-lg border border-skin-border bg-skin-fill/40 hover:bg-skin-fill hover:border-skin-primary/50 hover:text-skin-primary text-skin-muted text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5 px-2"
+              >
+                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                <span className="truncate">{t(lang, 'downloadResult')}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default DockActions;

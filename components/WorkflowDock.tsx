@@ -1,21 +1,26 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppConfig, UploadedImage, isRegionPaintable } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, isRegionPaintable } from '../types';
 import { t } from '../services/translations';
 import { fetchOpenAIModels } from '../services/aiService';
 import { Section } from './sidebar/Section';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
+import { DockActions, useRunGating } from './sidebar/DockActions';
 import { DEFAULT_PROMPT } from '../hooks/useConfig';
 
 /**
  * Right-side dock for the two API-driven workflows, mirroring EditorDock's
- * placement for the editor workflow: the panels that configure a run live next
- * to the canvas instead of in the left sidebar, so the sidebar stays a
- * gallery / mode switcher and the working surface gets the full height.
+ * placement for the editor workflow: everything that configures or runs a job
+ * lives next to the canvas instead of in the left sidebar, so the sidebar stays
+ * a gallery / mode switcher and the working surface gets the full height.
  *
- *  - 'api'    (AI 重绘)      → 提示词 + 连接设置 + 处理选项
- *  - 'manual' (补丁工坊)     → 切片 / 遮罩输入 / 回填区
+ *  - 'api'    (AI 重绘)      → 提示词 + 连接设置 + 处理选项 (+ 底部执行区)
+ *  - 'manual' (补丁工坊)     → 切片 / 遮罩输入 / 回填区 (+ 底部执行区)
+ *
+ * The pinned footer (DockActions) holds 翻译 / 重绘 / 结果保存, which used to be
+ * the left sidebar's footer; the collapsed rail repeats the run buttons as icons
+ * so collapsing the dock can never strand them.
  *
  * The editor workflow keeps its own dock (EditorDock), which is bound to the
  * canvas 'edit' tab rather than to the mode.
@@ -33,6 +38,16 @@ interface WorkflowDockProps {
   onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
   onOcrRegion: (imageId: string, regionId: string) => void;
+  // Run / result actions are pinned to the dock's bottom edge (see DockActions).
+  images: UploadedImage[];
+  processingState: ProcessingStep;
+  processAll: boolean;
+  onProcessAllChange: (value: boolean) => void;
+  onTranslate: (processAll: boolean) => void;
+  onProcess: (processAll: boolean) => void;
+  onStop: () => void;
+  onDownload: () => void;
+  onApplyAsOriginal: () => void;
 }
 
 export const WorkflowDock: React.FC<WorkflowDockProps> = ({
@@ -44,6 +59,15 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   onUpdateImagePrompt,
   onManualPatchUpdate,
   onOcrRegion,
+  images,
+  processingState,
+  processAll,
+  onProcessAllChange,
+  onTranslate,
+  onProcess,
+  onStop,
+  onDownload,
+  onApplyAsOriginal,
 }) => {
   const lang = config.language;
   const isManualMode = config.processingMode === 'manual';
@@ -98,20 +122,56 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
     && !!currentImage
     && currentImage.regions.length === 0;
 
-  // Collapsed: thin strip with an expand handle, same affordance as EditorDock.
+  const gating = useRunGating({ config, images, currentImage, processingState, processAll });
+
+  // Collapsed: thin rail. The run buttons now live ONLY in this dock (they used
+  // to sit in the left sidebar), so collapsing must not put them out of reach —
+  // 翻译 / 重绘 / 停止 stay as icons next to the expand handle.
   if (collapsed) {
     return (
-      <div className="h-full shrink-0 flex">
+      <div className="h-full shrink-0 w-7 bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center">
         <button
           onClick={() => setCollapsed(false)}
-          className="w-7 h-full bg-skin-surface border-l border-skin-border shadow-lg flex flex-col items-center justify-center gap-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+          className="w-full h-8 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
           title={t(lang, 'dockExpand')}
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7" /></svg>
-          <span className="text-[9px] font-bold tracking-widest" style={{ writingMode: 'vertical-rl' }}>
-            {t(lang, isManualMode ? 'modeManual' : 'modeApi')}
-          </span>
         </button>
+
+        <div className="w-full border-t border-skin-border px-0.5 py-2 flex flex-col items-center gap-1.5">
+          {gating.isProcessing ? (
+            <button
+              onClick={onStop}
+              className="w-6 h-6 rounded-md bg-rose-500 hover:bg-rose-600 text-white flex items-center justify-center transition-colors"
+              title={t(lang, 'stop')}
+            >
+              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => onTranslate(processAll)}
+                disabled={!!gating.translateReason}
+                title={gating.translateReason || t(lang, processAll ? 'translateAll' : 'translate')}
+                className="w-6 h-6 rounded-md border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+              </button>
+              <button
+                onClick={() => onProcess(processAll)}
+                disabled={!!gating.generateReason}
+                title={gating.generateReason || t(lang, processAll ? 'generateAll' : 'generate')}
+                className="w-6 h-6 rounded-md bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed flex items-center justify-center transition-all"
+              >
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+              </button>
+            </>
+          )}
+        </div>
+
+        <span className="mt-auto mb-3 text-[9px] font-bold tracking-widest text-skin-muted" style={{ writingMode: 'vertical-rl' }}>
+          {t(lang, isManualMode ? 'modeManual' : 'modeApi')}
+        </span>
       </div>
     );
   }
@@ -352,6 +412,23 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
           </>
         )}
       </div>
+
+      {/* Run / result actions pinned to the bottom edge: the config sections
+          above scroll, these never do — and they are now next to the canvas they
+          act on instead of at the bottom of the left sidebar. */}
+      <DockActions
+        config={config}
+        images={images}
+        currentImage={currentImage}
+        processingState={processingState}
+        processAll={processAll}
+        onProcessAllChange={onProcessAllChange}
+        onTranslate={onTranslate}
+        onProcess={onProcess}
+        onStop={onStop}
+        onDownload={onDownload}
+        onApplyAsOriginal={onApplyAsOriginal}
+      />
     </aside>
   );
 };

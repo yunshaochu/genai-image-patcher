@@ -1,13 +1,13 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, ThemeType, isRegionPaintable } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
 import { stitchImageInverted } from '../services/imageUtils';
-import { hasCachedTranslation } from '../services/translationCache';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 import { Section } from './sidebar/Section';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
 import { HelpTip } from './sidebar/HelpTip';
+import { DockActions } from './sidebar/DockActions';
 
 interface SidebarProps {
   config: AppConfig;
@@ -17,11 +17,6 @@ interface SidebarProps {
   selectedRegionId: string | null;
   onSelectImage: (id: string) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onProcess: (processAll: boolean) => void;
-  /** Translation-only stage (independent of generation), same scope semantics
-   *  as onProcess: processAll = whole project, otherwise the selected image. */
-  onTranslate: (processAll: boolean) => void;
-  onStop: () => void;
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
   onDownload: () => void;
@@ -36,6 +31,11 @@ interface SidebarProps {
   uploadProgress?: { current: number; total: number } | null;
   /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
   getStitchedUrl: (image: UploadedImage) => Promise<string>;
+  /** Nudge to clear the gallery after a download. Owned by App: the run/save
+   *  actions live in the right-hand dock now, but the 清空图库 button they point
+   *  at is still here (gallery header). */
+  clearHighlight: boolean;
+  setClearHighlight: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
@@ -136,9 +136,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   selectedImageId,
   onSelectImage,
   onUpload,
-  onProcess,
-  onTranslate,
-  onStop,
   processingState,
   currentImage,
   onDownload,
@@ -151,15 +148,13 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenHelp,
   onApplyAsOriginal,
   uploadProgress,
-  getStitchedUrl
+  getStitchedUrl,
+  clearHighlight,
+  setClearHighlight,
 }) => {
   const [isZipping, setIsZipping] = useState(false);
-  const [processAll, setProcessAll] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
   const [clearConfirmation, setClearConfirmation] = useState(false);
-  // Set after a successful download (ZIP or single) so the user remembers to
-  // clear the gallery — that also frees the persisted local session.
-  const [clearHighlight, setClearHighlight] = useState(false);
   const [storageUsage, setStorageUsage] = useState<number | null>(null);
 
   // Poll the origin's storage usage (IndexedDB session + everything else on
@@ -215,7 +210,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     setSectionsState((prev: any) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const isProcessing = processingState !== ProcessingStep.IDLE && processingState !== ProcessingStep.DONE;
   const hasCompletedImages = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
   const downloadCount = hasCompletedImages 
       ? images.filter(img => img.regions.some(r => r.status === 'completed') || img.isSkipped).length 
@@ -314,55 +308,9 @@ const Sidebar: React.FC<SidebarProps> = ({
       }
   };
 
-  const hasValidKey = config.provider === 'openai' ? !!config.openaiApiKey : !!config.geminiApiKey;
-  const targetImageExists = processAll ? images.length > 0 : !!currentImage;
-  const hasRegions = processAll 
-    ? images.some(i => i.regions.length > 0) 
-    : (currentImage?.regions.length || 0) > 0;
-  const canProceedWithEmptyRegions = config.processFullImageIfNoRegions === true;
-    
-  // --- Translation stage gating (independent task, see useImageProcessor.handleTranslate) ---
-  const scopedImages = processAll
-      ? images.filter(img => !img.isSkipped)
-      : (currentImage ? [currentImage] : []);
-  const isGenPaintable = (r: UploadedImage['regions'][number]) =>
-      isRegionPaintable(r, config.generationRegionSource ?? 'text');
-  const translationReady = scopedImages.some(img =>
-      config.useFullImageMasking
-          ? img.regions.some(isGenPaintable) && hasCachedTranslation(img.customPrompt)
-          : img.regions.some(r => isGenPaintable(r) && hasCachedTranslation(r.customPrompt))
-  );
-  const translationWorkLeft = scopedImages.some(img =>
-      config.useFullImageMasking
-          ? img.regions.some(isGenPaintable) && !hasCachedTranslation(img.customPrompt)
-          : img.regions.some(r => isGenPaintable(r) && !hasCachedTranslation(r.customPrompt))
-  );
-
-  const getDisabledReason = () => {
-      if (!targetImageExists) return "No image selected";
-      if (!hasValidKey) return "Missing API Key (Check Settings)";
-      if (!hasRegions && !canProceedWithEmptyRegions) return "No regions selected";
-      // 必须翻译 on but nothing translated yet: generating would only skip
-      // everything, so point the user at the translate stage instead.
-      if (config.enableTranslationMode && config.requireTranslationForGeneration && !translationReady) {
-          return t(lang, 'requireTranslationNone');
-      }
-      return "";
-  };
-
-  const getTranslateDisabledReason = () => {
-      if (!config.enableTranslationMode || !config.translationApiKey || !config.translationBaseUrl) {
-          return t(lang, 'translateMissingConfig');
-      }
-      if (scopedImages.length === 0) return t(lang, 'translateNoTarget');
-      if (!translationWorkLeft) return t(lang, 'translateNothingToDo');
-      return "";
-  };
-
   const isEditorMode = config.processingMode === 'editor';
   // The editor workflow tab is gated behind the manga module + 修补编辑器 switch.
   const editorTabAvailable = config.enableMangaMode && config.enableManualEditor;
-  const statusKey = processingState.toLowerCase() as any;
   const showMangaToolkit = config.enableMangaMode;
 
   // If the editor tab's gating switch is turned off while editor mode is
@@ -633,99 +581,21 @@ const Sidebar: React.FC<SidebarProps> = ({
 
       </div>
 
-      {/* Footer */}
-      <div className="p-4 bg-skin-surface border-t border-skin-border z-10">
-         {processingState !== ProcessingStep.IDLE && (
-            <div className="mb-3">
-               <div className="flex justify-between text-[10px] text-skin-muted uppercase font-bold mb-1">
-                  <span>{t(lang, statusKey)}</span>
-                  {processingState !== ProcessingStep.DONE && <span className="animate-pulse">...</span>}
-               </div>
-               <div className="h-1.5 w-full bg-skin-fill rounded-full overflow-hidden">
-                  <div className={`h-full bg-skin-primary rounded-full transition-all duration-300 ${processingState === ProcessingStep.DONE ? 'w-full bg-emerald-500' : 'w-2/3 animate-progress-indeterminate'}`}></div>
-               </div>
-            </div>
-         )}
-         
-         {!isProcessing ? (
-           <div className="space-y-2">
-             {/* Editor mode is fully local (erase/typeset/brush) — no API call,
-                 so no Redraw button. Results surface via Download / Apply. */}
-             {!isEditorMode && (
-               <>
-                 <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={processAll}
-                      onChange={(e) => setProcessAll(e.target.checked)}
-                      className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                    />
-                    <span className="text-xs text-skin-muted">{t(lang, 'applyAll', { count: images.length })}</span>
-                 </label>
+      {/* Footer — edit mode only. In the API workflows (AI 重绘 / 补丁工坊) the
+          run and save actions live in the right-hand dock, next to the canvas
+          they act on. The editor pipeline is local, so only its two result
+          actions stay here, with the gallery that owns the images. */}
+      {isEditorMode && (
+        <DockActions
+          resultOnly
+          config={config}
+          currentImage={currentImage}
+          processingState={processingState}
+          onDownload={onDownload}
+          onApplyAsOriginal={onApplyAsOriginal}
+        />
+      )}
 
-                 {/* Translation stage — fully independent from the redraw stage: run
-                     it first to fill the cache (and grow the glossary), then redraw. */}
-                 <button
-                    onClick={() => onTranslate(processAll)}
-                    disabled={!!getTranslateDisabledReason()}
-                    className="w-full py-2 border border-sky-500/60 text-sky-600 dark:text-sky-400 bg-sky-500/5 hover:bg-sky-500/15 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-sky-500/5 font-medium rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5"
-                    title={getTranslateDisabledReason() || t(lang, 'translateStageHint')}
-                 >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-                    {t(lang, processAll ? 'translateAll' : 'translate')}
-                 </button>
-
-                 <button
-                    onClick={() => onProcess(processAll)}
-                    disabled={!!getDisabledReason()}
-                    className="w-full py-3 bg-skin-primary hover:bg-opacity-90 disabled:bg-skin-muted disabled:cursor-not-allowed text-skin-primary-fg font-bold rounded-lg shadow-lg shadow-skin-primary/20 transition-all active:scale-95 flex items-center justify-center gap-2"
-                    title={getDisabledReason()}
-                 >
-                    {t(lang, processAll ? 'generateAll' : 'generate')}
-                 </button>
-
-                 {config.enableTranslationMode && (
-                    <p className="text-[10px] text-skin-muted leading-tight text-center">{t(lang, 'translateStageHint')}</p>
-                 )}
-                 {config.enableTranslationMode && config.requireTranslationForGeneration && (
-                    <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-tight text-center">
-                       ⚠️ {t(lang, 'requireTranslation')}
-                    </p>
-                 )}
-               </>
-             )}
-
-             <div className="grid grid-cols-2 gap-2">
-                 {(currentImage?.finalResultUrl || currentImage?.regions.some(r => r.status === 'completed')) && (
-                     <>
-                        <button 
-                        onClick={onApplyAsOriginal}
-                        className="w-full py-2 border border-skin-border text-skin-text bg-skin-fill hover:bg-skin-surface font-medium rounded-lg text-xs transition-colors"
-                        title={t(lang, 'applyAsOriginal')}
-                        >
-                            {t(lang, 'applyAsOriginal')}
-                        </button>
-                        <button
-                        onClick={() => { onDownload(); setClearHighlight(true); }}
-                        className="w-full py-2 border border-skin-border text-skin-text bg-skin-fill hover:bg-skin-surface font-medium rounded-lg text-xs transition-colors"
-                        title={t(lang, 'downloadResult')}
-                        >
-                            {t(lang, 'downloadResult')}
-                        </button>
-                     </>
-                 )}
-             </div>
-           </div>
-         ) : (
-           <button 
-              onClick={onStop}
-              className="w-full py-3 bg-rose-500 hover:bg-rose-600 text-white font-bold rounded-lg shadow-lg transition-all active:scale-95"
-           >
-              {t(lang, 'stop')}
-           </button>
-         )}
-      </div>
-      
     </aside>
   );
 };

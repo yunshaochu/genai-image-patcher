@@ -230,7 +230,10 @@ export const translations = {
     previewTitle: "补丁预览",
     
     // Actions
-    applyAll: "作用范围: 全部 {count} 张图片",
+    runTitle: "执行",
+    scope: "作用范围",
+    scopeCurrent: "当前图片",
+    scopeAll: "全部 {count} 张",
     generate: "开始重绘",
     generateAll: "批量重绘所有",
     translate: "翻译当前图片",
@@ -336,9 +339,9 @@ export const translations = {
     help_basics_2_title: "2. 框选区域",
     help_basics_2_desc: "在中间的画布上，按住鼠标左键拖动，框选你想要 AI 修改的区域（如水印、文字气泡）。",
     help_basics_3_title: "3. 配置提示词",
-    help_basics_3_desc: "在左侧输入提示词。全局提示词对所有选区生效，也可以点击选区单独设置专用提示词。",
+    help_basics_3_desc: "在右侧面板输入提示词。全局提示词对所有选区生效，也可以点击选区单独设置专用提示词。",
     help_basics_4_title: "4. 一键重绘",
-    help_basics_4_desc: "配置好 API Key 后，点击【开始重绘】。勾选【应用到所有】可批量处理整个图库。",
+    help_basics_4_desc: "配置好 API Key 后，在右侧面板点击【开始重绘】。把作用范围切到「全部」可批量处理整个图库。",
 
     // Content - Manga
     help_manga_1_title: "自动气泡检测",
@@ -602,7 +605,10 @@ export const translations = {
     previewTitle: "Patch Previews",
     
     // Actions
-    applyAll: "Applies to all {count} images",
+    runTitle: "Run",
+    scope: "Scope",
+    scopeCurrent: "This image",
+    scopeAll: "All {count}",
     generate: "Start Redraw",
     generateAll: "Redraw All",
     translate: "Translate This Image",
@@ -708,9 +714,9 @@ export const translations = {
     help_basics_2_title: "2. Select",
     help_basics_2_desc: "Draw rectangular regions on the canvas over areas you want to modify (watermarks, text, etc.).",
     help_basics_3_title: "3. Prompt",
-    help_basics_3_desc: "Enter a prompt. Use the Global Prompt for all regions, or select a region to set a specific prompt.",
+    help_basics_3_desc: "Enter a prompt in the right-hand panel. The Global Prompt applies to every region, or select a region to set a specific prompt.",
     help_basics_4_title: "4. Redraw",
-    help_basics_4_desc: "Configure your API key and click Redraw. Use 'Apply to All' for batch processing.",
+    help_basics_4_desc: "Configure your API key, then click Redraw in the right-hand panel. Switch the scope to 'All' to batch the whole gallery.",
 
     // Content - Manga
     help_manga_1_title: "Auto-Detect Bubbles",
