@@ -1,11 +1,12 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
 import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
+import { downloadImagesAsZip, ResolvedResultUrl } from './services/downloadZip';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -18,6 +19,10 @@ import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn } from '
 // Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
 const GlobalSettings = lazy(() => import('./components/GlobalSettings'));
+
+/** Does this image have anything beyond the untouched picture? */
+const imageHasResult = (img: UploadedImage): boolean =>
+  img.regions.some(r => r.status === 'completed') || !!img.finalResultUrl || !!img.fullAiResultUrl;
 
 export default function App() {
   const { config, setConfig } = useConfig();
@@ -102,6 +107,9 @@ export default function App() {
   // gallery header they highlight is still in the left sidebar.
   const [processAll, setProcessAll] = useState(false);
   const [clearHighlight, setClearHighlight] = useState(false);
+  // Gallery ZIP export (button lives in the sidebar header, the work is here
+  // because it needs the same result-URL resolver as Download / Apply).
+  const [isZipping, setIsZipping] = useState(false);
 
   const [transModels, setTransModels] = useState<string[]>([]);
 
@@ -391,50 +399,101 @@ export default function App() {
       }));
   }, [updateAllImages]);
 
-  // ON-DEMAND STITCHING for Download
-  const handleDownload = useCallback(async () => {
-      if (!selectedImage) return;
+  /**
+   * The picture exactly as the 已完成 tab renders it (see the result branch in
+   * the JSX) — the single source of truth for Download, ZIP export and
+   * 应用为原图, so a saved file can never disagree with the canvas.
+   *
+   * `fresh` returns an uncached URL for callers that KEEP it (应用为原图 stores
+   * it as the image's new previewUrl): the stitch cache revokes its own entries
+   * when the image signature changes, which would break the image.
+   * `release` flags URLs created right here — cache/original URLs are owned
+   * elsewhere and must never be revoked.
+   */
+  const resolveResultUrl = useCallback(async (image: UploadedImage, fresh = false): Promise<ResolvedResultUrl> => {
+      if (config.useInvertedMasking && image.fullAiResultUrl) {
+          return {
+              url: await stitchImageInverted(image.previewUrl, image.fullAiResultUrl, image.regions),
+              release: true,
+          };
+      }
+      // Nothing painted: the result tab shows the untouched picture, so hand back
+      // the original file itself (the preview may be a downscaled copy).
+      const hasPatch = image.regions.some(r => r.status === 'completed' && r.processedImageUrl);
+      if (!hasPatch) return { url: image.originalUrl || image.previewUrl, release: false };
+      if (fresh) return { url: await stitchImage(image.previewUrl, image.regions), release: true };
+      return { url: await getStitchedUrl(image), release: false };
+  }, [config.useInvertedMasking, getStitchedUrl]);
+
+  // ON-DEMAND STITCHING for Download — scope-aware: 当前图片 = that one file,
+  // 全部 = ZIP of everything that has a result, plus the images marked as skipped.
+  const handleDownload = useCallback(async (scopeAll: boolean) => {
       try {
-          let stitchedUrl: string;
-          let isCached = false;
-          if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
-              stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);
-          } else {
-              stitchedUrl = await getStitchedUrl(selectedImage);
-              isCached = true;
+          if (scopeAll) {
+              const targets = images.filter(img => imageHasResult(img) || !!img.isSkipped);
+              if (targets.length === 0) return;
+              await downloadImagesAsZip(targets, resolveResultUrl);
+              setClearHighlight(true);
+              return;
           }
+          if (!selectedImage) return;
+          const { url, release } = await resolveResultUrl(selectedImage);
           const link = document.createElement('a');
-          link.href = stitchedUrl;
+          link.href = url;
           link.download = selectedImage.file.name.replace(/\.[^.]+$/, '') + '.png';
           document.body.appendChild(link);
           link.click();
           document.body.removeChild(link);
           // Only release if we created the URL here; cached URLs are owned by useImageManager.
-          if (!isCached) releaseObjectURL(stitchedUrl);
+          if (release) releaseObjectURL(url);
           // Result is on disk — nudge the user to free the local session.
           setClearHighlight(true);
       } catch (e) {
           console.error("Failed to stitch for download", e);
           setErrorMsg("Failed to generate download image.");
       }
-  }, [selectedImage, config.useInvertedMasking, getStitchedUrl, setErrorMsg]);
+  }, [images, selectedImage, resolveResultUrl, setErrorMsg]);
 
-  // ON-DEMAND STITCHING for Apply
-  const handleApplyAsOriginalWrapper = useCallback(async () => {
-      if (!selectedImage) return;
+  /**
+   * Gallery ZIP export (button in the sidebar header): EVERY image in the
+   * gallery, each written as its 已完成 rendering. Untouched pictures resolve to
+   * their original file, so "export the gallery" stays one predictable action
+   * that no longer depends on how far the run got.
+   */
+  const handleDownloadAllZip = useCallback(async () => {
+      if (images.length === 0) return;
+      setIsZipping(true);
       try {
-          let stitchedUrl: string;
-          if (config.useInvertedMasking && selectedImage.fullAiResultUrl) {
-              stitchedUrl = await stitchImageInverted(selectedImage.previewUrl, selectedImage.fullAiResultUrl, selectedImage.regions);
-          } else {
-              stitchedUrl = await stitchImage(selectedImage.previewUrl, selectedImage.regions);
-          }
-          handleApplyResultAsOriginal(selectedImage.id, stitchedUrl);
+          await downloadImagesAsZip(images, resolveResultUrl);
+          setClearHighlight(true);
       } catch (e) {
-          console.error("Failed to stitch for apply", e);
-          setErrorMsg("Failed to apply changes.");
+          console.error("Zip generation failed", e);
+          setErrorMsg("Failed to create zip file");
+      } finally {
+          setIsZipping(false);
       }
-  }, [selectedImage, config.useInvertedMasking, handleApplyResultAsOriginal, setErrorMsg]);
+  }, [images, resolveResultUrl, setErrorMsg]);
+
+  // ON-DEMAND STITCHING for Apply — scope-aware. 全部 applies every image that
+  // HAS a result; untouched images are skipped on purpose: applying one would
+  // clear its regions and push a history entry for a picture that would look
+  // exactly the same afterwards.
+  const handleApplyAsOriginalWrapper = useCallback(async (scopeAll: boolean) => {
+      const targets = scopeAll
+          ? images.filter(imageHasResult)
+          : (selectedImage ? [selectedImage] : []);
+      for (const image of targets) {
+          try {
+              const { url } = await resolveResultUrl(image, true);
+              // Ownership moves to the image (it becomes the new previewUrl), so
+              // `release` is deliberately ignored here.
+              handleApplyResultAsOriginal(image.id, url);
+          } catch (e) {
+              console.error("Failed to stitch for apply", e);
+              setErrorMsg("Failed to apply changes.");
+          }
+      }
+  }, [images, selectedImage, resolveResultUrl, handleApplyResultAsOriginal, setErrorMsg]);
 
   // --- REFINEMENT HANDLER (Scroll to adjust box) ---
   const handleAdjustRegion = useCallback(async (imageId: string, regionId: string, isExpand: boolean) => {
@@ -584,8 +643,9 @@ export default function App() {
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
         onApplyAsOriginal={handleApplyAsOriginalWrapper}
+        onDownloadAllZip={handleDownloadAllZip}
+        isZipping={isZipping}
         uploadProgress={uploadProgress}
-        getStitchedUrl={getStitchedUrl}
         clearHighlight={clearHighlight}
         setClearHighlight={setClearHighlight}
       />

@@ -148,7 +148,7 @@ export interface UploadedImage {
   regions: Region[];
   finalResultUrl?: string; // The stitched final image
   fullAiResultUrl?: string; // The raw full-size output from the AI (before any cropping)
-  isSkipped?: boolean; // If true, excluded from batch processing but included in zip (as original)
+  isSkipped?: boolean; // If true, excluded from batch processing (still exportable, as its result view)
   customPrompt?: string; // Full image specific prompt
   
   // History for Undo/Redo of "Apply as Original"

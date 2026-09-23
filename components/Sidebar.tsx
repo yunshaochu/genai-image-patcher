@@ -1,9 +1,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType } from '../types';
-import { stitchImageInverted } from '../services/imageUtils';
 import { t } from '../services/translations';
-import JSZip from 'jszip';
 import { Section } from './sidebar/Section';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
 import { HelpTip } from './sidebar/HelpTip';
@@ -19,7 +17,8 @@ interface SidebarProps {
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
-  onDownload: () => void;
+  /** Scope-aware (see DockActions): false = the selected image, true = gallery. */
+  onDownload: (processAll: boolean) => void;
   onDeleteImage: (imageId: string) => void;
   onClearAllImages: () => void;
   onToggleSkip: (imageId: string) => void;
@@ -27,10 +26,12 @@ interface SidebarProps {
   isDetecting: boolean;
   onOpenGlobalSettings: () => void;
   onOpenHelp: () => void;
-  onApplyAsOriginal: () => void;
+  onApplyAsOriginal: (processAll: boolean) => void;
+  /** Gallery export: every image, each as its 已完成 rendering. App owns it —
+   *  it needs the same result-URL resolver as Download / Apply. */
+  onDownloadAllZip: () => void;
+  isZipping: boolean;
   uploadProgress?: { current: number; total: number } | null;
-  /** Returns a cached stitched URL for standard-mode images. The cache owns the URL — do NOT revoke. */
-  getStitchedUrl: (image: UploadedImage) => Promise<string>;
   /** Nudge to clear the gallery after a download. Owned by App: the run/save
    *  actions live in the right-hand dock now, but the 清空图库 button they point
    *  at is still here (gallery header). */
@@ -147,12 +148,12 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenGlobalSettings,
   onOpenHelp,
   onApplyAsOriginal,
+  onDownloadAllZip,
+  isZipping,
   uploadProgress,
-  getStitchedUrl,
   clearHighlight,
   setClearHighlight,
 }) => {
-  const [isZipping, setIsZipping] = useState(false);
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
   const [clearConfirmation, setClearConfirmation] = useState(false);
   const [storageUsage, setStorageUsage] = useState<number | null>(null);
@@ -210,10 +211,11 @@ const Sidebar: React.FC<SidebarProps> = ({
     setSectionsState((prev: any) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const hasCompletedImages = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
-  const downloadCount = hasCompletedImages 
-      ? images.filter(img => img.regions.some(r => r.status === 'completed') || img.isSkipped).length 
-      : images.length;
+  // "processed" = anything beyond the untouched picture. The gallery ZIP exports
+  // ALL images, so its badge shows the gallery size (that label sits next to it).
+  const processedCount = images.filter(img =>
+    img.regions.some(r => r.status === 'completed') || img.finalResultUrl || img.isSkipped
+  ).length;
   
   const lang = config.language;
 
@@ -222,77 +224,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   const handleConfigChange = useCallback((key: keyof AppConfig, value: any) => {
     setConfig(prev => ({ ...prev, [key]: value }));
   }, [setConfig]);
-
-  const handleDownloadAllZip = async () => {
-    let imagesToZip: UploadedImage[] = [];
-    const hasAnyResults = images.some(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl);
-    
-    if (hasAnyResults) {
-        imagesToZip = images.filter(img => img.regions.some(r => r.status === 'completed') || img.finalResultUrl || img.isSkipped);
-    } 
-    else {
-        imagesToZip = images;
-    }
-
-    if (imagesToZip.length === 0) return;
-
-    setIsZipping(true);
-    try {
-      const zip = new JSZip();
-      const folder = zip.folder("images");
-
-      // Process images sequentially to avoid OOM with many images
-      for (const img of imagesToZip) {
-        let targetUrl = img.finalResultUrl || img.previewUrl;
-        let needsStitchRelease = false;
-
-        const hasPatches = img.regions.some(r => r.status === 'completed');
-        if (hasPatches && !img.isSkipped) {
-            try {
-               if (config.useInvertedMasking && img.fullAiResultUrl) {
-                   targetUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl, img.regions);
-                   needsStitchRelease = true;
-               } else {
-                   // Cached: useImageManager owns the URL across repeated zip calls.
-                   targetUrl = await getStitchedUrl(img);
-               }
-            } catch (e) {
-               console.error("Failed to stitch image for zip:", img.file.name, e);
-               targetUrl = img.previewUrl;
-            }
-        }
-
-        const response = await fetch(targetUrl);
-        const blob = await response.blob();
-
-        // Only release URLs we created ourselves; cached URLs are owned by useImageManager.
-        if (needsStitchRelease && targetUrl.startsWith('blob:')) {
-            URL.revokeObjectURL(targetUrl);
-        }
-        
-        const filename = img.file.name.replace(/\.[^.]+$/, '') + '.png';
-        
-        folder?.file(filename, blob);
-      }
-
-      const content = await zip.generateAsync({ type: "blob", streamFiles: true });
-      const objectUrl = URL.createObjectURL(content);
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      link.download = "results.zip";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(objectUrl);
-      setClearHighlight(true); // remind the user to free the local session
-
-    } catch (error) {
-      console.error("Zip generation failed", error);
-      alert("Failed to create zip file");
-    } finally {
-      setIsZipping(false);
-    }
-  };
 
   const handleClearGallery = (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -413,7 +344,7 @@ const Sidebar: React.FC<SidebarProps> = ({
              <div className="space-y-2">
                 <div className="flex gap-2">
                     <button 
-                        onClick={handleDownloadAllZip}
+                        onClick={onDownloadAllZip}
                         disabled={isZipping}
                         className="flex-1 py-1.5 text-xs border border-skin-border rounded-lg text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2 bg-skin-fill/30"
                         title={t(lang, 'downloadZip')}
@@ -426,7 +357,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                         ) : (
                             <>
                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                                ZIP ({downloadCount})
+                                ZIP ({images.length})
                             </>
                         )}
                     </button>
@@ -470,7 +401,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
                 <div className="text-[10px] text-skin-muted text-center flex justify-between px-1">
                    <span>{images.length} images</span>
-                   <span>{downloadCount} processed</span>
+                   <span>{processedCount} processed</span>
                 </div>
 
                 {storageUsage !== null && config.enableSessionPersistence && (

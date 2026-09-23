@@ -110,8 +110,9 @@ interface DockActionsProps {
   onTranslate?: (processAll: boolean) => void;
   onProcess?: (processAll: boolean) => void;
   onStop?: () => void;
-  onDownload: () => void;
-  onApplyAsOriginal: () => void;
+  /** Scope-aware: `true` = every image in the gallery (see the handlers in App). */
+  onDownload: (processAll: boolean) => void;
+  onApplyAsOriginal: (processAll: boolean) => void;
   /** Edit mode: no API run at all — render the result actions only. */
   resultOnly?: boolean;
 }
@@ -246,20 +247,20 @@ export const DockActions: React.FC<DockActionsProps> = ({
           {hasResult && (
             <div className={`grid grid-cols-2 gap-2 ${resultOnly ? '' : 'pt-2 border-t border-skin-border/60'}`}>
               <button
-                onClick={onApplyAsOriginal}
-                title={t(lang, 'applyAsOriginal')}
+                onClick={() => onApplyAsOriginal(processAll)}
+                title={processAll ? t(lang, 'applyAsOriginalAllHint') : t(lang, 'applyAsOriginal')}
                 className="h-8 rounded-lg border border-skin-border bg-skin-fill/40 hover:bg-skin-fill hover:border-skin-primary/50 hover:text-skin-primary text-skin-muted text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5 px-2"
               >
                 <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg>
-                <span className="truncate">{t(lang, 'applyAsOriginal')}</span>
+                <span className="truncate">{t(lang, processAll ? 'applyAsOriginalAll' : 'applyAsOriginal')}</span>
               </button>
               <button
-                onClick={onDownload}
-                title={t(lang, 'downloadResult')}
+                onClick={() => onDownload(processAll)}
+                title={processAll ? t(lang, 'downloadResultAllHint') : t(lang, 'downloadResult')}
                 className="h-8 rounded-lg border border-skin-border bg-skin-fill/40 hover:bg-skin-fill hover:border-skin-primary/50 hover:text-skin-primary text-skin-muted text-[11px] font-medium transition-colors flex items-center justify-center gap-1.5 px-2"
               >
                 <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                <span className="truncate">{t(lang, 'downloadResult')}</span>
+                <span className="truncate">{t(lang, processAll ? 'downloadResultAll' : 'downloadResult')}</span>
               </button>
             </div>
           )}
