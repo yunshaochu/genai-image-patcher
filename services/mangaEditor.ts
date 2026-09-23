@@ -73,6 +73,17 @@ const ERASE_INPAINT_RADIUS = 7;
  *  (guards against a mis-detected page-spanning "bubble"). */
 const MAX_BUBBLE_AREA_RATIO = 16;
 
+/**
+ * Upper bound for the patch's text-overflow margin, as a fraction of the box
+ * per side. The margin is what makes an over-long translation visible (the
+ * canvas deliberately does not clip it back), but letting it grow without
+ * limit turns a big overflow into a canvas many times the box area: slow to
+ * encode/decode/redraw, heavy on memory and storage, and — since the patch is
+ * positioned at anchor ± margin — it would cover neighbouring bubbles. Half a
+ * box per side is far more than needed to show "this does not fit".
+ */
+const MAX_PATCH_MARGIN_RATIO = 0.5;
+
 const regionToPx = (r: Region, imgW: number, imgH: number) => ({
   x1: (r.x / 100) * imgW,
   y1: (r.y / 100) * imgH,
@@ -297,6 +308,10 @@ export const compositeRegionPatch = async (
     const slack = overX > 0 || overY > 0 ? Math.ceil(layout.style.fontSize * 0.35) : 0;
     mx = overX + slack;
     my = overY + slack;
+    // Bound the growth (see MAX_PATCH_MARGIN_RATIO): beyond this the patch
+    // would be mostly empty canvas covering the neighbouring bubbles.
+    mx = Math.min(mx, Math.round(cropW * MAX_PATCH_MARGIN_RATIO));
+    my = Math.min(my, Math.round(cropH * MAX_PATCH_MARGIN_RATIO));
   }
   onStage?.('layout+margin');
 

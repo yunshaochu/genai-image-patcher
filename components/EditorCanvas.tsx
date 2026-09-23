@@ -811,7 +811,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             const aw = region.anchorWidth ?? region.width;
             const ah = region.anchorHeight ?? region.height;
             // Editor patches may carry an overflow margin (text spilling out
-            // of the box) — the patch box is the anchor enlarged by it.
+            // of the box) — the patch box is the anchor enlarged by it. That
+            // margin is DELIBERATELY left unclipped: the patch is enlarged so
+            // the overflowing translation stays visible, and clipping it back
+            // to the region box (as this used to) hid exactly the overflow the
+            // margin was created for. AI patches carry no margin (mx = my = 0),
+            // so this only affects editor-composited ones.
             const mx = region.patchMarginX ?? 0;
             const my = region.patchMarginY ?? 0;
             const ex = ax - mx;
@@ -819,10 +824,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             const ew = aw + 2 * mx;
             const eh = ah + 2 * my;
             const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskUrl;
-            const clipTop    = ew > 0 && eh > 0 ? Math.max(0, ((region.y - ey) / eh) * 100) : 0;
-            const clipRight  = ew > 0 && eh > 0 ? Math.max(0, ((ex + ew - region.x - region.width) / ew) * 100) : 0;
-            const clipBottom = ew > 0 && eh > 0 ? Math.max(0, ((ey + eh - region.y - region.height) / eh) * 100) : 0;
-            const clipLeft   = ew > 0 && eh > 0 ? Math.max(0, ((region.x - ex) / ew) * 100) : 0;
             return (
               <img
                 key={`overlay-${region.id}`}
@@ -835,7 +836,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   height: `${eh}%`,
                   objectFit: 'contain',
                   objectPosition: 'center center',
-                  clipPath: `inset(${clipTop}% ${clipRight}% ${clipBottom}% ${clipLeft}%)`,
                   zIndex: 5,
                 }}
                 alt=""
