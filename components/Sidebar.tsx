@@ -3,12 +3,14 @@ import React, { useState, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, ThemeType, isRegionPaintable } from '../types';
 import { fetchOpenAIModels } from '../services/aiService';
 import { stitchImageInverted } from '../services/imageUtils';
+import { hasCachedTranslation } from '../services/translationCache';
 import { t } from '../services/translations';
 import JSZip from 'jszip';
 import { Section } from './sidebar/Section';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
+import { HelpTip } from './sidebar/HelpTip';
 import { DEFAULT_PROMPT } from '../hooks/useConfig';
 
 interface SidebarProps {
@@ -20,6 +22,9 @@ interface SidebarProps {
   onSelectImage: (id: string) => void;
   onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onProcess: (processAll: boolean) => void;
+  /** Translation-only stage (independent of generation), same scope semantics
+   *  as onProcess: processAll = whole project, otherwise the selected image. */
+  onTranslate: (processAll: boolean) => void;
   onStop: () => void;
   processingState: ProcessingStep;
   currentImage?: UploadedImage;
@@ -67,6 +72,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onSelectImage,
   onUpload,
   onProcess,
+  onTranslate,
   onStop,
   processingState,
   currentImage,
@@ -284,10 +290,41 @@ const Sidebar: React.FC<SidebarProps> = ({
     : (currentImage?.regions.length || 0) > 0;
   const canProceedWithEmptyRegions = config.processFullImageIfNoRegions === true;
     
+  // --- Translation stage gating (independent task, see useImageProcessor.handleTranslate) ---
+  const scopedImages = processAll
+      ? images.filter(img => !img.isSkipped)
+      : (currentImage ? [currentImage] : []);
+  const isGenPaintable = (r: UploadedImage['regions'][number]) =>
+      isRegionPaintable(r, config.generationRegionSource ?? 'text');
+  const translationReady = scopedImages.some(img =>
+      config.useFullImageMasking
+          ? img.regions.some(isGenPaintable) && hasCachedTranslation(img.customPrompt)
+          : img.regions.some(r => isGenPaintable(r) && hasCachedTranslation(r.customPrompt))
+  );
+  const translationWorkLeft = scopedImages.some(img =>
+      config.useFullImageMasking
+          ? img.regions.some(isGenPaintable) && !hasCachedTranslation(img.customPrompt)
+          : img.regions.some(r => isGenPaintable(r) && !hasCachedTranslation(r.customPrompt))
+  );
+
   const getDisabledReason = () => {
       if (!targetImageExists) return "No image selected";
       if (!hasValidKey) return "Missing API Key (Check Settings)";
       if (!hasRegions && !canProceedWithEmptyRegions) return "No regions selected";
+      // 必须翻译 on but nothing translated yet: generating would only skip
+      // everything, so point the user at the translate stage instead.
+      if (config.enableTranslationMode && config.requireTranslationForGeneration && !translationReady) {
+          return t(lang, 'requireTranslationNone');
+      }
+      return "";
+  };
+
+  const getTranslateDisabledReason = () => {
+      if (!config.enableTranslationMode || !config.translationApiKey || !config.translationBaseUrl) {
+          return t(lang, 'translateMissingConfig');
+      }
+      if (scopedImages.length === 0) return t(lang, 'translateNoTarget');
+      if (!translationWorkLeft) return t(lang, 'translateNothingToDo');
       return "";
   };
 
@@ -540,8 +577,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                {(() => {
                    const squareFillDisabled = !!config.useInvertedMasking;
                    return (
-                       <label className={`flex items-start gap-2 group ${squareFillDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                              title={squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : undefined}>
+                       <label className={`flex items-start gap-2 group ${squareFillDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                            <input
                                type="checkbox"
                                checked={config.enableSquareFill && !squareFillDisabled}
@@ -549,13 +585,19 @@ const Sidebar: React.FC<SidebarProps> = ({
                                onChange={(e) => handleConfigChange('enableSquareFill', e.target.checked)}
                                className="mt-0.5 rounded border-skin-border text-skin-primary focus:ring-skin-primary disabled:opacity-50"
                            />
-                           <div>
-                               <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
-                               <span className="block text-[10px] text-skin-muted leading-tight mt-0.5">
-                                   {squareFillDisabled ? t(lang, 'squareFillDisabledByInvertedTip') : t(lang, 'squareFillDesc')}
-                               </span>
-                           </div>
+                           <span className="block text-xs font-medium text-skin-text group-hover:text-skin-primary transition-colors">{t(lang, 'squareFill')}</span>
+                           {/* Long description moved behind the "?" (hover/focus) —
+                               when the toggle is auto-disabled the icon turns amber
+                               and carries the reason instead. */}
+                           <HelpTip
+                               className="ml-auto mt-0.5"
+                               tone={squareFillDisabled ? 'warn' : 'default'}
+                               text={squareFillDisabled
+                                   ? t(lang, 'squareFillDisabledByInvertedTip')
+                                   : t(lang, 'squareFillDesc')}
+                           />
                        </label>
+
                    );
                })()}
                {config.enableSquareFill && !config.useInvertedMasking && (
@@ -572,7 +614,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                                className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
                            />
                        </label>
-                       {/* Extra inset while cropping back — removes residual blur bleed */}
+                       {/* Extra inset while cropping back — removes residual blur bleed.
+                           Its description also lives behind the "?". */}
                        <label className="flex items-center gap-2 text-[11px]">
                            <span className="text-skin-muted">{t(lang, 'squareFillCropInset')}</span>
                            <input
@@ -583,9 +626,9 @@ const Sidebar: React.FC<SidebarProps> = ({
                                onChange={(e) => handleConfigChange('squareFillCropInset', Math.max(0, Math.min(256, Math.round(Number(e.target.value)) || 0)))}
                                className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
                            />
+                           <HelpTip className="ml-auto" text={t(lang, 'squareFillCropInsetDesc')} />
                        </label>
-                       <p className="text-[10px] text-skin-muted leading-tight -mt-1">{t(lang, 'squareFillCropInsetDesc')}</p>
-                   </div>
+                       </div>
                )}
            </div>
         </Section>
@@ -849,15 +892,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                  so no Generate button. Results surface via Download / Apply. */}
              {!isEditorMode && (
                <>
-                 <button
-                    onClick={() => onProcess(processAll)}
-                    disabled={!!getDisabledReason()}
-                    className="w-full py-3 bg-skin-primary hover:bg-opacity-90 disabled:bg-skin-muted disabled:cursor-not-allowed text-skin-primary-fg font-bold rounded-lg shadow-lg shadow-skin-primary/20 transition-all active:scale-95 flex items-center justify-center gap-2"
-                    title={getDisabledReason()}
-                 >
-                    {t(lang, processAll ? 'generateAll' : 'generate')}
-                 </button>
-
                  <label className="flex items-center justify-center gap-2 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -867,6 +901,36 @@ const Sidebar: React.FC<SidebarProps> = ({
                     />
                     <span className="text-xs text-skin-muted">{t(lang, 'applyAll', { count: images.length })}</span>
                  </label>
+
+                 {/* Translation stage — fully independent from generation: run it
+                     first to fill the cache (and grow the glossary), then generate. */}
+                 <button
+                    onClick={() => onTranslate(processAll)}
+                    disabled={!!getTranslateDisabledReason()}
+                    className="w-full py-2 border border-sky-500/60 text-sky-600 dark:text-sky-400 bg-sky-500/5 hover:bg-sky-500/15 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-sky-500/5 font-medium rounded-lg text-xs transition-colors flex items-center justify-center gap-1.5"
+                    title={getTranslateDisabledReason() || t(lang, 'translateStageHint')}
+                 >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+                    {t(lang, processAll ? 'translateAll' : 'translate')}
+                 </button>
+
+                 <button
+                    onClick={() => onProcess(processAll)}
+                    disabled={!!getDisabledReason()}
+                    className="w-full py-3 bg-skin-primary hover:bg-opacity-90 disabled:bg-skin-muted disabled:cursor-not-allowed text-skin-primary-fg font-bold rounded-lg shadow-lg shadow-skin-primary/20 transition-all active:scale-95 flex items-center justify-center gap-2"
+                    title={getDisabledReason()}
+                 >
+                    {t(lang, processAll ? 'generateAll' : 'generate')}
+                 </button>
+
+                 {config.enableTranslationMode && (
+                    <p className="text-[10px] text-skin-muted leading-tight text-center">{t(lang, 'translateStageHint')}</p>
+                 )}
+                 {config.enableTranslationMode && config.requireTranslationForGeneration && (
+                    <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-tight text-center">
+                       ⚠️ {t(lang, 'requireTranslation')}
+                    </p>
+                 )}
                </>
              )}
 

@@ -118,6 +118,9 @@ const DEFAULT_CONFIG: AppConfig = {
   translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   translationPromptNoContext: '',
   translationPromptWithContext: '',
+  requireTranslationForGeneration: false,
+  enableGlossary: true,
+  glossaryText: '',
 
   // AI Payload Compression Defaults
   enableAiPayloadCompression: true,
@@ -206,6 +209,17 @@ export function useConfig() {
         }
         if (typeof migratedConfig.translationPromptWithContext === 'undefined') {
             migratedConfig.translationPromptWithContext = '';
+        }
+
+        // Ensure the translation-stage / glossary settings exist
+        if (typeof migratedConfig.requireTranslationForGeneration === 'undefined') {
+            migratedConfig.requireTranslationForGeneration = false;
+        }
+        if (typeof migratedConfig.enableGlossary === 'undefined') {
+            migratedConfig.enableGlossary = true;
+        }
+        if (typeof migratedConfig.glossaryText === 'undefined') {
+            migratedConfig.glossaryText = '';
         }
 
         // detectionApiUrl + editorBackendUrl were merged into the single

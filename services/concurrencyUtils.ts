@@ -31,7 +31,15 @@ export class AsyncSemaphore {
 }
 
 /**
- * Improved concurrency runner
+ * Improved concurrency runner.
+ *
+ * NEVER rejects: a task that throws is logged and skipped. Callers treat a
+ * batch as best-effort and inspect the returned results — previously a single
+ * throwing task escaped through `Promise.race` (or `Promise.all`) and aborted
+ * the entire run, so one bad image killed a whole batch instead of being
+ * retried by the per-item loop.
+ *
+ * `limit` may be any number >= 1 (values below 1 are clamped).
  */
 export async function runWithConcurrency<T, R>(
   items: T[],
@@ -42,31 +50,39 @@ export async function runWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results: R[] = [];
   const executing = new Set<Promise<void>>();
+  const maxParallel = Math.max(1, Math.floor(limit) || 1);
   
   for (const item of items) {
     if (signal.aborted) break;
     
-    await new Promise(resolve => setTimeout(resolve, staggerMs > 0 ? staggerMs : 0));
+    if (staggerMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, staggerMs));
+    }
     
     if (signal.aborted) break;
 
-    const p = task(item).then((res) => {
-      if (!signal.aborted) results.push(res);
-    });
+    // The promise handed to `executing` settles in every case: `finally`
+    // removes it from the set, so `Promise.race` never sees a rejection and
+    // the in-flight count stays accurate.
+    const p: Promise<void> = task(item)
+      .then(
+        (res) => { if (!signal.aborted) results.push(res); },
+        (err) => { console.error('[runWithConcurrency] task failed:', err); }
+      )
+      .finally(() => { executing.delete(p); });
     
     executing.add(p);
     
-    const cleanP = p.catch(() => {}).then(() => {
-        executing.delete(p);
-    });
-    
-    if (executing.size >= limit) {
+    if (executing.size >= maxParallel) {
       await Promise.race(executing);
     }
   }
   
+  // Drain the tail (skipped while aborting so a task that ignores the signal
+  // cannot delay the cancel path). Safe either way: every promise has a
+  // rejection handler attached, so nothing surfaces as an unhandled rejection.
   if (!signal.aborted) {
-      await Promise.all(executing);
+    await Promise.all(Array.from(executing));
   }
   return results;
 }

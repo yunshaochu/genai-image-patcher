@@ -45,6 +45,12 @@ export default function App() {
     getStitchedUrl
   } = useImageManager(config.performanceMode, config.enableSessionPersistence);
 
+  // Glossary grown by the translate stage is persisted through the config so it
+  // survives reloads and is visible/editable in Global Settings.
+  const handleGlossaryChange = useCallback((glossaryText: string) => {
+      setConfig(prev => (prev.glossaryText === glossaryText ? prev : { ...prev, glossaryText }));
+  }, [setConfig]);
+
   const {
       processingState,
       errorMsg,
@@ -52,8 +58,9 @@ export default function App() {
       isDetecting,
       handleProcess,
       handleStop,
-      handleAutoDetect
-  } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage);
+      handleAutoDetect,
+      handleTranslate
+  } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage, handleGlossaryChange);
 
   // In-place manga text editor engine (editor workflow mode). All editor data
   // lives on Region fields; this hook owns only caches + debounce timers.
@@ -510,6 +517,7 @@ export default function App() {
         onSelectImage={handleSelectImage}
         onUpload={handleUpload}
         onProcess={handleProcess}
+        onTranslate={handleTranslate}
         onStop={handleStop}
         processingState={processingState}
         currentImage={selectedImage}

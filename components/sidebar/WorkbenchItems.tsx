@@ -1,8 +1,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region, isRegionPaintable } from '../../types';
+import { UploadedImage, AppConfig, Region, Language, isRegionPaintable } from '../../types';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
+import { CopyOutcome, buildWorkbenchPrompt, copyImageAndTextToClipboard, copyTextToClipboard } from '../../services/workbenchCopy';
 
 /**
  * Square-fill paste helper: when the copied image was padded to a square
@@ -20,6 +21,42 @@ const depadPastedImage = async (dataUrl: string, info: PaddingInfo | null, cropI
     }
 };
 
+/** Transient copy feedback: 'idle' → outcome → back to 'idle' after 2s. */
+const useCopyFeedback = () => {
+    const [status, setStatus] = useState<CopyOutcome | 'idle'>('idle');
+    const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const flash = (next: CopyOutcome | 'idle') => {
+        if (timer.current) clearTimeout(timer.current);
+        setStatus(next);
+        if (next !== 'idle') timer.current = setTimeout(() => setStatus('idle'), 2000);
+    };
+    useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+    return { status, flash };
+};
+
+/** Caption of the 「复制图文」 button for the current feedback state. */
+const imageCopyLabel = (lang: Language, outcome: CopyOutcome | 'idle'): string => {
+    switch (outcome) {
+        case 'image+text': return t(lang, 'copiedImagePrompt');
+        case 'image': return t(lang, 'copiedImageOnly');
+        case 'text': return t(lang, 'copiedPromptOnly');
+        case 'failed': return t(lang, 'copyFailedShort');
+        default: return t(lang, 'copyImagePrompt');
+    }
+};
+
+/** Caption of the 「复制提示词」 button for the current feedback state. */
+const textCopyLabel = (lang: Language, outcome: CopyOutcome | 'idle'): string => {
+    switch (outcome) {
+        case 'text': return t(lang, 'copiedPromptOnly');
+        case 'failed': return t(lang, 'copyFailedShort');
+        default: return t(lang, 'copyPromptOnly');
+    }
+};
+
+const copyButtonClass =
+    'flex-1 min-w-0 text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate disabled:opacity-40 disabled:cursor-not-allowed';
+
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
   config: AppConfig;
@@ -28,6 +65,11 @@ export const FullImageMaskRow: React.FC<{
   const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
   // Padding info of the square-filled copy (null when square fill is off)
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
+  const imgCopy = useCopyFeedback();
+  const txtCopy = useCopyFeedback();
+  // The whole-image row has no region: the prompt it exports is the global one
+  // plus this image's own prompt (cached translation block included).
+  const promptText = buildWorkbenchPrompt(config, { imagePrompt: image.customPrompt });
 
   useEffect(() => {
     let active = true;
@@ -111,21 +153,29 @@ export const FullImageMaskRow: React.FC<{
                   <div className="w-full h-full animate-pulse bg-skin-fill"></div>
                 )}
              </div>
-             <button 
-                onClick={async () => {
-                    if (maskedPreview) {
-                        try {
-                            const res = await fetch(maskedPreview);
-                            const blob = await res.blob();
-                            await navigator.clipboard.write([new ClipboardItem({[blob.type]: blob})]);
-                        } catch(e) { console.error(e); }
-                    }
-                }}
-                disabled={!maskedPreview}
-                className="w-full text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate"
-             >
-                {t(config.language, 'copyCrop')}
-             </button>
+             <div className="flex gap-1 w-full">
+                <button
+                   onClick={async () => {
+                       if (!maskedPreview) return;
+                       imgCopy.flash(await copyImageAndTextToClipboard(maskedPreview, promptText));
+                   }}
+                   disabled={!maskedPreview}
+                   className={copyButtonClass}
+                   title={t(config.language, 'copyImagePromptTip')}
+                >
+                   {imageCopyLabel(config.language, imgCopy.status)}
+                </button>
+                <button
+                   onClick={async () => {
+                       txtCopy.flash((await copyTextToClipboard(promptText)) ? 'text' : 'failed');
+                   }}
+                   disabled={!promptText}
+                   className={copyButtonClass}
+                   title={promptText ? t(config.language, 'copyPromptOnlyTip') : t(config.language, 'copyPromptEmpty')}
+                >
+                   {textCopyLabel(config.language, txtCopy.status)}
+                </button>
+             </div>
           </div>
 
           <div className="flex items-center text-skin-muted flex-col justify-center">
@@ -172,10 +222,14 @@ export const ManualPatchRow: React.FC<{
   showRetryDiagnostics: boolean;
 }> = ({ region, image, config, onPatchUpdate, lang, onOcr, showOcr, showRetryDiagnostics }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
   // Padding info of the square-filled copy (null when square fill is off)
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
+  const imgCopy = useCopyFeedback();
+  const txtCopy = useCopyFeedback();
+  // Exactly what the app would send for this box: global prompt + this box's
+  // prompt (its cached translation block included).
+  const promptText = buildWorkbenchPrompt(config, { regionPrompt: region.customPrompt });
 
   useEffect(() => {
     let active = true;
@@ -211,18 +265,11 @@ export const ManualPatchRow: React.FC<{
 
   const handleCopy = async () => {
     if (!sourceCrop) return;
-    try {
-      const response = await fetch(sourceCrop);
-      const blob = await response.blob();
-      await navigator.clipboard.write([
-        new ClipboardItem({ [blob.type]: blob })
-      ]);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (e) {
-      console.error("Copy failed", e);
-      alert("Browser blocked copy. Please right click image to copy.");
-    }
+    imgCopy.flash(await copyImageAndTextToClipboard(sourceCrop, promptText));
+  };
+
+  const handleCopyPrompt = async () => {
+    txtCopy.flash((await copyTextToClipboard(promptText)) ? 'text' : 'failed');
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
@@ -266,13 +313,21 @@ export const ManualPatchRow: React.FC<{
                 )}
              </div>
              <div className="flex gap-1 w-full">
-                 <button 
+                 <button
                    onClick={handleCopy}
                    disabled={!sourceCrop}
-                   className="flex-1 text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate"
-                   title={t(lang, 'copyCrop')}
+                   className={copyButtonClass}
+                   title={t(lang, 'copyImagePromptTip')}
                  >
-                   {copied ? t(lang, 'copied') : t(lang, 'copyCrop')}
+                   {imageCopyLabel(lang, imgCopy.status)}
+                 </button>
+                 <button
+                   onClick={handleCopyPrompt}
+                   disabled={!promptText}
+                   className={copyButtonClass}
+                   title={promptText ? t(lang, 'copyPromptOnlyTip') : t(lang, 'copyPromptEmpty')}
+                 >
+                   {textCopyLabel(lang, txtCopy.status)}
                  </button>
              </div>
           </div>

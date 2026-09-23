@@ -242,6 +242,22 @@ export interface AppConfig {
   /** User's custom prompt for translation WITH masked context (cached) */
   translationPromptWithContext?: string;
 
+  /** 必须翻译: the redraw pipeline only touches regions whose translation has
+   *  already been filled in (image-level cache in full-image-masking mode).
+   *  Regions without one are skipped — left 'pending', not failed — and are
+   *  re-checked on the next retry round / next run, so the user can run the
+   *  translate stage whenever and then hit generate. Requires
+   *  enableTranslationMode. */
+  requireTranslationForGeneration: boolean;
+
+  /** Maintain a project-wide 术语表 while translating: each translation call
+   *  also reports the term pairs it used, which are merged into `glossaryText`
+   *  and fed back into the following translation prompts so naming stays
+   *  consistent across every page. No new terms = no update. */
+  enableGlossary: boolean;
+  /** The glossary itself: one `原文 | 译文 | 备注` per line (备注 optional). */
+  glossaryText: string;
+
   /** When true, images sent to translation/redraw APIs are re-encoded to WebP
    *  at a target file size (binary search on quality). Preserves pixel
    *  dimensions — no resampling. When false, raw originals are sent. */

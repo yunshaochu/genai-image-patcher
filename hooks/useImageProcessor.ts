@@ -1,11 +1,13 @@
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
+import { TRANSLATION_CACHE_MARKER, splitTranslationCache, writeTranslationCache, hasCachedTranslation } from '../services/translationCache';
+import { mergeGlossary } from '../services/glossary';
 
 /**
  * Cap the number of error-history entries stored on a region. Each entry is
@@ -76,32 +78,11 @@ const regionOverlapsExisting = (
 };
 
 /**
- * Sentinel string that marks the start of a cached translation block inside
- * `region.customPrompt`. Anything BEFORE this line is treated as the user's
- * own instructions; anything AFTER is reused as the cached translation
- * result (skipping the translation API on subsequent runs).
- *
- * To force a re-translation, the user can delete this line (or the whole
- * customPrompt) in the sidebar textarea.
+ * The translation cache helpers (marker / split / write / has) live in
+ * services/translationCache.ts — the translate stage, the generate stage and
+ * the sidebar all need to agree on what "this box already has a translation"
+ * means.
  */
-const TRANSLATION_CACHE_MARKER = '以下是为你提供的图片文字以及文字在图上的坐标/位置数据，请参考：';
-
-const splitTranslationCache = (prompt?: string): { userPart: string; cached: string | null } => {
-    if (!prompt) return { userPart: '', cached: null };
-    const idx = prompt.indexOf(TRANSLATION_CACHE_MARKER);
-    if (idx < 0) return { userPart: prompt.trim(), cached: null };
-    const cached = prompt.slice(idx + TRANSLATION_CACHE_MARKER.length).trim();
-    return {
-        userPart: prompt.slice(0, idx).trim(),
-        cached: cached.length > 0 ? cached : null,
-    };
-};
-
-const writeTranslationCache = (userPart: string, translation: string): string => {
-    return userPart
-        ? `${userPart}\n\n${TRANSLATION_CACHE_MARKER}\n${translation}`
-        : `${TRANSLATION_CACHE_MARKER}\n${translation}`;
-};
 
 /**
  * Merge processing results from a regionsMap snapshot onto the LIVE image.regions
@@ -142,7 +123,9 @@ export function useImageProcessor(
     updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
     updateAllImages: (updater: (img: UploadedImage) => UploadedImage) => void,
     config: AppConfig,
-    selectedImage: UploadedImage | undefined
+    selectedImage: UploadedImage | undefined,
+    /** Persist the glossary grown by the translate stage (config.glossaryText). */
+    onGlossaryChange?: (glossaryText: string) => void
 ) {
     const [processingState, setProcessingState] = useState<ProcessingStep>(ProcessingStep.IDLE);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -165,6 +148,40 @@ export function useImageProcessor(
     const paintable = (r: Region): boolean =>
         isRegionPaintable(r, config.generationRegionSource ?? 'text');
 
+    // Live glossary for the in-flight run. `config.glossaryText` is the
+    // persisted copy; a batch must not depend on a React re-render to see the
+    // terms merged by an earlier image, so runs read/write this ref and flush
+    // it back to the config when they finish. `configRef`/`glossaryRef` give
+    // the async loops the freshest values.
+    const configRef = useRef(config);
+    configRef.current = config;
+    const glossaryRef = useRef(config.glossaryText ?? '');
+    useEffect(() => {
+        // External edits (settings textarea / clear) win while no run is active.
+        glossaryRef.current = config.glossaryText ?? '';
+    }, [config.glossaryText]);
+
+    /** Merge the term pairs one translation reported into the glossary ref.
+     *  Returns true when the glossary actually changed. */
+    const absorbTerms = (terms: string): boolean => {
+        if (!terms.trim()) return false;
+        const next = mergeGlossary(glossaryRef.current, terms);
+        if (next === glossaryRef.current) return false;
+        glossaryRef.current = next;
+        return true;
+    };
+
+    /** Persist the run-grown glossary back into the config. */
+    const flushGlossary = () => {
+        if (!onGlossaryChange) return;
+        if (glossaryRef.current === (configRef.current.glossaryText ?? '')) return;
+        onGlossaryChange(glossaryRef.current);
+    };
+
+    /** 必须翻译 is only meaningful together with translation mode. */
+    const requireTranslation = () =>
+        !!(config.enableTranslationMode && config.requireTranslationForGeneration);
+
     const handleStop = () => {
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
@@ -178,14 +195,22 @@ export function useImageProcessor(
         setErrorMsg(t(config.language, 'stopped_by_user'));
     };
 
+    /**
+     * Process one image of the generate stage.
+     *
+     * Returns true when this invocation actually consumed work (built a payload
+     * and/or charged an attempt to at least one region). The caller uses it to
+     * detect stalled rounds — with 必须翻译 a round may legitimately do nothing
+     * but skip regions, and the loop must not spin on those forever.
+     */
     const processSingleImage = async (
         imageSnapshot: UploadedImage,
         signal: AbortSignal,
         globalSemaphore: AsyncSemaphore,
         localRegionState: Map<string, RegionRunState>
-    ) => {
-        if (signal.aborted) return;
-        if (imageSnapshot.isSkipped) return;
+    ): Promise<boolean> => {
+        if (signal.aborted) return false;
+        if (imageSnapshot.isSkipped) return false;
 
         // Build regionsMap from imageSnapshot, but PATCH each entry with the latest
         // status/retryCount from localRegionState. This is the fix for the retry-loop
@@ -214,6 +239,43 @@ export function useImageProcessor(
             localRegionState.set(next.id, { status: next.status, retryCount: next.retryCount ?? 0 });
         };
 
+        // Shared "this attempt failed" handler: charges one attempt to `failed`
+        // (retry budget), appends the error to the diagnostics history, and
+        // commits. Bases every update on the LIVE regionsMap entry so a
+        // translation cached earlier in the same task isn't overwritten.
+        const failRegions = (failed: readonly Region[], err: unknown) => {
+            const msg = errToMsg(err);
+            failed.forEach(r => {
+                const base = regionsMap.get(r.id) ?? r;
+                const nextHistory = [...(base.errorHistory ?? []), msg].slice(-MAX_ERROR_HISTORY);
+                setRegion({
+                    ...base,
+                    status: 'failed' as const,
+                    retryCount: (base.retryCount ?? 0) + 1,
+                    errorHistory: nextHistory,
+                });
+            });
+            updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+        };
+
+        // A file that cannot even be decoded must not abort the whole batch,
+        // and must not leave its regions stuck in 'pending' forever (which the
+        // retry loop would then re-pick endlessly): charge one attempt to every
+        // in-scope region and let the loop move on.
+        const loadImageOrFail = async (): Promise<HTMLImageElement | null> => {
+            try {
+                return await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
+            } catch (err: any) {
+                if (err?.name !== 'AbortError') {
+                    const inScope = imageSnapshot.regions.filter(r =>
+                        paintable(r) && (r.status === 'pending' || r.status === 'failed')
+                    );
+                    failRegions(inScope.length > 0 ? inScope : imageSnapshot.regions, err);
+                }
+                return null;
+            }
+        };
+
         // When a whole-bubble region gets AI-redrawn, the original text inside
         // it is wiped — mark contained text_bubble regions so the editor
         // typesets onto the AI bubble patch and skips erasure (aiBubbleBase).
@@ -237,10 +299,15 @@ export function useImageProcessor(
         };
 
         let initialRegions = [...imageSnapshot.regions];
+        // An image with no paintable region of its own that gets the synthetic
+        // whole-image box ("处理全图") cannot be pre-translated by the translate
+        // stage (there is no region to cache against), so 必须翻译 must not
+        // block it — otherwise it could never be generated at all.
+        const isSyntheticFullImage = !initialRegions.some(paintable) && !!config.processFullImageIfNoRegions;
         // Regions excluded by the generation source (e.g. bubble outlines in
         // 'text' mode) don't count as paintable — an image holding ONLY those
         // is still "empty".
-        if (!initialRegions.some(paintable) && config.processFullImageIfNoRegions) {
+        if (isSyntheticFullImage) {
             const fullRegion: Region = {
                 id: crypto.randomUUID(),
                 x: 0, y: 0, width: 100, height: 100,
@@ -262,26 +329,47 @@ export function useImageProcessor(
         // still being passed through the outer loop (because OTHER regions in
         // it still have budget remaining).
         const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
-        const regionsToProcess = allActiveRegions.filter(r =>
+        let regionsToProcess = allActiveRegions.filter(r =>
             (r.status === 'pending' || r.status === 'failed')
             && paintable(r)
             && (r.retryCount ?? 0) < maxAttemptsPerRegion
         );
-        if (regionsToProcess.length === 0) return;
 
-        const imgElement = await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
+        // 必须翻译 (requireTranslationForGeneration): the redraw pipeline only
+        // touches boxes whose translation has already been filled in. Boxes
+        // without one are SKIPPED, not failed — they stay 'pending', so the
+        // retry round below (and every later run, e.g. after the translate
+        // stage has been run) re-checks them and generates as soon as the
+        // translation shows up. In full-image-masking mode the translation
+        // cache is image-level (one payload per image), so the whole image waits.
+        if (requireTranslation() && !isSyntheticFullImage) {
+            if (config.useFullImageMasking) {
+                if (!hasCachedTranslation(imageSnapshot.customPrompt)) return false;
+            } else {
+                regionsToProcess = regionsToProcess.filter(r => hasCachedTranslation(r.customPrompt));
+            }
+        }
+        if (regionsToProcess.length === 0) return false;
+
+        const imgElement = await loadImageOrFail();
+        if (!imgElement) return true; // an attempt was charged to the regions
         // The mask canvas is created at the source image resolution. Using the
         // original (e.g. 6000x8000) burns ~190MB of canvas memory; the preview
         // is already capped at 2048 in balanced mode, so prefer it for mask
         // input. cropRegion / single-region path keeps imgElement at full res
         // so per-region crops sent to the API stay sharp.
-        const maskImg = imageSnapshot.previewUrl && imageSnapshot.previewUrl !== imageSnapshot.originalUrl
-            ? await loadImage(imageSnapshot.previewUrl)
-            : imgElement;
+        let maskImg = imgElement;
+        if (imageSnapshot.previewUrl && imageSnapshot.previewUrl !== imageSnapshot.originalUrl) {
+            try {
+                maskImg = await loadImage(imageSnapshot.previewUrl);
+            } catch {
+                maskImg = imgElement; // fall back to the full-res copy
+            }
+        }
         regionsToProcess.forEach(r => setRegion({ ...r, status: 'processing' }));
         updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
 
-        if (signal.aborted) return;
+        if (signal.aborted) return false;
         setProcessingState(ProcessingStep.CROPPING);
 
         if (config.useFullImageMasking) {
@@ -322,7 +410,11 @@ export function useImageProcessor(
                     translationPayloadUrl = config.enableTranslationMode
                         ? await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB })
                         : redrawPayloadUrl;
-                    releaseObjectURL(payloadUrl);
+                    // compressImageToTargetSize returns its input when the source
+                    // is already small enough / unencodable — never revoke that.
+                    if (redrawPayloadUrl !== payloadUrl && translationPayloadUrl !== payloadUrl) {
+                        releaseObjectURL(payloadUrl);
+                    }
                 }
 
                 // Convert to base64 lazily; each API call uses its own compressed payload.
@@ -347,7 +439,11 @@ export function useImageProcessor(
                        translationText = imageCachedTranslation;
                    } else {
                        setProcessingState(ProcessingStep.API_CALLING);
-                       translationText = await generateTranslation(await getTranslationBase64(), config, signal);
+                       const translation = await generateTranslation(
+                           await getTranslationBase64(), config, signal, undefined, glossaryRef.current
+                       );
+                       translationText = translation.text;
+                       absorbTerms(translation.terms);
 
                        // Persist translation back into image.customPrompt for reuse next run.
                        if (translationText) {
@@ -464,22 +560,13 @@ export function useImageProcessor(
                 }
             } catch (err: any) {
                 if (err.name !== 'AbortError') {
-                    const msg = errToMsg(err);
-                    regionsToProcess.forEach(r => {
-                        const nextHistory = [...(r.errorHistory ?? []), msg].slice(-MAX_ERROR_HISTORY);
-                        setRegion({
-                            ...r,
-                            status: 'failed' as const,
-                            retryCount: (r.retryCount ?? 0) + 1,
-                            errorHistory: nextHistory,
-                        });
-                    });
-                    updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+                    // One API call per image → all its regions share the attempt.
+                    failRegions(regionsToProcess, err);
                 }
             } finally {
                 globalSemaphore.release();
             }
-            return;
+            return true; // the round did work (or charged an attempt)
         }
 
         // Pre-generate masked full image as context for translation (compressed, shared across all regions)
@@ -489,8 +576,9 @@ export function useImageProcessor(
                 // Same mask-canvas size concern as the useFullImageMasking branch.
                 const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, maskRegions);
                 if (config.enableAiPayloadCompression) {
-                    maskedContextUrl = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
-                    releaseObjectURL(fullMaskedUrl);
+                    const compressed = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                    if (compressed !== fullMaskedUrl) releaseObjectURL(fullMaskedUrl);
+                    maskedContextUrl = compressed;
                 } else {
                     maskedContextUrl = fullMaskedUrl;
                 }
@@ -573,7 +661,11 @@ export function useImageProcessor(
                    } else {
                        setProcessingState(ProcessingStep.API_CALLING);
                        const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                       translationText = await generateTranslation(await getTranslationBase64(), config, signal, contextBase64);
+                       const translation = await generateTranslation(
+                           await getTranslationBase64(), config, signal, contextBase64, glossaryRef.current
+                       );
+                       translationText = translation.text;
+                       absorbTerms(translation.terms);
 
                        // Persist the translation back into region.customPrompt so the
                        // textarea reflects the cached value and next run reuses it.
@@ -672,19 +764,10 @@ export function useImageProcessor(
                 if (paddedUrl) releaseObjectURL(paddedUrl);
                 if (croppedUrl) releaseObjectURL(croppedUrl);
 
-                // Base on the latest regionsMap entry — the translation-cache
-                // write earlier in this task may have updated customPrompt,
-                // and a prior attempt may have set retryCount/errorHistory.
-                const baseRegion = regionsMap.get(region.id) ?? region;
-                const nextHistory = [...(baseRegion.errorHistory ?? []), errToMsg(err)].slice(-MAX_ERROR_HISTORY);
-                const failedRegion = {
-                    ...baseRegion,
-                    status: 'failed' as const,
-                    retryCount: (baseRegion.retryCount ?? 0) + 1,
-                    errorHistory: nextHistory,
-                };
-                setRegion(failedRegion);
-                updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+                // Bases the update on the latest regionsMap entry — the
+                // translation-cache write earlier in this task may have updated
+                // customPrompt, and a prior attempt may have set retryCount.
+                failRegions([region], err);
             } finally {
                 globalSemaphore.release();
             }
@@ -693,6 +776,8 @@ export function useImageProcessor(
 
         // Release shared context URL after all regions are done
         if (maskedContextUrl) releaseObjectURL(maskedContextUrl);
+
+        return true; // the round attempted (or charged an attempt to) its regions
     };
 
     const handleProcess = async (processAll: boolean) => {
@@ -766,6 +851,31 @@ export function useImageProcessor(
             }
         }
 
+        // Regions still waiting for a translation when the run ends (必须翻译):
+        // counted from the synchronous mirror so a lagging React commit can't
+        // hide them, and reported to the user as the reason they were skipped.
+        const countAwaitingTranslation = (): number => {
+            let waiting = 0;
+            for (const img of pickTargets()) {
+                if (img.isSkipped) continue;
+                for (const r of img.regions) {
+                    if (!paintable(r)) continue;
+                    const local = localRegionState.get(r.id);
+                    const status = local?.status ?? r.status;
+                    if (status !== 'pending' && status !== 'failed') continue;
+                    const missing = config.useFullImageMasking
+                        ? !hasCachedTranslation(img.customPrompt)
+                        : !hasCachedTranslation(r.customPrompt);
+                    if (missing) waiting++;
+                }
+            }
+            return waiting;
+        };
+
+        // Consecutive rounds where nothing could be attempted. Keeps the loop
+        // from spinning on regions held back by 必须翻译 (they stay 'pending').
+        let noProgressRounds = 0;
+
         try {
             while (true) {
                 if (controller.signal.aborted) break;
@@ -788,21 +898,45 @@ export function useImageProcessor(
                 );
                 if (roundTargets.length === 0) break;
 
+                let didWork = false;
                 if (config.executionMode === 'concurrent') {
-                    await runWithConcurrency<UploadedImage, void>(
+                    const roundResults = await runWithConcurrency<UploadedImage, boolean>(
                         roundTargets,
                         config.concurrencyLimit,
                         (img) => processSingleImage(img, controller.signal, globalSemaphore, localRegionState),
                         controller.signal, 0
                     );
+                    didWork = roundResults.some(Boolean);
                 } else {
                     for (const img of roundTargets) {
                         if (controller.signal.aborted) break;
-                        await processSingleImage(img, controller.signal, globalSemaphore, localRegionState);
+                        if (await processSingleImage(img, controller.signal, globalSemaphore, localRegionState)) {
+                            didWork = true;
+                        }
                     }
                 }
+
+                // Stalled round guard. With 必须翻译 on, a round may legitimately
+                // do nothing but skip untranslated regions — they stay 'pending'
+                // on purpose, so without this the loop would re-pick them for
+                // ever. ONE silent round is still retried, because that retry
+                // pass is what picks a region up when its translation has been
+                // filled in meanwhile; a second silent round ends the run and
+                // the regions simply wait for the next generate click.
+                if (didWork) {
+                    noProgressRounds = 0;
+                } else if (++noProgressRounds >= 2) {
+                    break;
+                }
             }
-            if (controller.signal.aborted) setErrorMsg(t(config.language, 'stopped_by_user'));
+            if (controller.signal.aborted) {
+                setErrorMsg(t(config.language, 'stopped_by_user'));
+            } else if (requireTranslation()) {
+                const waiting = countAwaitingTranslation();
+                if (waiting > 0) {
+                    setErrorMsg(t(config.language, 'requireTranslationSkipped', { count: waiting }));
+                }
+            }
             setProcessingState(ProcessingStep.DONE);
         } catch (e: any) {
             if (e.name !== 'AbortError') {
@@ -810,12 +944,281 @@ export function useImageProcessor(
             }
             setProcessingState(ProcessingStep.IDLE);
         } finally {
+            // Generation can translate on the fly (enableTranslationMode) and
+            // may therefore have grown the glossary — persist it.
+            flushGlossary();
             // Defensive sweep: every exit path (normal completion, abort, error)
             // must leave regions in a terminal state. AbortError handlers inside
             // processSingleImage / processRegionTask silently return without
             // touching status, so a region set to 'processing' at line 159 can
             // stay stuck if its task was aborted before completion. Reset any
             // such leftovers to 'pending' so the user can interact / retry.
+            updateAllImages(img => {
+                const stuck = img.regions.some(r => r.status === 'processing');
+                if (!stuck) return img;
+                return {
+                    ...img,
+                    regions: img.regions.map(r =>
+                        r.status === 'processing' ? { ...r, status: 'pending' as const } : r
+                    ),
+                };
+            });
+        }
+    };
+
+    /**
+     * Translation stage — a task INDEPENDENT from generation.
+     *
+     * Walks every in-scope image and fills in the translation cache
+     * (region.customPrompt / image.customPrompt, see TRANSLATION_CACHE_MARKER)
+     * without ever calling the redraw API. Regions that already hold a
+     * translation are skipped, so the stage is resumable, cheap to re-run and
+     * safe to run before/after any generation pass.
+     *
+     * While translating, every image also reports the term pairs it used; those
+     * are merged into the project glossary (glossaryRef), which is fed into
+     * every later translation prompt — so the glossary grows page by page and
+     * naming stays consistent (a page with nothing new changes nothing).
+     */
+    const handleTranslate = async (processAll: boolean) => {
+        if (abortControllerRef.current) abortControllerRef.current.abort();
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        setProcessingState(ProcessingStep.CROPPING);
+        setErrorMsg(null);
+
+        const selectedId = selectedImage?.id;
+        const pickTargets = (): UploadedImage[] => {
+            const live = imagesRef.current;
+            return processAll
+                ? live.filter(img => !img.isSkipped)
+                : (selectedId ? live.filter(img => img.id === selectedId) : []);
+        };
+        if (pickTargets().length === 0) {
+            setProcessingState(ProcessingStep.IDLE);
+            return;
+        }
+
+        const limit = config.executionMode === 'serial' ? 1 : config.concurrencyLimit;
+        const semaphore = new AsyncSemaphore(Math.max(1, limit));
+        let failures = 0;
+
+        /** Stamp the translation into the region's cache. `status` is the
+         *  status the box had before this stage started: translating must never
+         *  complete/invalidate a box, so a 'completed' patch stays completed. */
+        const commitRegionTranslation = (
+            imageId: string,
+            regionId: string,
+            translation: string,
+            userPart: string,
+            status: Region['status']
+        ) => {
+            const newCustomPrompt = writeTranslationCache(userPart, translation);
+            updateImage(imageId, img => ({
+                ...img,
+                regions: img.regions.map(r =>
+                    r.id === regionId
+                        ? { ...r, customPrompt: newCustomPrompt, status }
+                        : r
+                ),
+            }));
+        };
+
+        const setRegionStatus = (imageId: string, regionIds: string[], status: Region['status'], failure?: unknown) => {
+            updateImage(imageId, img => ({
+                ...img,
+                regions: img.regions.map(r => {
+                    if (!regionIds.includes(r.id)) return r;
+                    return {
+                        ...r,
+                        status,
+                        errorHistory: failure !== undefined
+                            ? [...(r.errorHistory ?? []), errToMsg(failure)].slice(-MAX_ERROR_HISTORY)
+                            : r.errorHistory,
+                    };
+                }),
+            }));
+        };
+
+        const translateImage = async (img: UploadedImage) => {
+            if (controller.signal.aborted) return;
+            const paintableRegions = img.regions.filter(paintable);
+
+            // Full-image masking: one payload per image and one image-level
+            // cache entry, so either the whole page is already translated or
+            // every region waits for the same call.
+            if (config.useFullImageMasking) {
+                if (paintableRegions.length === 0 || hasCachedTranslation(img.customPrompt)) return;
+                await semaphore.acquire();
+                let payloadUrl: string | undefined;
+                try {
+                    const imgElement = await loadImage(img.originalUrl || img.previewUrl);
+                    const maskImg = img.previewUrl && img.previewUrl !== img.originalUrl
+                        ? await loadImage(img.previewUrl)
+                        : imgElement;
+                    payloadUrl = config.useInvertedMasking
+                        ? await createInvertedMultiMaskedFullImage(maskImg, paintableRegions)
+                        : await createMultiMaskedFullImage(maskImg, paintableRegions);
+                    if (config.enableAiPayloadCompression) {
+                        const compressed = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        if (compressed !== payloadUrl) releaseObjectURL(payloadUrl);
+                        payloadUrl = compressed;
+                    }
+                    if (controller.signal.aborted) return;
+                    setProcessingState(ProcessingStep.API_CALLING);
+                    const result = await generateTranslation(
+                        await urlToBase64(payloadUrl), config, controller.signal, undefined, glossaryRef.current
+                    );
+                    if (result.text) {
+                        const { userPart } = splitTranslationCache(img.customPrompt);
+                        const newImagePrompt = writeTranslationCache(userPart, result.text);
+                        updateImage(img.id, cur => ({ ...cur, customPrompt: newImagePrompt }));
+                    } else {
+                        failures++; // empty answer — kept untranslated for a retry
+                    }
+                    absorbTerms(result.terms);
+                } catch (err: any) {
+                    if (err?.name !== 'AbortError') {
+                        failures++;
+                        console.error('[translate] page failed:', img.file?.name, err);
+                    }
+                } finally {
+                    if (payloadUrl) releaseObjectURL(payloadUrl);
+                    semaphore.release();
+                }
+                return;
+            }
+
+            // Standard mode: one vision call per region, each cached on its own
+            // customPrompt (this is the cache 必须翻译 tests during generation).
+            const regionsToTranslate = paintableRegions.filter(r => !hasCachedTranslation(r.customPrompt));
+            if (regionsToTranslate.length === 0) return;
+
+            let imgElement: HTMLImageElement;
+            try {
+                imgElement = await loadImage(img.originalUrl || img.previewUrl);
+            } catch (err: any) {
+                if (err?.name !== 'AbortError') failures++;
+                console.error('[translate] could not load image:', img.file?.name, err);
+                return;
+            }
+
+            // Optional masked whole-page context, shared by every region of this
+            // image and built at most once per run. Built from the preview (not
+            // the full-resolution copy) for the same memory reason as
+            // processSingleImage: a 6000x8000 mask canvas is ~190MB.
+            let contextUrl: string | undefined;
+            if (config.sendMaskedContextForTranslation) {
+                try {
+                    const maskImg = img.previewUrl && img.previewUrl !== img.originalUrl
+                        ? await loadImage(img.previewUrl)
+                        : imgElement;
+                    const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, paintableRegions);
+                    if (config.enableAiPayloadCompression) {
+                        const compressed = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        if (compressed !== fullMaskedUrl) releaseObjectURL(fullMaskedUrl);
+                        contextUrl = compressed;
+                    } else {
+                        contextUrl = fullMaskedUrl;
+                    }
+                } catch (e) {
+                    console.warn('Failed to generate masked context image for translation:', e);
+                }
+            }
+
+            let contextBase64: string | undefined;
+            let pageTerms = '';
+
+            // Statuses as they were before this stage: a box that is already
+            // 'completed' keeps its patch (and its status), and a translated box
+            // goes back to exactly what it was so generation sees the same work
+            // queue it would have seen without the translate pass.
+            const statusBefore = new Map(regionsToTranslate.map(r => [r.id, r.status]));
+            const restoreStatus = (regionId: string): Region['status'] =>
+                statusBefore.get(regionId) ?? 'pending';
+
+            const translateRegion = async (region: Region) => {
+                if (controller.signal.aborted) return;
+                await semaphore.acquire();
+                let payloadUrl: string | undefined;
+                const settle = (failure?: unknown) => {
+                    // Failed / empty translations leave the box retryable: a
+                    // later translate run re-checks it.
+                    if (failure !== undefined) failures++;
+                    setRegionStatus(img.id, [region.id], restoreStatus(region.id), failure);
+                };
+                try {
+                    payloadUrl = await cropRegion(imgElement, region);
+                    if (config.enableAiPayloadCompression) {
+                        const compressed = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        if (compressed !== payloadUrl) {
+                            releaseObjectURL(payloadUrl);
+                            payloadUrl = compressed;
+                        }
+                    }
+                    if (controller.signal.aborted) return;
+                    if (contextUrl && contextBase64 === undefined) {
+                        contextBase64 = await urlToBase64(contextUrl);
+                    }
+                    setProcessingState(ProcessingStep.API_CALLING);
+                    const result = await generateTranslation(
+                        await urlToBase64(payloadUrl), config, controller.signal, contextBase64, glossaryRef.current
+                    );
+                    if (result.text) {
+                        const { userPart } = splitTranslationCache(region.customPrompt);
+                        commitRegionTranslation(img.id, region.id, result.text, userPart, restoreStatus(region.id));
+                    } else {
+                        // The model answered with nothing usable — count it so
+                        // the user gets a summary instead of a silent no-op.
+                        settle(new Error('模型未返回译文'));
+                    }
+                    if (result.terms) pageTerms = pageTerms ? `${pageTerms}\n${result.terms}` : result.terms;
+                } catch (err: any) {
+                    if (err?.name === 'AbortError') return;
+                    console.error('[translate] region failed:', img.file?.name, region.id, err);
+                    settle(err);
+                } finally {
+                    if (payloadUrl) releaseObjectURL(payloadUrl);
+                    semaphore.release();
+                }
+            };
+
+            // Mark the page as working up-front so the canvas reflects it.
+            // 'completed' boxes are left alone — their status must never be
+            // downgraded, not even by the abort sweep in the caller's finally.
+            const toMarkWorking = regionsToTranslate.filter(r => r.status !== 'completed');
+            if (toMarkWorking.length > 0) {
+                setRegionStatus(img.id, toMarkWorking.map(r => r.id), 'processing');
+            }
+            await runWithConcurrency(regionsToTranslate, Math.max(1, limit), translateRegion, controller.signal, 0);
+
+            // One glossary update per page ("每翻译一张图都要更新术语表") — the
+            // terms of all its regions arrive in one merge. Nothing new = the
+            // merge is a no-op and the glossary is left untouched.
+            absorbTerms(pageTerms);
+
+            if (contextUrl) releaseObjectURL(contextUrl);
+        };
+
+        try {
+            await runWithConcurrency(
+                pickTargets(),
+                Math.max(1, limit),
+                (img) => translateImage(img),
+                controller.signal,
+                0
+            );
+            if (!controller.signal.aborted && failures > 0) {
+                setErrorMsg(t(config.language, 'translateStageFailed', { count: failures }));
+            }
+            setProcessingState(ProcessingStep.DONE);
+        } catch (e: any) {
+            if (e?.name !== 'AbortError') setErrorMsg(e?.message || 'Translation failed');
+            setProcessingState(ProcessingStep.IDLE);
+        } finally {
+            // Persist the glossary the run grew, then make sure no region is
+            // left in 'processing' (abort paths return early).
+            flushGlossary();
             updateAllImages(img => {
                 const stuck = img.regions.some(r => r.status === 'processing');
                 if (!stuck) return img;
@@ -889,6 +1292,8 @@ export function useImageProcessor(
         isDetecting,
         handleProcess,
         handleStop,
-        handleAutoDetect
+        handleAutoDetect,
+        /** Translation-only stage over the whole project (independent task). */
+        handleTranslate
     };
 }

@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AppConfig } from '../types';
 import { t } from '../services/translations';
+import { countGlossaryEntries } from '../services/glossary';
+import { HelpTip } from './sidebar/HelpTip';
 import {
     TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
@@ -26,6 +28,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
     fetchTransModels,
     onClose,
 }) => {
+    // Two-step destructive action (same pattern as the gallery's clear button).
+    const [glossaryClearArmed, setGlossaryClearArmed] = useState(false);
+    const glossaryCount = countGlossaryEntries(config.glossaryText);
+
     return (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
            <div className="bg-skin-surface max-w-sm w-full rounded-xl shadow-2xl flex flex-col border border-skin-border animate-in fade-in zoom-in-95">
@@ -52,9 +58,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                       </div>
                   </div>
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
-                      <div>
-                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'sessionPersistence')}</div>
-                          <div className="text-xs text-skin-muted max-w-[220px]">{t(config.language, 'sessionPersistenceDesc')}</div>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'sessionPersistence')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'sessionPersistenceDesc')} />
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -72,9 +78,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                       </div>
                   )}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
-                      <div>
-                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</div>
-                          <div className="text-xs text-skin-muted">{t(config.language, 'enableMangaModeDesc')}</div>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'enableMangaMode')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'enableMangaModeDesc')} />
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -119,9 +125,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                             </label>
                          </div>
                          <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'enableManualEditor')}</div>
-                                <div className="text-[10px] text-skin-muted">{t(config.language, 'enableManualEditorDesc')}</div>
+                            <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-skin-text">{t(config.language, 'enableManualEditor')}</span>
+                                <HelpTip className="ml-auto" text={t(config.language, 'enableManualEditorDesc')} />
                             </div>
                             <label className="relative inline-flex items-center cursor-pointer">
                                 <input
@@ -153,9 +159,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                      </div>
                   )}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
-                      <div>
-                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'useFullImageMasking')}</div>
-                          <div className="text-xs text-skin-muted max-w-[200px]">{t(config.language, 'useFullImageMaskingDesc')}</div>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'useFullImageMasking')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'useFullImageMaskingDesc')} />
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -170,9 +176,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                   {config.useFullImageMasking && (
                       <div className="pl-4 border-l-2 border-skin-border space-y-4 mt-4 animate-in fade-in slide-in-from-top-1">
                           <div className="flex items-center justify-between">
-                            <div>
-                                <div className="text-xs font-bold text-skin-text">{t(config.language, 'useInvertedMasking')}</div>
-                                <div className="text-[10px] text-skin-muted">{t(config.language, 'useInvertedMaskingDesc')}</div>
+                            <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                <span className="text-xs font-bold text-skin-text">{t(config.language, 'useInvertedMasking')}</span>
+                                <HelpTip className="ml-auto" text={t(config.language, 'useInvertedMaskingDesc')} />
                             </div>
                             <label className="relative inline-flex items-center cursor-pointer">
                                 <input
@@ -186,7 +192,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                          </div>
 
                           <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-2">
-                              <label className="text-[10px] uppercase font-bold text-skin-muted block">{t(config.language, 'fullImageOpaquePercent')}</label>
+                              <div className="flex items-center gap-2">
+                                 <label className="text-[10px] uppercase font-bold text-skin-muted">{t(config.language, 'fullImageOpaquePercent')}</label>
+                                 <HelpTip className="ml-auto" text={t(config.language, 'fullImageOpaquePercentDesc')} />
+                              </div>
                               <div className="flex items-center gap-3">
                                   <input
                                       type="range" min="80" max="100" step="1"
@@ -204,14 +213,13 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                       <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[9px] text-skin-muted pointer-events-none">%</span>
                                   </div>
                               </div>
-                              <p className="text-[10px] text-skin-muted leading-tight">{t(config.language, 'fullImageOpaquePercentDesc')}</p>
                           </div>
                       </div>
                   )}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
-                      <div>
-                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'aiPayloadCompression')}</div>
-                          <div className="text-xs text-skin-muted max-w-[220px]">{t(config.language, 'aiPayloadCompressionDesc')}</div>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'aiPayloadCompression')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'aiPayloadCompressionDesc')} />
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -253,9 +261,9 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                       </div>
                   )}
                   <div className="flex items-center justify-between border-t border-skin-border pt-4 mt-4">
-                      <div>
-                          <div className="text-sm font-bold text-skin-text">{t(config.language, 'enableTranslationMode')}</div>
-                          <div className="text-xs text-skin-muted max-w-[200px]">{t(config.language, 'enableTranslationModeDesc')}</div>
+                      <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'enableTranslationMode')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'enableTranslationModeDesc')} />
                       </div>
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input
@@ -277,10 +285,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                   {config.enableTranslationMode && (
                       <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-2">
                           <h4 className="text-xs font-bold text-skin-text uppercase tracking-wider">{t(config.language, 'translationSettings')}</h4>
-                           <div className="flex items-center justify-between">
-                               <div>
-                                   <div className="text-xs font-medium text-skin-text">{t(config.language, 'sendMaskedContextForTranslation')}</div>
-                                   <div className="text-[10px] text-skin-muted max-w-[220px]">{t(config.language, 'sendMaskedContextForTranslationDesc')}</div>
+                           <div className="flex items-center justify-between gap-2">
+                               <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                   <span className="text-xs font-medium text-skin-text">{t(config.language, 'sendMaskedContextForTranslation')}</span>
+                                   <HelpTip className="ml-auto" text={t(config.language, 'sendMaskedContextForTranslationDesc')} />
                                </div>
                                <label className="relative inline-flex items-center cursor-pointer">
                                    <input
@@ -376,6 +384,80 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                   className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm"
                                   placeholder={t(config.language, 'translationPromptPlaceholder')}
                               />
+                          </div>
+
+                          {/* Stage separation: translation is an independent task
+                              (sidebar 「翻译所有图片」) that fills the cache; with
+                              必须翻译 on, generation only redraws boxes that
+                              already have one and skips (not fails) the rest. */}
+                          <div className="flex items-center justify-between gap-2 border-t border-skin-border/50 pt-3">
+                              <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                  <span className="text-xs font-medium text-skin-text">{t(config.language, 'requireTranslation')}</span>
+                                  <HelpTip className="ml-auto" text={t(config.language, 'requireTranslationDesc')} />
+                              </div>
+                              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                  <input
+                                      type="checkbox"
+                                      className="sr-only peer"
+                                      checked={config.requireTranslationForGeneration}
+                                      onChange={(e) => updateConfig('requireTranslationForGeneration', e.target.checked)}
+                                  />
+                                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                              </label>
+                          </div>
+
+                          {/* Glossary: fed into every translation prompt and grown
+                              by the terms each translated page reports. */}
+                          <div className="border-t border-skin-border/50 pt-3">
+                              <div className="flex items-center justify-between gap-2">
+                                  <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                                      <span className="text-xs font-medium text-skin-text">{t(config.language, 'glossary')}</span>
+                                      <HelpTip className="ml-auto" text={t(config.language, 'glossaryDesc')} />
+                                  </div>
+                                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                      <input
+                                          type="checkbox"
+                                          className="sr-only peer"
+                                          checked={config.enableGlossary}
+                                          onChange={(e) => updateConfig('enableGlossary', e.target.checked)}
+                                      />
+                                      <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-skin-primary"></div>
+                                  </label>
+                              </div>
+                              {config.enableGlossary && (
+                                  <div className="mt-2 space-y-1 animate-in fade-in slide-in-from-top-1">
+                                      <div className="flex items-center justify-between gap-2">
+                                          <label className="text-[10px] text-skin-muted">{t(config.language, 'glossaryLabel')}</label>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                              <span className="text-[10px] text-skin-muted">{t(config.language, 'glossaryCount', { count: glossaryCount })}</span>
+                                              <button
+                                                  onClick={() => {
+                                                      if (glossaryClearArmed) {
+                                                          updateConfig('glossaryText', '');
+                                                          setGlossaryClearArmed(false);
+                                                      } else {
+                                                          setGlossaryClearArmed(true);
+                                                          setTimeout(() => setGlossaryClearArmed(false), 3000);
+                                                      }
+                                                  }}
+                                                  className={`text-[9px] px-1.5 py-0.5 rounded border transition-all ${
+                                                      glossaryClearArmed
+                                                          ? 'bg-rose-500 text-white border-rose-600'
+                                                          : 'text-skin-muted border-skin-border hover:text-rose-500 hover:border-rose-500'
+                                                  }`}
+                                              >
+                                                  {glossaryClearArmed ? t(config.language, 'glossaryClearConfirm') : t(config.language, 'glossaryClear')}
+                                              </button>
+                                          </div>
+                                      </div>
+                                      <textarea
+                                          value={config.glossaryText || ''}
+                                          onChange={(e) => updateConfig('glossaryText', e.target.value)}
+                                          className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm font-mono"
+                                          placeholder={glossaryCount === 0 ? t(config.language, 'glossaryEmpty') : t(config.language, 'glossaryPlaceholder')}
+                                      />
+                                  </div>
+                              )}
                           </div>
                       </div>
                   )}

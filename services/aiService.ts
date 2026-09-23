@@ -4,6 +4,7 @@ import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
 import { DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT } from "../hooks/useConfig";
 import { globalRateLimitGate, parseRetryAfter, isRateLimitError } from "./rateLimitGate";
+import { buildGlossaryInstruction, parseTranslationWithTerms } from "./glossary";
 
 /**
  * Helper to sanitize header values (API Keys) to prevent
@@ -416,16 +417,30 @@ const generateOpenAIImage = async (
   }
 };
 
+/** One translation call's outcome: the translation plus the glossary upgrade. */
+export interface TranslationResult {
+  /** The translation itself (the glossary block is stripped out). */
+  text: string;
+  /** Term pairs the model reported as new/corrected (one per line), or '' when
+   *  the page contained nothing worth remembering. */
+  terms: string;
+}
+
 /**
  * Perform translation using an OpenAI-compatible endpoint.
- * Returns the translated text found in the image.
+ *
+ * `glossaryText` is the project glossary accumulated so far; when the glossary
+ * feature is on it is injected into the prompt (so the model reuses the
+ * established wording) and the model is asked to report the new/corrected
+ * terms it used, which come back in `terms`.
  */
 export const generateTranslation = async (
   imageBase64: string,
   config: AppConfig,
   signal?: AbortSignal,
-  contextImageBase64?: string
-): Promise<string> => {
+  contextImageBase64?: string,
+  glossaryText?: string
+): Promise<TranslationResult> => {
   const { translationBaseUrl, translationApiKey, translationModel, translationPrompt } = config;
 
   if (!translationApiKey || !translationBaseUrl) {
@@ -440,9 +455,15 @@ export const generateTranslation = async (
   const url = `${cleanBaseUrl}/chat/completions`;
 
   const useContext = !!contextImageBase64;
-  const prompt = useContext
+  const glossaryEnabled = config.enableGlossary !== false;
+  const basePrompt = useContext
     ? TRANSLATION_CONTEXT_SYSTEM_PROMPT
     : (translationPrompt || DEFAULT_TRANSLATION_PROMPT);
+  // The glossary instruction goes LAST so it wins over the user's own output
+  // format section (the model reports its terms after the translation).
+  const prompt = glossaryEnabled
+    ? basePrompt + buildGlossaryInstruction(glossaryText ?? '')
+    : basePrompt;
 
   const imageContent: any[] = [
     { type: "text", text: prompt },
@@ -503,7 +524,22 @@ export const generateTranslation = async (
     };
 
     const timeout = config.apiTimeout || 60000;
-    return await executeWithRetry(worker, timeout, signal);
+    const content = await executeWithRetry(worker, timeout, signal);
+    if (!glossaryEnabled) return { text: content.trim(), terms: '' };
+
+    const parsed = parseTranslationWithTerms(content);
+    if (parsed.format !== 'json') {
+        // Diagnostics: the glossary can only fill when the model answers with
+        // the JSON contract. A plain/marker answer is normal only for older
+        // prompts, so surface the head of the raw response to make "why is my
+        // glossary still empty?" answerable from the console. No warning when
+        // the contract WAS followed and simply reported no new terms.
+        console.warn(
+            `[glossary] 模型未按 JSON 契约返回（识别为 ${parsed.format}），本次可能没有术语。` +
+            `原始返回前 400 字：\n${content.slice(0, 400)}`
+        );
+    }
+    return parsed;
   } catch (error) {
       console.error("Translation API Error", error);
       throw error;
