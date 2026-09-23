@@ -848,10 +848,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [getImage, scheduleRecomposite]);
 
   /**
-   * Build the region's composite WITHOUT the brush layer — used as the base
-   * image under the brush painter. Returns null when nothing but the brush
-   * would be composited (caller falls back to the plain crop). The returned
-   * Object URL is owned by the caller.
+   * Build the region's background patch — WITHOUT the brush layer and WITHOUT
+   * the typeset text — used as the base image under the brush painter. The
+   * painter draws its strokes on top of this base and the text above those, so
+   * its preview matches the final composite (brush = background touch-up).
+   * Returns null when there is nothing to composite (caller falls back to the
+   * plain crop). The returned Object URL is owned by the caller.
    */
   const buildBrushBase = useCallback(async (imageId: string, regionId: string): Promise<string | null> => {
     const img = getImage(imageId);
@@ -862,6 +864,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const imageEl = await buildEditorBase(img, region);
     // allowMargin=false: the painter canvas must stay exactly crop-sized so
     // brush coordinates map 1:1 onto the crop area of the final patch.
+    // includeText=false: the painter typesets the text itself, above the
+    // strokes — the composite reverses that (it draws the brush first).
     const result = await compositeRegionPatch(
       imageEl,
       noBrush,
@@ -869,6 +873,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       configRef.current.enableVerticalTextDefault,
       configRef.current.pythonBackendUrl,
       getContextBubbles(img),
+      false,
       false
     );
     return result?.url ?? null;

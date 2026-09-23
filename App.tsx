@@ -9,6 +9,7 @@ import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage,
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
+import { resolveAutoFontSize } from './services/mangaEditor';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
@@ -507,17 +508,29 @@ export default function App() {
 
   // Ctrl+wheel over the SELECTED box in the editor workflow steps its font
   // size by ±5 — the same step the dock's ± buttons use (EditorDock
-  // stepFontSize). Starts from the resolved auto-fit size when no explicit
-  // size has been chosen yet.
+  // stepFontSize). Base = explicit size → the size the compositor resolved →
+  // the auto-fit size computed on the spot. The on-the-spot value matters on a
+  // fresh/restored session: `computedFontSizes` is in-memory only, so a box
+  // that has not been composited yet would otherwise step from a hard-coded 16
+  // (first step jumping to 21 / 11 instead of auto ± 5).
   const editorOnStepFontSize = useCallback((delta: number) => {
       if (!selectedImage || !selectedRegionId) return;
       const region = selectedImage.regions.find(r => r.id === selectedRegionId);
       if (!region) return;
-      const base = region.editorStyle?.fontSize ?? computedFontSizes[selectedRegionId] ?? 16;
+      const base = region.editorStyle?.fontSize
+          ?? computedFontSizes[selectedRegionId]
+          ?? resolveAutoFontSize(
+              region,
+              selectedImage.originalWidth,
+              selectedImage.originalHeight,
+              !!config.enableVerticalTextDefault,
+              selectedImage.previewUrl !== selectedImage.originalUrl
+          )
+          ?? 16;
       const next = Math.min(400, Math.max(6, Math.round(base + delta)));
       if (next === Math.round(base)) return;
       updateEditorRegion(selectedImage.id, region.id, { editorStyle: { fontSize: next } });
-  }, [selectedImage, selectedRegionId, computedFontSizes, updateEditorRegion]);
+  }, [selectedImage, selectedRegionId, computedFontSizes, config.enableVerticalTextDefault, updateEditorRegion]);
 
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);

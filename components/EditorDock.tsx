@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { AppConfig, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
+import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
+import { getRegionEditorText, resolveAutoFontSize } from '../services/mangaEditor';
 import { EraseScope, RestoreScope, isAiOwned } from '../hooks/useMangaEditor';
 
 /**
@@ -65,26 +67,96 @@ const classBadge = (region: Region, lang: 'zh' | 'en'): string => {
 };
 
 // ---------------------------------------------------------------------------
+// Brush layer shortcuts (always visible — no need to expand the painter)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fill-white / fill-black / clear for the selected region's brush layer.
+ *
+ * These sit OUTSIDE the collapsible painter because they are the common case
+ * (covering a box is one click; brushing is the exception) and because they
+ * act on the layer data directly — no preview canvas, no (expensive) base
+ * composite needed. The painter re-seeds its preview from `editorBrushUrl`
+ * whenever these change it, so the two never disagree.
+ */
+const BrushActions: React.FC<{
+  region: Region;
+  lang: 'zh' | 'en';
+  onBrushChange: (regionId: string, url: string | null) => void;
+}> = ({ region, lang, onBrushChange }) => {
+  /** One-click whole-box white / black out. A solid colour is stretched onto
+   *  the crop when compositing, so a tiny canvas is all that is needed. */
+  const fillWholeRegion = async (color: string) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 8;
+    canvas.height = 8;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const url = await new Promise<string | null>((resolve) => {
+      canvas.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
+    });
+    if (url) onBrushChange(region.id, url);
+  };
+
+  const fillBtn = 'px-1.5 py-0.5 text-[10px] font-bold border border-skin-border rounded hover:border-skin-primary hover:text-skin-primary transition-colors';
+  return (
+    <>
+      <button
+        onClick={() => fillWholeRegion('#ffffff')}
+        className={fillBtn}
+        title={t(lang, 'editorBrushFillTip')}
+      >
+        {t(lang, 'editorBrushFillWhite')}
+      </button>
+      <button
+        onClick={() => fillWholeRegion('#000000')}
+        className={fillBtn}
+        title={t(lang, 'editorBrushFillTip')}
+      >
+        {t(lang, 'editorBrushFillBlack')}
+      </button>
+      <button
+        onClick={() => onBrushChange(region.id, null)}
+        disabled={!region.editorBrushUrl}
+        className="px-1.5 py-0.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-rose-500 hover:border-rose-400 disabled:opacity-40 disabled:hover:text-skin-muted disabled:hover:border-skin-border transition-colors"
+        title={t(lang, 'editorBrushClearTip')}
+      >
+        {t(lang, 'editorBrushClear')}
+      </button>
+    </>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Brush painter (low-frequency manual touch-up on the selected region)
 // ---------------------------------------------------------------------------
 const BrushPainter: React.FC<{
   region: Region;
   image: UploadedImage;
   lang: 'zh' | 'en';
+  /** Writing direction used while the region has no explicit style yet. */
+  preferVerticalDefault: boolean;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
-}> = ({ region, image, lang, buildBrushBase, onBrushChange }) => {
+}> = ({ region, image, lang, preferVerticalDefault, buildBrushBase, onBrushChange }) => {
   const displayRef = useRef<HTMLCanvasElement>(null);
   const brushCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseImgRef = useRef<HTMLImageElement | null>(null);
   const paintingRef = useRef(false);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
   const ownUrlsRef = useRef<string[]>([]);
+  /** Typeset text of the region, drawn ABOVE the strokes so the preview matches
+   *  the composited patch (which draws the brush first, the text last). */
+  const layoutRef = useRef<TextLayout | null>(null);
+  /** Last layer URL this painter exported itself. Its echo must not re-seed the
+   *  canvas — that would drop a stroke drawn in the meantime. */
+  const selfExportedRef = useRef<string | null>(null);
 
   const [ready, setReady] = useState(false);
   const [brushSize, setBrushSize] = useState(14);
   const [brushColor, setBrushColor] = useState('#ffffff');
-  const [hasStrokes, setHasStrokes] = useState(!!region.editorBrushUrl);
 
   const geomKey = `${region.x},${region.y},${region.width},${region.height}`;
   // Rebuild the base whenever editor content/geometry changes — but NOT on
@@ -101,6 +173,15 @@ const BrushPainter: React.FC<{
     ctx.clearRect(0, 0, display.width, display.height);
     ctx.drawImage(base, 0, 0, display.width, display.height);
     ctx.drawImage(brush, 0, 0, display.width, display.height);
+    // Typeset text last: the composited patch draws the brush underneath it,
+    // so the preview must too (otherwise 涂白 would look like it hides the
+    // translation while the actual patch keeps it visible).
+    const layout = layoutRef.current;
+    if (layout) {
+      ctx.save();
+      drawTextLayout(ctx, layout, display.width, display.height);
+      ctx.restore();
+    }
   }, []);
 
   // Load base (composite WITHOUT brush layer, or the plain crop)
@@ -129,12 +210,16 @@ const BrushPainter: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseDepsKey, image.previewUrl]);
 
-  // (Re)initialize the brush layer canvas at crop resolution
+  // (Re)initialize the brush layer canvas at crop resolution. Also re-seeds when
+  // `editorBrushUrl` changes underneath us (the always-visible fill / clear
+  // shortcuts write the layer directly); our own exports are skipped — their
+  // pixels are already on the canvas.
   useEffect(() => {
     let active = true;
     (async () => {
       const base = baseImgRef.current;
       if (!base) return;
+      if (region.editorBrushUrl && region.editorBrushUrl === selfExportedRef.current) return;
       const w = base.naturalWidth;
       const h = base.naturalHeight;
       const brush = document.createElement('canvas');
@@ -152,7 +237,20 @@ const BrushPainter: React.FC<{
     })();
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [region.id, geomKey, ready]);
+  }, [region.id, geomKey, ready, region.editorBrushUrl]);
+
+  // Keep the preview's text overlay in sync with the typeset content/style.
+  useEffect(() => {
+    const base = baseImgRef.current;
+    const text = getRegionEditorText(region);
+    layoutRef.current = base && text.trim()
+      ? layoutText(text, base.naturalWidth, base.naturalHeight, region.editorStyle, preferVerticalDefault)
+      : null;
+    redraw();
+  }, [
+    region.editorText, region.ocrText, region.editorStyle, region.editorWhitedOut,
+    ready, preferVerticalDefault, redraw,
+  ]);
 
   // Release locally-owned crop URLs on unmount
   useEffect(() => {
@@ -195,24 +293,11 @@ const BrushPainter: React.FC<{
     const url = await new Promise<string | null>((resolve) => {
       brush.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
     });
-    if (url) onBrushChange(region.id, url);
-  };
-
-  /** One-click whole-box white / black out: fill the entire brush layer with a
-   *  single colour (same result as painting the box over with a huge brush)
-   *  and write it back to the patch right away. */
-  const fillWholeRegion = async (color: string) => {
-    const brush = brushCanvasRef.current;
-    const ctx = brush?.getContext('2d');
-    if (!brush || !ctx) return;
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-over';
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, brush.width, brush.height);
-    ctx.restore();
-    setHasStrokes(true);
-    redraw();
-    await exportBrushLayer();
+    if (url) {
+      // Remember it: the prop change this triggers must not re-seed the canvas.
+      selfExportedRef.current = url;
+      onBrushChange(region.id, url);
+    }
   };
 
   const base = baseImgRef.current;
@@ -245,37 +330,6 @@ const BrushPainter: React.FC<{
           onChange={(e) => setBrushColor(e.target.value)}
           className="w-6 h-6 p-0 border-0 rounded-full overflow-hidden"
         />
-        <button
-          onClick={() => {
-            const brush = brushCanvasRef.current;
-            brush?.getContext('2d')?.clearRect(0, 0, brush.width, brush.height);
-            setHasStrokes(false);
-            onBrushChange(region.id, null);
-            redraw();
-          }}
-          disabled={!hasStrokes && !region.editorBrushUrl}
-          className="ml-auto text-[10px] px-2 py-1 border border-skin-border rounded text-skin-muted hover:text-rose-500 hover:border-rose-400 disabled:opacity-40 transition-colors"
-        >
-          {t(lang, 'editorBrushClear')}
-        </button>
-      </div>
-
-      {/* One-click whole-box fill (fast cover-up without brushing) */}
-      <div className="flex items-center gap-1.5">
-        <button
-          onClick={() => fillWholeRegion('#ffffff')}
-          className="flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded hover:border-skin-primary hover:text-skin-primary transition-colors"
-          title={t(lang, 'editorBrushFillTip')}
-        >
-          {t(lang, 'editorBrushFillWhite')}
-        </button>
-        <button
-          onClick={() => fillWholeRegion('#000000')}
-          className="flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded hover:border-skin-primary hover:text-skin-primary transition-colors"
-          title={t(lang, 'editorBrushFillTip')}
-        >
-          {t(lang, 'editorBrushFillBlack')}
-        </button>
       </div>
 
       <div className="border border-skin-border rounded overflow-hidden bg-checkerboard flex justify-center">
@@ -292,7 +346,6 @@ const BrushPainter: React.FC<{
               paintingRef.current = true;
               lastPointRef.current = null;
               strokeTo(p);
-              setHasStrokes(true);
             }}
             onPointerMove={(e) => {
               if (!paintingRef.current) return;
@@ -551,8 +604,28 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const text = region.editorText ?? region.ocrText ?? '';
   const vertical = region.editorStyle?.isVertical;
 
+  // Auto-fit size, resolved on the spot when neither an explicit size nor the
+  // compositor-published one exists — after a reload `computedFontSizes`
+  // (in-memory) starts empty, so without this the field showed a bare "自动"
+  // and ±5 stepped from a hard-coded 16 instead of the size on screen.
+  const autoFontSize = region.editorStyle?.fontSize || computedFontSizes?.[region.id]
+    ? undefined
+    : resolveAutoFontSize(
+        region,
+        image.originalWidth,
+        image.originalHeight,
+        !!config.enableVerticalTextDefault,
+        image.previewUrl !== image.originalUrl
+      );
+  /** Size shown as the field's placeholder reference (only while auto). */
+  const referenceFontSize = region.editorStyle?.fontSize
+    ? undefined
+    : (computedFontSizes?.[region.id] ?? autoFontSize);
+
   const stepFontSize = (delta: number) => {
-    const base = region.editorStyle?.fontSize ?? computedFontSizes?.[region.id] ?? 16;
+    // Base = explicit size → the size the compositor resolved → the auto-fit
+    // size resolved above; 16 only if the box has no typesettable text at all.
+    const base = region.editorStyle?.fontSize ?? computedFontSizes?.[region.id] ?? autoFontSize ?? 16;
     // Round so an auto-fit start (e.g. 17.4) doesn't leave fractions in the field.
     const next = Math.min(400, Math.max(6, Math.round(base + delta)));
     onUpdateRegion(region.id, { editorStyle: { fontSize: next } });
@@ -658,11 +731,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
               max={400}
               value={region.editorStyle?.fontSize ?? ''}
               placeholder={
-                region.editorStyle?.fontSize
-                  ? t(lang, 'editorFontSizeAuto')
-                  : computedFontSizes?.[region.id]
-                    ? `${t(lang, 'editorFontSizeAuto')} ${computedFontSizes[region.id]}px`
-                    : t(lang, 'editorFontSizeAuto')
+                referenceFontSize
+                  ? `${t(lang, 'editorFontSizeAuto')} ${referenceFontSize}px`
+                  : t(lang, 'editorFontSizeAuto')
               }
               disabled={aiLocked}
               onChange={(e) => {
@@ -804,16 +875,24 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         )}
 
-        {/* Brush touch-up (collapsible, low frequency) */}
+        {/* Brush touch-up. 涂白 / 涂黑 / 清空 stay clickable while the section is
+            collapsed — covering a box is the common case, brushing is the
+            exception — so the painter body only holds size / colour / preview. */}
         {!aiLocked && (
           <div className="border border-skin-border rounded-lg overflow-hidden">
-            <button
-              onClick={() => setBrushOpen(o => !o)}
-              className="w-full flex items-center justify-between px-2 py-1.5 text-[10px] font-bold text-skin-muted hover:text-skin-text bg-skin-fill/50 transition-colors"
-            >
-              <span>{t(lang, 'editorBrushSection')}</span>
-              <svg className={`w-3 h-3 transition-transform ${brushOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
-            </button>
+            <div className="flex items-center gap-1 px-2 py-1.5 bg-skin-fill/50">
+              <button
+                onClick={() => setBrushOpen(o => !o)}
+                className="flex items-center gap-1 text-[10px] font-bold text-skin-muted hover:text-skin-text transition-colors shrink-0"
+                title={t(lang, 'editorBrushSection')}
+              >
+                <span>{t(lang, 'editorBrushSection')}</span>
+                <svg className={`w-3 h-3 transition-transform ${brushOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              <div className="ml-auto flex items-center gap-1">
+                <BrushActions region={region} lang={lang} onBrushChange={onBrushChange} />
+              </div>
+            </div>
             {brushOpen && (
               <div className="p-2 border-t border-skin-border">
                 <BrushPainter
@@ -821,6 +900,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   region={region}
                   image={image}
                   lang={lang}
+                  preferVerticalDefault={!!config.enableVerticalTextDefault}
                   buildBrushBase={buildBrushBase}
                   onBrushChange={onBrushChange}
                 />

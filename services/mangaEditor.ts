@@ -1,5 +1,5 @@
 import { Region } from '../types';
-import { loadImage, releaseObjectURL } from './imageUtils';
+import { loadImage, releaseObjectURL, previewPixelSize } from './imageUtils';
 import { eraseTextInCanvasAuto, EraseKind } from './textErase';
 import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
 
@@ -170,6 +170,40 @@ export const findCoveringCompletedBubble = (
 export const regionNeedsComposite = (region: Region): boolean =>
   !!region.editorErased || !!region.editorWhitedOut || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
 
+/**
+ * The font size the region typesets at when no explicit size is set — the same
+ * auto-fit search the compositor runs (layoutText's binary search), computed
+ * from the image dimensions and the region's box.
+ *
+ * Used to seed the ±5 font-size stepping, so the FIRST step continues from the
+ * size that is actually on screen instead of a hard-coded default: the
+ * compositor's resolved size is only published after a region has been
+ * composited in this session (`computedFontSizes`), which is still empty right
+ * after a reload — stepping then used to jump to 16±5.
+ */
+export const resolveAutoFontSize = (
+  region: Region,
+  imgW: number,
+  imgH: number,
+  preferVerticalDefault: boolean,
+  /** Pass true when `previewUrl` is a compressed copy of the original (i.e.
+   *  `previewUrl !== originalUrl`): the composite — and therefore the font
+   *  size — lives in the preview's capped pixel space, not the original's. */
+  previewIsCompressed = false
+): number | undefined => {
+  if (!imgW || !imgH) return undefined;
+  const px = previewPixelSize(imgW, imgH, previewIsCompressed);
+  const cropW = Math.max(1, Math.round((region.width / 100) * px.w));
+  const cropH = Math.max(1, Math.round((region.height / 100) * px.h));
+  return layoutText(
+    getRegionEditorText(region),
+    cropW,
+    cropH,
+    region.editorStyle,
+    preferVerticalDefault
+  )?.style.fontSize;
+};
+
 export interface CompositeResult {
   url: string;
   /** Resolved font size (also when auto-fit) — shown in the panel as reference. */
@@ -185,10 +219,17 @@ export interface CompositeResult {
  * Build the composited patch for a region. Returns null when the region has
  * no editor content (caller should then restore its un-edited state).
  *
+ * Layer order (bottom → top): base → erase → whiteout → brush → typeset text.
+ * The brush is a background touch-up (it covers leftover artwork / original
+ * text), so the translation is always drawn last and stays readable on top of
+ * it — painting a box white must not swallow its typeset text.
+ *
  * When the typeset text overflows the box, the patch canvas is enlarged by
  * the overflow amount (+ slack) instead of clipping, so the user can see the
  * overflow and adjust the font size. `allowMargin=false` forces a crop-sized
  * patch (used for the brush-painter base, whose canvas must stay crop-sized).
+ * `includeText=false` produces that same background-only patch (no typeset
+ * text) so the painter can draw the text itself, above its strokes.
  *
  * `pythonBackendUrl` points at the unified Python backend; its /erase
  * endpoint (OpenCV inpaint) is preferred over the local fallback eraser.
@@ -203,7 +244,8 @@ export const compositeRegionPatch = async (
   preferVerticalDefault: boolean,
   pythonBackendUrl?: string,
   contextBubbles?: Region[],
-  allowMargin = true
+  allowMargin = true,
+  includeText = true
 ): Promise<CompositeResult | null> => {
   if (!regionNeedsComposite(region)) return null;
 
@@ -220,7 +262,7 @@ export const compositeRegionPatch = async (
 
   let mx = 0;
   let my = 0;
-  if (layout && allowMargin) {
+  if (layout && includeText && allowMargin) {
     const { blockW, blockH } = measureLayoutBlock(layout);
     const pad = layout.style.padding;
     const innerW = Math.max(8, cropW - pad * 2);
@@ -302,16 +344,10 @@ export const compositeRegionPatch = async (
     ctx.fillRect(mx, my, cropW, cropH);
   }
 
-  // 2. Typeset text
-  if (layout) {
-    ctx.save();
-    ctx.translate(mx, my);
-    drawTextLayout(ctx, layout, cropW, cropH);
-    ctx.restore();
-  }
-
-  // 3. Brush strokes on top (crop-aligned; scaled if the box geometry
-  // changed since painting)
+  // 2. Brush strokes (crop-aligned; scaled if the box geometry changed since
+  // painting). Drawn BEFORE the typeset text: the brush is a background
+  // touch-up — it covers leftover original artwork/text — so the translation
+  // stays readable on top of it (涂白 must not swallow the translation).
   if (region.editorBrushUrl) {
     try {
       const brushImg = await loadImage(region.editorBrushUrl);
@@ -319,6 +355,16 @@ export const compositeRegionPatch = async (
     } catch (e) {
       console.warn('Failed to load brush layer for region', region.id, e);
     }
+  }
+
+  // 3. Typeset text — last, so it always sits above the erase / whiteout /
+  // brush layers. Skipped for the background-only patch (includeText=false)
+  // that the brush painter composes on top of.
+  if (layout && includeText) {
+    ctx.save();
+    ctx.translate(mx, my);
+    drawTextLayout(ctx, layout, cropW, cropH);
+    ctx.restore();
   }
 
   return {

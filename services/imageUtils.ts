@@ -773,6 +773,31 @@ export const extractBase64Data = (dataUrl: string): string => {
 };
 
 /**
+ * Longest-edge cap of the display preview built on upload (see
+ * `useImageManager`). Region patches — and therefore typeset font sizes — are
+ * composited at the PREVIEW's resolution, so this is the single source of truth
+ * when converting the full-size original's pixels to the preview's.
+ */
+export const PREVIEW_MAX_PX = 2048;
+
+/**
+ * Pixel size of the display preview for an `w`×`h` original. `compressImage`
+ * only scales down to fit PREVIEW_MAX_PX, so the preview equals the original
+ * when it already fits (or when the preview is the original itself).
+ */
+export const previewPixelSize = (
+  w: number,
+  h: number,
+  previewIsCompressed: boolean
+): { w: number; h: number } => {
+  const safe = { w: Math.max(1, w || 1), h: Math.max(1, h || 1) };
+  if (!previewIsCompressed) return safe;
+  if (safe.w <= PREVIEW_MAX_PX && safe.h <= PREVIEW_MAX_PX) return safe;
+  const ratio = Math.min(PREVIEW_MAX_PX / safe.w, PREVIEW_MAX_PX / safe.h);
+  return { w: Math.round(safe.w * ratio), h: Math.round(safe.h * ratio) };
+};
+
+/**
  * Compresses an image for use as a lightweight reference/context image.
  * Returns an Object URL (JPEG, small).
  */

@@ -1,7 +1,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
-import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES } from '../services/imageUtils';
+import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES, PREVIEW_MAX_PX } from '../services/imageUtils';
 import { saveSession, loadSession, clearSession } from '../services/sessionStore';
 
 // 'edit' is the editor-workflow canvas tab (patch overlays + box interactions).
@@ -243,8 +243,11 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
 
         let previewUrl = originalUrl;
         if (performanceMode === 'balanced') {
-          // Compress preview: output is now also an Object URL
-          previewUrl = await compressImage(originalUrl, { maxWidth: 2048, maxHeight: 2048, quality: 0.8 });
+          // Compress preview: output is now also an Object URL. The cap is
+          // shared with previewPixelSize(), which converts the original's
+          // pixels into the preview's — the space region patches (and thus
+          // typeset font sizes) are composited in.
+          previewUrl = await compressImage(originalUrl, { maxWidth: PREVIEW_MAX_PX, maxHeight: PREVIEW_MAX_PX, quality: 0.8 });
         }
 
         const initialState: ImageHistoryState = {
