@@ -309,13 +309,20 @@ export const drawTextLayout = (
     ctx.fillText(line, x, y);
   };
 
+  // The block stays CENTERED even when it overflows the box — these offsets are
+  // deliberately not clamped to 0. The compositor sizes the patch's overflow
+  // margin from measureLayoutBlock() as a symmetric HALF-spill per side (see
+  // compositeRegionPatch), so an overflowing block must spill equally on both
+  // sides. Clamping made the whole overflow run down (horizontal) or left
+  // (vertical): that side got only half the margin it needed — the excess was
+  // cut off at the canvas edge — while the opposite margin went unused.
   if (!isVertical) {
     const lineH = fontSize * LINE_HEIGHT_RATIO;
     const blockH = lines.length * lineH;
-    let y = padding + Math.max(0, (innerH - blockH) / 2);
+    let y = padding + (innerH - blockH) / 2;
     for (const line of lines) {
       const w = ctx.measureText(line).width;
-      const x = padding + Math.max(0, (innerW - w) / 2);
+      const x = padding + (innerW - w) / 2;
       drawLine(line, x, y);
       y += lineH;
     }
@@ -323,12 +330,12 @@ export const drawTextLayout = (
     const colW = fontSize * LINE_HEIGHT_RATIO;
     const blockW = lines.length * colW;
     // Columns flow right → left: column 0 is the rightmost.
-    const rightEdge = boxW - padding - Math.max(0, (innerW - blockW) / 2);
+    const rightEdge = boxW - padding - (innerW - blockW) / 2;
     // All columns share one baseline: the block is centered by its LONGEST
     // column and every column starts at the same y, so first characters line
     // up horizontally (竖排首字对齐).
     const maxColH = Math.max(...lines.map(l => l.length * fontSize));
-    const startY = padding + Math.max(0, (innerH - maxColH) / 2);
+    const startY = padding + (innerH - maxColH) / 2;
     lines.forEach((line, colIdx) => {
       const colCenterX = rightEdge - colIdx * colW - colW / 2;
       let y = startY;
