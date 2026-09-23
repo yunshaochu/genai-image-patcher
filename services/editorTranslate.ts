@@ -57,7 +57,7 @@ ${skeleton}
 {"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false}]}`;
 
 /** Draw the image with numbered boxes for each region; returns a data URL. */
-const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[]): string => {
+const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskOutside: boolean): string => {
   const w = imageEl.naturalWidth;
   const h = imageEl.naturalHeight;
   const canvas = document.createElement('canvas');
@@ -65,7 +65,25 @@ const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[]): stri
   canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
-  ctx.drawImage(imageEl, 0, 0);
+
+  if (maskOutside) {
+    // 「发送遮罩全图作上下文」: this annotated page IS the payload, so honouring
+    // the switch means the artwork outside the numbered regions never leaves the
+    // machine — white page first, then only the regions' own pixels (same
+    // semantics as imageUtils.createMultiMaskedFullImage, kept inline to avoid a
+    // blob round-trip just to re-decode it here).
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, w, h);
+    regions.forEach(r => {
+      const rx = (r.x / 100) * w;
+      const ry = (r.y / 100) * h;
+      const rw = (r.width / 100) * w;
+      const rh = (r.height / 100) * h;
+      if (rw > 0 && rh > 0) ctx.drawImage(imageEl, rx, ry, rw, rh, rx, ry, rw, rh);
+    });
+  } else {
+    ctx.drawImage(imageEl, 0, 0);
+  }
 
   const lineWidth = Math.max(2, Math.round(w / 500));
   const fontSize = Math.max(14, Math.round(w / 45));
@@ -134,7 +152,11 @@ export const translateEditorRegions = async (
   }
   if (regions.length === 0) return new Map();
 
-  const annotatedUrl = buildAnnotatedImage(imageEl, regions);
+  // 「发送遮罩全图作上下文」also covers this path: here the annotated page IS the
+  // payload, so honouring the switch means nothing outside the circled regions
+  // is uploaded at all (privacy) — not merely an extra context image on top of
+  // an unmasked page.
+  const annotatedUrl = buildAnnotatedImage(imageEl, regions, !!config.sendMaskedContextForTranslation);
   let payloadUrl = annotatedUrl;
   let compressedUrl: string | null = null;
   try {
