@@ -3,6 +3,9 @@ import { useState, useRef, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
+// NOTE: `generateTranslation` is used by the translate stage (handleTranslate)
+// only. The generate pipeline must never call it — translation and redraw are
+// independent stages (see handleTranslate).
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
@@ -399,31 +402,21 @@ export function useImageProcessor(
                     releaseObjectURL(inputImageUrl);
                 }
 
-                // Compress for AI payload — separate encodings for translation
-                // (smaller target, token-efficient) and redraw (larger target,
-                // preserves dims for the stitch/depad workflow). Both keep pixel
-                // dimensions, so masking/depadding math is unaffected.
-                let translationPayloadUrl = payloadUrl;
+                // Compress for AI payload — redraw encoding only. Translation is a
+                // separate stage now (see handleTranslate) and is never called from
+                // the generate pipeline, so no smaller translation encoding is
+                // needed here. The encoding keeps pixel dimensions, so the
+                // masking / depadding math is unaffected.
                 let redrawPayloadUrl = payloadUrl;
                 if (config.enableAiPayloadCompression) {
                     redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
-                    translationPayloadUrl = config.enableTranslationMode
-                        ? await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB })
-                        : redrawPayloadUrl;
                     // compressImageToTargetSize returns its input when the source
                     // is already small enough / unencodable — never revoke that.
-                    if (redrawPayloadUrl !== payloadUrl && translationPayloadUrl !== payloadUrl) {
-                        releaseObjectURL(payloadUrl);
-                    }
+                    if (redrawPayloadUrl !== payloadUrl) releaseObjectURL(payloadUrl);
                 }
 
-                // Convert to base64 lazily; each API call uses its own compressed payload.
-                let translationBase64: string | null = null;
+                // Convert to base64 lazily; the redraw call gets its own payload.
                 let redrawBase64: string | null = null;
-                const getTranslationBase64 = async () => {
-                    if (translationBase64 == null) translationBase64 = await urlToBase64(translationPayloadUrl);
-                    return translationBase64;
-                };
                 const getRedrawBase64 = async () => {
                     if (redrawBase64 == null) redrawBase64 = await urlToBase64(redrawPayloadUrl);
                     return redrawBase64;
@@ -432,25 +425,13 @@ export function useImageProcessor(
                 let translationText = '';
                 // Split image-level customPrompt the same way region.customPrompt is split:
                 // userPart = user-written instructions (overrides global prompt in this mode),
-                // cached = prior translation block (if any). Reused → skip translation API.
+                // cached = the translation block written by the translate stage.
+                // Generation only CONSUMES that cache — a missing translation is not
+                // an error here, the image is simply redrawn without that context
+                // (use 必须翻译 to make untranslated boxes wait instead).
                 const { userPart: imageUserPart, cached: imageCachedTranslation } = splitTranslationCache(imageSnapshot.customPrompt);
-                if (config.enableTranslationMode) {
-                   if (imageCachedTranslation) {
-                       translationText = imageCachedTranslation;
-                   } else {
-                       setProcessingState(ProcessingStep.API_CALLING);
-                       const translation = await generateTranslation(
-                           await getTranslationBase64(), config, signal, undefined, glossaryRef.current
-                       );
-                       translationText = translation.text;
-                       absorbTerms(translation.terms);
-
-                       // Persist translation back into image.customPrompt for reuse next run.
-                       if (translationText) {
-                           const newImagePrompt = writeTranslationCache(imageUserPart, translationText);
-                           updateImage(imageSnapshot.id, img => ({ ...img, customPrompt: newImagePrompt }));
-                       }
-                   }
+                if (config.enableTranslationMode && imageCachedTranslation) {
+                    translationText = imageCachedTranslation;
                 }
 
                 setProcessingState(ProcessingStep.API_CALLING);
@@ -465,12 +446,10 @@ export function useImageProcessor(
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
-                translationBase64 = null;
                 redrawBase64 = null;
                 // apiResultBase64 is a data:image/... string from the API
 
-                // Release the payload URLs — we're done with them
-                if (translationPayloadUrl !== redrawPayloadUrl) releaseObjectURL(translationPayloadUrl);
+                // Release the payload URL — we're done with it
                 releaseObjectURL(redrawPayloadUrl);
 
                 // Convert API base64 result to Object URL for further processing
@@ -569,24 +548,9 @@ export function useImageProcessor(
             return true; // the round did work (or charged an attempt)
         }
 
-        // Pre-generate masked full image as context for translation (compressed, shared across all regions)
-        let maskedContextUrl: string | undefined;
-        if (config.enableTranslationMode && config.sendMaskedContextForTranslation) {
-            try {
-                // Same mask-canvas size concern as the useFullImageMasking branch.
-                const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, maskRegions);
-                if (config.enableAiPayloadCompression) {
-                    const compressed = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
-                    if (compressed !== fullMaskedUrl) releaseObjectURL(fullMaskedUrl);
-                    maskedContextUrl = compressed;
-                } else {
-                    maskedContextUrl = fullMaskedUrl;
-                }
-            } catch (e) {
-                console.warn('Failed to generate masked context image for translation:', e);
-                maskedContextUrl = undefined;
-            }
-        }
+        // NOTE: the masked whole-page context image (sendMaskedContextForTranslation)
+        // is built by the translate stage only — generation never calls the
+        // translation API, so there is nothing here to attach it to.
 
         // LEGACY / SINGLE REGION PROCESSING (Standard Mode Only)
         const processRegionTask = async (region: Region) => {
@@ -595,7 +559,6 @@ export function useImageProcessor(
             // Track URLs created in this task for cleanup on error
             let croppedUrl: string | undefined;
             let paddedUrl: string | undefined;
-            let translationPayloadUrl: string | undefined;
             let redrawPayloadUrl: string | undefined;
             let apiResultUrl: string | undefined;
 
@@ -617,71 +580,34 @@ export function useImageProcessor(
 
                 if (signal.aborted) return;
 
-                // Compress for AI payload — separate encodings for translation
-                // (smaller target) and redraw (larger target). Per-region crops
-                // are often already under both targets, in which case the WebP
-                // encoder short-circuits at the 0.92 probe.
-                let translationActiveUrl = payloadUrl;
+                // Compress for AI payload — redraw encoding only. Translation is a
+                // separate stage now (see handleTranslate); the generate pipeline
+                // never calls the translation API. Per-region crops are often
+                // already under the target, in which case the WebP encoder
+                // short-circuits at the 0.92 probe.
                 let redrawActiveUrl = payloadUrl;
                 if (config.enableAiPayloadCompression) {
                     redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
                     redrawActiveUrl = redrawPayloadUrl;
-                    if (config.enableTranslationMode) {
-                        translationPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
-                        translationActiveUrl = translationPayloadUrl;
-                    } else {
-                        translationActiveUrl = redrawPayloadUrl;
-                    }
                     // Original (cropped/padded) no longer needed
                     releaseObjectURL(payloadUrl);
                     if (paddedUrl) paddedUrl = undefined;
                     if (croppedUrl) { releaseObjectURL(croppedUrl); croppedUrl = undefined; }
                 }
 
-                // Convert to base64 lazily; each API call uses its own compressed payload.
-                let translationBase64: string | null = null;
+                // Convert to base64 lazily; the redraw call gets its own payload.
                 let redrawBase64: string | null = null;
-                const getTranslationBase64 = async () => {
-                    if (translationBase64 == null) translationBase64 = await urlToBase64(translationActiveUrl);
-                    return translationBase64;
-                };
                 const getRedrawBase64 = async () => {
                     if (redrawBase64 == null) redrawBase64 = await urlToBase64(redrawActiveUrl);
                     return redrawBase64;
                 };
 
-                let translationText = '';
                 // Pre-split customPrompt up front: userPart = user instructions,
-                // cached = prior translation block (if any). Reused both for the
-                // cache-skip check and for rebuilding the prompt below.
+                // cached = the translation block written by the translate stage.
+                // 解耦：重绘阶段只消费译文缓存，绝不调用翻译接口；没有译文就按
+                // 原样重绘（想强制等待译文请用「必须翻译」）。
                 const { userPart: userCustomPrompt, cached: cachedTranslation } = splitTranslationCache(region.customPrompt);
-                if (config.enableTranslationMode) {
-                   if (cachedTranslation) {
-                       translationText = cachedTranslation;
-                   } else {
-                       setProcessingState(ProcessingStep.API_CALLING);
-                       const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                       const translation = await generateTranslation(
-                           await getTranslationBase64(), config, signal, contextBase64, glossaryRef.current
-                       );
-                       translationText = translation.text;
-                       absorbTerms(translation.terms);
-
-                       // Persist the translation back into region.customPrompt so the
-                       // textarea reflects the cached value and next run reuses it.
-                       if (translationText) {
-                           const newCustomPrompt = writeTranslationCache(userCustomPrompt, translationText);
-                           const current = regionsMap.get(region.id);
-                           if (current) regionsMap.set(region.id, { ...current, customPrompt: newCustomPrompt });
-                           updateImage(imageSnapshot.id, img => ({
-                               ...img,
-                               regions: img.regions.map(r =>
-                                   r.id === region.id ? { ...r, customPrompt: newCustomPrompt } : r
-                               )
-                           }));
-                       }
-                   }
-                }
+                const translationText = config.enableTranslationMode ? (cachedTranslation ?? '') : '';
                 setProcessingState(ProcessingStep.API_CALLING);
                 // Global prompt is ALWAYS the base. image.customPrompt (when present in the
                 // "no-regions auto-full-image" path) appends to it instead of replacing.
@@ -690,9 +616,8 @@ export function useImageProcessor(
                    const { userPart: imgUserPart } = splitTranslationCache(imageSnapshot.customPrompt);
                    if (imgUserPart) basePrompt += ` ${imgUserPart}`;
                 }
-                // Use ONLY the user-written portion here; translation is appended
-                // separately so the format stays identical whether translation came
-                // from the cache or a fresh API call.
+                // Use ONLY the user-written portion here; the cached translation is
+                // appended separately.
                 let effectivePrompt = basePrompt;
                 if (userCustomPrompt) {
                     effectivePrompt += ` ${userCustomPrompt}`;
@@ -701,14 +626,9 @@ export function useImageProcessor(
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
-                translationBase64 = null; // release reference; let the big string GC
                 redrawBase64 = null;
 
-                // Release payload URLs — done with them
-                if (translationPayloadUrl && translationPayloadUrl !== redrawPayloadUrl) {
-                    releaseObjectURL(translationPayloadUrl);
-                    translationPayloadUrl = undefined;
-                }
+                // Release payload URL — done with it
                 if (redrawPayloadUrl) {
                     releaseObjectURL(redrawPayloadUrl);
                     redrawPayloadUrl = undefined;
@@ -759,23 +679,18 @@ export function useImageProcessor(
                 if (err.name === 'AbortError') return;
                 // Clean up any URLs we created in this task
                 if (apiResultUrl) releaseObjectURL(apiResultUrl);
-                if (translationPayloadUrl && translationPayloadUrl !== redrawPayloadUrl) releaseObjectURL(translationPayloadUrl);
                 if (redrawPayloadUrl) releaseObjectURL(redrawPayloadUrl);
                 if (paddedUrl) releaseObjectURL(paddedUrl);
                 if (croppedUrl) releaseObjectURL(croppedUrl);
 
-                // Bases the update on the latest regionsMap entry — the
-                // translation-cache write earlier in this task may have updated
-                // customPrompt, and a prior attempt may have set retryCount.
+                // Bases the update on the latest regionsMap entry — a prior
+                // attempt may have set retryCount.
                 failRegions([region], err);
             } finally {
                 globalSemaphore.release();
             }
         };
         await runWithConcurrency(regionsToProcess, config.concurrencyLimit, processRegionTask, signal, 0);
-
-        // Release shared context URL after all regions are done
-        if (maskedContextUrl) releaseObjectURL(maskedContextUrl);
 
         return true; // the round attempted (or charged an attempt to) its regions
     };
@@ -944,8 +859,8 @@ export function useImageProcessor(
             }
             setProcessingState(ProcessingStep.IDLE);
         } finally {
-            // Generation can translate on the fly (enableTranslationMode) and
-            // may therefore have grown the glossary — persist it.
+            // Generation no longer translates (decoupled stage), but keep the
+            // flush so an externally edited glossary can't be dropped mid-run.
             flushGlossary();
             // Defensive sweep: every exit path (normal completion, abort, error)
             // must leave regions in a terminal state. AbortError handlers inside
