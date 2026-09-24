@@ -2,6 +2,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { AppConfig } from '../../types';
 import { t } from '../../services/translations';
+import { ApiProfileSwitcher } from './ApiProfileSwitcher';
+import { SecretInput } from './SecretInput';
 
 interface SettingsPanelProps {
     config: AppConfig;
@@ -42,17 +44,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <div>
                 <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'provider')}</label>
                 <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
-                    <button 
+                    <button
                         onClick={() => onChange('provider', 'gemini')}
+                        title={t(lang, 'providerGeminiHint')}
                         className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'gemini' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
                     >
-                        Google Gemini
+                        Gemini
                     </button>
-                    <button 
+                    <button
                         onClick={() => onChange('provider', 'openai')}
+                        title={t(lang, 'providerOpenAiHint')}
                         className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.provider === 'openai' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
                     >
-                        OpenAI / Compatible
+                        OpenAI
                     </button>
                 </div>
             </div>
@@ -60,6 +64,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             {/* OpenAI Specifics */}
             {config.provider === 'openai' && (
                 <>
+                    {/* Saved endpoints: one click swaps url/key/model as a set. */}
+                    <ApiProfileSwitcher
+                        profiles={config.imageApiProfiles || []}
+                        activeId={config.activeImageApiProfileId ?? null}
+                        current={{
+                            baseUrl: config.openaiBaseUrl,
+                            apiKey: config.openaiApiKey,
+                            model: config.openaiModel,
+                        }}
+                        onProfilesChange={(profiles, activeId) => {
+                            onChange('imageApiProfiles', profiles);
+                            onChange('activeImageApiProfileId', activeId);
+                        }}
+                        onApply={(values) => {
+                            onChange('openaiBaseUrl', values.baseUrl);
+                            onChange('openaiApiKey', values.apiKey);
+                            onChange('openaiModel', values.model);
+                        }}
+                        language={lang}
+                    />
                     <div className="animate-in fade-in slide-in-from-top-1">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>
                         <input 
@@ -72,10 +96,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                     <div className="animate-in fade-in slide-in-from-top-2">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'apiKey')}</label>
-                        <input 
-                            type="password" 
+                        <SecretInput
                             value={config.openaiApiKey}
-                            onChange={(e) => onChange('openaiApiKey', e.target.value)}
+                            onChange={(value) => onChange('openaiApiKey', value)}
+                            language={lang}
                             className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                             placeholder="sk-..."
                         />
@@ -137,10 +161,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 <>
                     <div className="animate-in fade-in slide-in-from-top-1">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">API Key (Optional Override)</label>
-                        <input
-                            type="password"
+                        <SecretInput
                             value={config.geminiApiKey}
-                            onChange={(e) => onChange('geminiApiKey', e.target.value)}
+                            onChange={(value) => onChange('geminiApiKey', value)}
+                            language={lang}
                             className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                             placeholder="Leave empty to use env API_KEY"
                         />

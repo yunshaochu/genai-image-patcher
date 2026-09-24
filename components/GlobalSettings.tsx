@@ -3,6 +3,8 @@ import { AppConfig } from '../types';
 import { t } from '../services/translations';
 import { countGlossaryEntries } from '../services/glossary';
 import { HelpTip } from './sidebar/HelpTip';
+import { ApiProfileSwitcher } from './sidebar/ApiProfileSwitcher';
+import { SecretInput } from './sidebar/SecretInput';
 import {
     TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
@@ -285,6 +287,27 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                   {config.enableTranslationMode && (
                       <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-3 animate-in fade-in slide-in-from-top-2">
                           <h4 className="text-xs font-bold text-skin-text uppercase tracking-wider">{t(config.language, 'translationSettings')}</h4>
+                           {/* Saved translation endpoints — a separate list from
+                               the image-generation presets in SettingsPanel. */}
+                           <ApiProfileSwitcher
+                               profiles={config.translationApiProfiles || []}
+                               activeId={config.activeTranslationApiProfileId ?? null}
+                               current={{
+                                   baseUrl: config.translationBaseUrl,
+                                   apiKey: config.translationApiKey,
+                                   model: config.translationModel,
+                               }}
+                               onProfilesChange={(profiles, activeId) => {
+                                   updateConfig('translationApiProfiles', profiles);
+                                   updateConfig('activeTranslationApiProfileId', activeId);
+                               }}
+                               onApply={(values) => {
+                                   updateConfig('translationBaseUrl', values.baseUrl);
+                                   updateConfig('translationApiKey', values.apiKey);
+                                   updateConfig('translationModel', values.model);
+                               }}
+                               language={config.language}
+                           />
                            <div className="flex items-center justify-between gap-2">
                                <div className="flex-1 min-w-0 flex items-center gap-1.5">
                                    <span className="text-xs font-medium text-skin-text">{t(config.language, 'sendMaskedContextForTranslation')}</span>
@@ -324,10 +347,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                           </div>
                           <div>
                               <label className="text-[10px] text-skin-muted block mb-1">{t(config.language, 'apiKey')}</label>
-                              <input
-                                  type="password"
+                              <SecretInput
                                   value={config.translationApiKey}
-                                  onChange={(e) => updateConfig('translationApiKey', e.target.value)}
+                                  onChange={(value) => updateConfig('translationApiKey', value)}
+                                  language={config.language}
                                   className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
                               />
                           </div>

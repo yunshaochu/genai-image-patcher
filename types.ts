@@ -166,6 +166,20 @@ export type ProcessingMode = 'api' | 'manual' | 'editor';
 
 export type PerformanceMode = 'unlimited' | 'balanced';
 
+/**
+ * A saved API endpoint preset: base URL + API key + model, name-labelled.
+ * Several of them are kept side by side (one per relay / vendor / account) so
+ * the user can switch endpoints in one click instead of retyping the triple.
+ * Persisted inside AppConfig (→ localStorage), one list per API family.
+ */
+export interface ApiProfile {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 export interface AppConfig {
   prompt: string;
   // Execution Mode is now effectively handled by concurrencyLimit
@@ -205,6 +219,13 @@ export interface AppConfig {
   openaiApiKey: string;
   openaiModel: string;
   openaiStream: boolean; // New: Stream Toggle
+
+  // Saved image-generation endpoints (OpenAI-compatible). Switching a preset
+  // writes its url/key/model into the openai* fields above.
+  imageApiProfiles: ApiProfile[];
+  /** id of the preset the openai* fields currently mirror (null = custom values). */
+  activeImageApiProfileId: string | null;
+
   enableSquareFill: boolean; // New: Pad image to 1:1 square (blurred background) before sending
   squareFillSize: number; // px: square edge length for square fill (content is never downscaled below its original size)
   squareFillCropInset: number; // px: extra pixels trimmed from every side when cropping back (0 = exact original-ratio box)
@@ -242,6 +263,12 @@ export interface AppConfig {
   translationBaseUrl: string;
   translationApiKey: string;
   translationModel: string;
+
+  // Saved translation endpoints (OpenAI-compatible), same model as imageApiProfiles.
+  translationApiProfiles: ApiProfile[];
+  /** id of the preset the translation* fields currently mirror (null = custom). */
+  activeTranslationApiProfileId: string | null;
+
   translationPrompt: string;
   /** User's custom prompt for translation WITHOUT masked context (cached) */
   translationPromptNoContext?: string;

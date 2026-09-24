@@ -79,6 +79,9 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
   openaiStream: false, 
+  // Saved API presets (quick switch between url/key/model triples)
+  imageApiProfiles: [],
+  activeImageApiProfileId: null,
   enableSquareFill: false, // Default false
   squareFillSize: 1024, // px: square edge length for square fill padding
   squareFillCropInset: 0, // px: extra pixels trimmed from every side when cropping back
@@ -115,6 +118,8 @@ const DEFAULT_CONFIG: AppConfig = {
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
   translationModel: 'gemini-3-flash-preview',
+  translationApiProfiles: [],
+  activeTranslationApiProfileId: null,
   translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   translationPromptNoContext: '',
   translationPromptWithContext: '',
@@ -256,6 +261,20 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // Ensure the saved API-preset lists exist (multi-endpoint quick switch)
+        if (!Array.isArray(migratedConfig.imageApiProfiles)) {
+            migratedConfig.imageApiProfiles = [];
+        }
+        if (typeof migratedConfig.activeImageApiProfileId === 'undefined') {
+            migratedConfig.activeImageApiProfileId = null;
+        }
+        if (!Array.isArray(migratedConfig.translationApiProfiles)) {
+            migratedConfig.translationApiProfiles = [];
+        }
+        if (typeof migratedConfig.activeTranslationApiProfileId === 'undefined') {
+            migratedConfig.activeTranslationApiProfileId = null;
         }
 
         // Session persistence is opt-in now (it writes the whole session to
