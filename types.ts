@@ -135,6 +135,8 @@ export interface ImageHistoryState {
   width: number;
   height: number;
   fullAiResultUrl?: string; // Added to history
+  /** True when this snapshot is a committed 应用为原图 result (see UploadedImage). */
+  appliedAsOriginal?: boolean;
 }
 
 export interface UploadedImage {
@@ -142,6 +144,14 @@ export interface UploadedImage {
   file: File;
   previewUrl: string;       // Display URL (may be compressed in balanced mode)
   originalUrl: string;      // Original full-resolution URL for API crop (never compressed)
+  /**
+   * Set once 应用为原图 commits the current result: previewUrl now IS the picture
+   * the canvas shows, while originalUrl still holds the pre-apply source file
+   * (kept at full resolution for API crops). Export resolvers must therefore
+   * read previewUrl instead of falling back to originalUrl. Cleared by
+   * undo/redo when the state is rolled back before the apply.
+   */
+  appliedAsOriginal?: boolean;
   thumbnailUrl: string;     // Small thumbnail for gallery
   originalWidth: number;
   originalHeight: number;

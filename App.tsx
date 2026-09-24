@@ -427,19 +427,29 @@ export default function App() {
           };
       }
       // Nothing painted: the result tab shows the untouched picture, so hand back
-      // the original file itself (the preview may be a downscaled copy).
+      // the original file itself (the preview may be a downscaled copy). Exception:
+      // after 应用为原图 the preview IS the committed picture while originalUrl still
+      // points at the pre-apply source — export the preview so Download / ZIP match
+      // the canvas instead of silently shipping the old image.
       const hasPatch = image.regions.some(r => r.status === 'completed' && r.processedImageUrl);
-      if (!hasPatch) return { url: image.originalUrl || image.previewUrl, release: false };
+      if (!hasPatch) {
+          return {
+              url: image.appliedAsOriginal ? image.previewUrl : (image.originalUrl || image.previewUrl),
+              release: false,
+          };
+      }
       if (fresh) return { url: await stitchImage(image.previewUrl, image.regions, honorPatchOverflow), release: true };
       return { url: await getStitchedUrl(image, honorPatchOverflow), release: false };
   }, [config.useInvertedMasking, config.processingMode, getStitchedUrl]);
 
   // ON-DEMAND STITCHING for Download — scope-aware: 当前图片 = that one file,
   // 全部 = ZIP of everything that has a result, plus the images marked as skipped.
+  // Applied-as-original images count too: their result is now the committed
+  // previewUrl, so they must not silently vanish from a 全部 download.
   const handleDownload = useCallback(async (scopeAll: boolean) => {
       try {
           if (scopeAll) {
-              const targets = images.filter(img => imageHasResult(img) || !!img.isSkipped);
+              const targets = images.filter(img => imageHasResult(img) || img.appliedAsOriginal || !!img.isSkipped);
               if (targets.length === 0) return;
               await downloadImagesAsZip(targets, resolveResultUrl);
               setClearHighlight(true);

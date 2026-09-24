@@ -43,6 +43,8 @@ interface ImageRecord {
   originalHeight: number;
   isSkipped?: boolean;
   customPrompt?: string;
+  /** previewUrl is a committed 应用为原图 result (see UploadedImage). */
+  appliedAsOriginal?: boolean;
   regions: RegionRecord[];
 }
 
@@ -143,6 +145,7 @@ async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
     originalHeight: img.originalHeight,
     isSkipped: img.isSkipped,
     customPrompt: img.customPrompt,
+    appliedAsOriginal: img.appliedAsOriginal,
     regions,
   };
 }
@@ -172,6 +175,7 @@ function deserializeImage(rec: ImageRecord): UploadedImage {
     width: rec.originalWidth,
     height: rec.originalHeight,
     fullAiResultUrl,
+    appliedAsOriginal: rec.appliedAsOriginal,
   };
   return {
     id: rec.id,
@@ -186,6 +190,7 @@ function deserializeImage(rec: ImageRecord): UploadedImage {
     fullAiResultUrl,
     isSkipped: rec.isSkipped,
     customPrompt: rec.customPrompt,
+    appliedAsOriginal: rec.appliedAsOriginal,
     history: [initialState],
     historyIndex: 0,
   };

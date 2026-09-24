@@ -380,6 +380,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
         width: img.originalWidth,
         height: img.originalHeight,
         fullAiResultUrl: undefined,
+        appliedAsOriginal: true,
       };
 
       const newHistory = img.history.slice(0, img.historyIndex + 1);
@@ -406,6 +407,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
         regions: newState.regions,
         finalResultUrl: undefined,
         fullAiResultUrl: undefined,
+        appliedAsOriginal: true,
         history: newHistory,
         historyIndex: newIndex,
       };
@@ -426,6 +428,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
         originalHeight: prevState.height,
         finalResultUrl: prevState.finalResultUrl,
         fullAiResultUrl: prevState.fullAiResultUrl,
+        appliedAsOriginal: prevState.appliedAsOriginal,
         historyIndex: newIndex,
       };
     });
@@ -444,6 +447,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
         originalHeight: nextState.height,
         finalResultUrl: nextState.finalResultUrl,
         fullAiResultUrl: nextState.fullAiResultUrl,
+        appliedAsOriginal: nextState.appliedAsOriginal,
         historyIndex: newIndex,
       };
     });
