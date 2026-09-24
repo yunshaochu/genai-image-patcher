@@ -1,6 +1,7 @@
 import { AppConfig, Region } from '../types';
 import { compressImageToTargetSize, releaseObjectURL, urlToBase64 } from './imageUtils';
 import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLimitGate';
+import { recordPayload, PayloadTransform } from './payloadLog';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -190,6 +191,21 @@ export const translateEditorRegions = async (
     const skeleton = regions
       .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * iw)}, ${Math.round((r.y / 100) * ih)}, ${Math.round((r.width / 100) * iw)}, ${Math.round((r.height / 100) * ih)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
+
+    // Record the annotated page — in this flow the payload IS a drawing of the
+    // image (numbered boxes, optionally masked outside), which the canvas never
+    // shows. Placed after `skeleton` so the prompt text can be captured too.
+    const payloadTransforms: PayloadTransform[] = ['annotate', 'full-page'];
+    if (config.sendMaskedContextForTranslation) payloadTransforms.push('mask');
+    if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
+    recordPayload({
+      config,
+      phase: 'editorTranslate',
+      regionIds: regions.map(r => r.id),
+      transforms: payloadTransforms,
+      prompt: buildPrompt(skeleton),
+      sentUrl: payloadUrl,
+    });
 
     let cleanBaseUrl = translationBaseUrl.replace(/\/+$/, '');
     if (!cleanBaseUrl.endsWith('/v1')) cleanBaseUrl += '/v1';

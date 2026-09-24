@@ -204,7 +204,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
                 {/* The two-stage explainer used to be a 3-line paragraph under
                     the buttons; it now lives behind this "?". */}
                 {config.enableTranslationMode && (
-                  <HelpTip className="ml-auto" text={t(lang, 'translateStageHint')} />
+                  <HelpTip text={t(lang, 'translateStageHint')} />
                 )}
               </div>
 

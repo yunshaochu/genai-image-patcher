@@ -11,6 +11,7 @@ import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 import { TRANSLATION_CACHE_MARKER, splitTranslationCache, writeTranslationCache, hasCachedTranslation } from '../services/translationCache';
 import { mergeGlossary } from '../services/glossary';
+import { recordPayload, PayloadTransform } from '../services/payloadLog';
 
 /**
  * Cap the number of error-history entries stored on a region. Each entry is
@@ -445,6 +446,23 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
+
+                // Record what actually leaves the machine (masked page / padded
+                // square / re-encoded) — the canvas shows none of that.
+                const payloadTransforms: PayloadTransform[] = ['full-page', config.useInvertedMasking ? 'inverted-mask' : 'mask'];
+                if (useSquareFill) payloadTransforms.push('square-fill');
+                if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
+                recordPayload({
+                    config,
+                    phase: 'redraw',
+                    imageId: imageSnapshot.id,
+                    imageName: imageSnapshot.file?.name,
+                    regionIds: regionsToProcess.map(r => r.id),
+                    transforms: payloadTransforms,
+                    prompt: effectivePrompt,
+                    sentUrl: redrawPayloadUrl,
+                });
+
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
                 redrawBase64 = null;
                 // apiResultBase64 is a data:image/... string from the API
@@ -625,6 +643,21 @@ export function useImageProcessor(
                 if (translationText) {
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
                 }
+
+                const payloadTransforms: PayloadTransform[] = ['crop'];
+                if (config.enableSquareFill) payloadTransforms.push('square-fill');
+                if (redrawPayloadUrl) payloadTransforms.push('compress');
+                recordPayload({
+                    config,
+                    phase: 'redraw',
+                    imageId: imageSnapshot.id,
+                    imageName: imageSnapshot.file?.name,
+                    regionIds: [region.id],
+                    transforms: payloadTransforms,
+                    prompt: effectivePrompt,
+                    sentUrl: redrawActiveUrl,
+                });
+
                 let apiResultBase64 = await generateRegionEdit(await getRedrawBase64(), effectivePrompt, config, signal);
                 redrawBase64 = null;
 
@@ -981,6 +1014,18 @@ export function useImageProcessor(
                     }
                     if (controller.signal.aborted) return;
                     setProcessingState(ProcessingStep.API_CALLING);
+                    const payloadTransforms: PayloadTransform[] = ['full-page', config.useInvertedMasking ? 'inverted-mask' : 'mask'];
+                    if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
+                    recordPayload({
+                        config,
+                        phase: 'translate',
+                        imageId: img.id,
+                        imageName: img.file?.name,
+                        regionIds: paintableRegions.map(r => r.id),
+                        transforms: payloadTransforms,
+                        prompt: config.translationPrompt,
+                        sentUrl: payloadUrl,
+                    });
                     const result = await generateTranslation(
                         await urlToBase64(payloadUrl), config, controller.signal, undefined, glossaryRef.current
                     );
@@ -1076,6 +1121,20 @@ export function useImageProcessor(
                         contextBase64 = await urlToBase64(contextUrl);
                     }
                     setProcessingState(ProcessingStep.API_CALLING);
+                    const payloadTransforms: PayloadTransform[] = ['crop'];
+                    if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
+                    if (contextUrl) payloadTransforms.push('context');
+                    recordPayload({
+                        config,
+                        phase: 'translate',
+                        imageId: img.id,
+                        imageName: img.file?.name,
+                        regionIds: [region.id],
+                        transforms: payloadTransforms,
+                        prompt: config.translationPrompt,
+                        sentUrl: payloadUrl,
+                        extra: contextUrl ? { url: contextUrl, label: t(config.language, 'payloadTrContext') } : null,
+                    });
                     const result = await generateTranslation(
                         await urlToBase64(payloadUrl), config, controller.signal, contextBase64, glossaryRef.current
                     );

@@ -22,6 +22,7 @@ import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn } from '
 // Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
 const GlobalSettings = lazy(() => import('./components/GlobalSettings'));
+const PayloadInspector = lazy(() => import('./components/PayloadInspector'));
 
 /** Does this image have anything beyond the untouched picture? */
 const imageHasResult = (img: UploadedImage): boolean =>
@@ -101,6 +102,7 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showPayloadInspector, setShowPayloadInspector] = useState(false);
   const [restoreMode, setRestoreMode] = useState(false);
   const [restoreBrushMode, setRestoreBrushMode] = useState(false);
   const [restoreBrushSize, setRestoreBrushSize] = useState(8);
@@ -615,6 +617,7 @@ export default function App() {
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
+  const sidebarOnOpenPayloadInspector = useCallback(() => setShowPayloadInspector(true), []);
 
   // Temporary (companion to the editorPerf pipeline timing): attributes the
   // per-keystroke re-render cost to a subtree. Logs only >10 ms renders.
@@ -647,6 +650,7 @@ export default function App() {
         isDetecting={isDetecting}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
         onOpenHelp={sidebarOnOpenHelp}
+        onOpenPayloadInspector={sidebarOnOpenPayloadInspector}
         onDownloadAllZip={handleDownloadAllZip}
         isZipping={isZipping}
         uploadProgress={uploadProgress}
@@ -919,6 +923,14 @@ export default function App() {
       {showHelp && (
           <Suspense fallback={null}>
               <HelpModal onClose={() => setShowHelp(false)} language={config.language} />
+          </Suspense>
+      )}
+      {showPayloadInspector && (
+          <Suspense fallback={null}>
+              <PayloadInspector
+                  language={config.language}
+                  onClose={() => setShowPayloadInspector(false)}
+              />
           </Suspense>
       )}
       {isDragging && (

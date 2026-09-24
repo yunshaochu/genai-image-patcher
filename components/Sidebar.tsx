@@ -22,6 +22,8 @@ interface SidebarProps {
   isDetecting: boolean;
   onOpenGlobalSettings: () => void;
   onOpenHelp: () => void;
+  /** Opens the 「发送记录」 inspector (what was actually sent to the AI). */
+  onOpenPayloadInspector: () => void;
   /** Gallery export: every image, each as its 已完成 rendering. App owns it —
    *  it needs the same result-URL resolver as Download / Apply (both of which
    *  now live in the right-hand dock). */
@@ -133,6 +135,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   isDetecting,
   onOpenGlobalSettings,
   onOpenHelp,
+  onOpenPayloadInspector,
   onDownloadAllZip,
   isZipping,
   uploadProgress,
@@ -243,6 +246,17 @@ const Sidebar: React.FC<SidebarProps> = ({
       <div className="p-5 border-b border-skin-border bg-skin-surface relative flex flex-col gap-4">
         {/* Header Buttons */}
         <div className="absolute top-3 right-3 flex gap-1">
+             {/* Native title only renders a name; this one carries the
+                 explanation, in the app's own tooltip style. */}
+             <HelpTip text={t(lang, 'payloadInspectorTip')}>
+               <button
+                 onClick={onOpenPayloadInspector}
+                 className="p-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill rounded-full transition-all"
+               >
+                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
+               </button>
+             </HelpTip>
+
              <button
                onClick={onOpenGlobalSettings}
                className="p-2 text-skin-muted hover:text-skin-primary hover:bg-skin-fill rounded-full transition-all"
@@ -260,7 +274,7 @@ const Sidebar: React.FC<SidebarProps> = ({
              </button>
         </div>
 
-        <div className="pr-16">
+        <div className="pr-28">
            <h1 className="font-bold text-xl text-skin-primary tracking-tight">{t(lang, 'appTitle')}</h1>
            <p className="text-[10px] text-skin-muted uppercase tracking-wider">{t(lang, 'appSubtitle')}</p>
         </div>

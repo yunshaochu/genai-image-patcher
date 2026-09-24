@@ -55,7 +55,11 @@ export const HelpTip: React.FC<{
     /** Which edge of the panel is anchored to the icon. Default 'right'. */
     align?: 'left' | 'right';
     className?: string;
-}> = ({ text, tone = 'default', align = 'right', className = '' }) => {
+    /** Custom trigger (e.g. a toolbar icon button). When omitted, the built-in
+     *  "?" circle is used. The trigger keeps its own onClick — this component
+     *  only supplies the hover/focus plumbing, so a button here still works. */
+    children?: React.ReactNode;
+}> = ({ text, tone = 'default', align = 'right', className = '', children }) => {
     const anchorRef = useRef<HTMLSpanElement | null>(null);
     const [hovered, setHovered] = useState(false);
     const [focused, setFocused] = useState(false);
@@ -114,14 +118,16 @@ export const HelpTip: React.FC<{
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
         >
-            <button
-                type="button"
-                aria-label={text}
-                onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                className={`w-4 h-4 rounded-full border text-[9px] font-bold leading-none flex items-center justify-center cursor-help transition-colors ${buttonTone}`}
-            >
-                ?
-            </button>
+            {children ?? (
+                <button
+                    type="button"
+                    aria-label={text}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    className={`w-4 h-4 rounded-full border text-[9px] font-bold leading-none flex items-center justify-center cursor-help transition-colors ${buttonTone}`}
+                >
+                    ?
+                </button>
+            )}
             {open && placement && createPortal(
                 <span
                     role="tooltip"
