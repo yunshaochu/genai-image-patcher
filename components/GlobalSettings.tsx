@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { AppConfig } from '../types';
 import { t } from '../services/translations';
 import { countGlossaryEntries } from '../services/glossary';
+import { downloadConfigExport, readConfigExport } from '../services/configTransfer';
 import { HelpTip } from './sidebar/HelpTip';
 import { ApiProfileSwitcher } from './sidebar/ApiProfileSwitcher';
 import { SecretInput } from './sidebar/SecretInput';
@@ -9,6 +10,7 @@ import {
     TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
     TRANSLATION_CONTEXT_SYSTEM_PROMPT,
+    createDefaultConfig,
 } from '../hooks/useConfig';
 
 interface GlobalSettingsProps {
@@ -33,6 +35,75 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
     // Two-step destructive action (same pattern as the gallery's clear button).
     const [glossaryClearArmed, setGlossaryClearArmed] = useState(false);
     const glossaryCount = countGlossaryEntries(config.glossaryText);
+
+    // --- Config backup (export / import / reset) ---
+    const [importArmed, setImportArmed] = useState(false);
+    const [initArmed, setInitArmed] = useState(false);
+    const [backupStatus, setBackupStatus] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+    const configFileRef = useRef<HTMLInputElement>(null);
+
+    const handleExportConfig = () => {
+        try {
+            downloadConfigExport(config);
+            setBackupStatus({ text: t(config.language, 'configExported'), tone: 'ok' });
+        } catch (e: any) {
+            setBackupStatus({
+                text: t(config.language, 'configExportFailed', { reason: e?.message || '' }),
+                tone: 'warn',
+            });
+        }
+    };
+
+    // Import replaces the whole config, so it is armed first (same two-step
+    // pattern as the glossary clear) and only then opens the file picker.
+    const handleImportClick = () => {
+        if (!importArmed) {
+            setBackupStatus({ text: t(config.language, 'configImportArmHint'), tone: 'warn' });
+            setImportArmed(true);
+            window.setTimeout(() => setImportArmed(false), 4000);
+            return;
+        }
+        setImportArmed(false);
+        setBackupStatus(null);
+        configFileRef.current?.click();
+    };
+
+    // Factory reset. Two-step like the rest: it wipes keys, prompts, glossary
+    // and presets, so the first click only explains what is about to happen.
+    // The gallery / editing session lives in IndexedDB and is left alone.
+    const handleInitialize = () => {
+        if (!initArmed) {
+            setBackupStatus({ text: t(config.language, 'configInitArmHint'), tone: 'warn' });
+            setInitArmed(true);
+            window.setTimeout(() => setInitArmed(false), 4000);
+            return;
+        }
+        setInitArmed(false);
+        setConfig(createDefaultConfig());
+        setBackupStatus({ text: t(config.language, 'configInitialized'), tone: 'ok' });
+    };
+
+    const handleConfigFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = ''; // let the same file be picked again after a failure
+        if (!file) return;
+
+        const outcome = readConfigExport(await file.text(), config);
+        if (outcome.status === 'error') {
+            const errorKey = outcome.error === 'invalid-json'
+                ? 'configErrInvalidJson'
+                : outcome.error === 'not-an-object'
+                    ? 'configErrNotObject'
+                    : 'configErrNoKeys';
+            setBackupStatus({ text: t(config.language, errorKey), tone: 'warn' });
+            return;
+        }
+        setConfig(outcome.result.config);
+        setBackupStatus({
+            text: t(config.language, 'configImported', { count: outcome.result.appliedCount }),
+            tone: 'ok',
+        });
+    };
 
     return (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
@@ -484,6 +555,66 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                           </div>
                       </div>
                   )}
+
+                  {/* Config backup: the whole AppConfig (endpoints + presets,
+                      prompts, glossary, tuning switches…) as one JSON file.
+                      The gallery / editing session is not part of it. */}
+                  <div className="border-t border-skin-border pt-4 mt-4">
+                      <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-skin-text">{t(config.language, 'configBackup')}</span>
+                          <HelpTip className="ml-auto" text={t(config.language, 'configBackupDesc')} />
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                          <button
+                              type="button"
+                              onClick={handleExportConfig}
+                              className="flex-1 py-1.5 text-[11px] font-medium rounded-lg border border-skin-border text-skin-text hover:border-skin-primary hover:text-skin-primary transition-colors"
+                          >
+                              {t(config.language, 'configExport')}
+                          </button>
+                          <button
+                              type="button"
+                              onClick={handleImportClick}
+                              className={`flex-1 py-1.5 text-[11px] font-medium rounded-lg border transition-colors ${
+                                  importArmed
+                                      ? 'bg-rose-500 border-rose-600 text-white'
+                                      : 'border-skin-border text-skin-text hover:border-skin-primary hover:text-skin-primary'
+                              }`}
+                          >
+                              {t(config.language, 'configImport')}
+                          </button>
+                          <input
+                              ref={configFileRef}
+                              type="file"
+                              accept="application/json,.json"
+                              className="hidden"
+                              onChange={handleConfigFile}
+                          />
+                      </div>
+                      {/* Destructive, so it gets its own row instead of sitting
+                          next to 导出/导入 under the same cursor path. */}
+                      <button
+                          type="button"
+                          onClick={handleInitialize}
+                          title={t(config.language, 'configInitHint')}
+                          className={`w-full mt-2 py-1.5 text-[11px] font-medium rounded-lg border transition-colors ${
+                              initArmed
+                                  ? 'bg-rose-500 border-rose-600 text-white'
+                                  : 'border-rose-500/50 text-rose-500 hover:bg-rose-500/10'
+                          }`}
+                      >
+                          {t(config.language, 'configInit')}
+                      </button>
+                      {backupStatus && (
+                          <p className={`mt-2 text-[10px] leading-snug ${
+                              backupStatus.tone === 'ok'
+                                  ? 'text-emerald-600 dark:text-emerald-400'
+                                  : 'text-amber-600 dark:text-amber-400'
+                          }`}>
+                              {backupStatus.text}
+                          </p>
+                      )}
+                  </div>
               </div>
               <div className="p-4 border-t border-skin-border bg-skin-fill/30">
                   <button onClick={onClose} className="w-full py-2 bg-skin-primary text-skin-primary-fg rounded-lg font-bold">

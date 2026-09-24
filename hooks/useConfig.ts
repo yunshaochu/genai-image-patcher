@@ -133,6 +133,16 @@ const DEFAULT_CONFIG: AppConfig = {
   aiPayloadRedrawTargetKB: 1500,
 };
 
+/** A fresh factory-default config. Returns a new object with new array
+ *  instances, so a reset can never hand out references shared with
+ *  DEFAULT_CONFIG (a later `profiles.push(...)` would otherwise corrupt the
+ *  defaults for the rest of the session). */
+export const createDefaultConfig = (): AppConfig => ({
+  ...DEFAULT_CONFIG,
+  imageApiProfiles: [],
+  translationApiProfiles: [],
+});
+
 export function useConfig() {
   const [config, setConfig] = useState<AppConfig>(() => {
     try {
