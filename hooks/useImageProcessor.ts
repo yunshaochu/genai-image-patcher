@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable, baseImageUrl } from '../types';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 // `generateTranslation` is used by the translate stage (handleTranslate) and,
@@ -277,7 +277,10 @@ export function useImageProcessor(
         // in-scope region and let the loop move on.
         const loadImageOrFail = async (): Promise<HTMLImageElement | null> => {
             try {
-                return await loadImage(imageSnapshot.originalUrl || imageSnapshot.previewUrl);
+                // baseImageUrl: after 应用为原图 the committed preview is the real
+                // source — originalUrl still holds the pre-apply file, and cropping
+                // regions out of it would send the AI the wrong (old) image.
+                return await loadImage(baseImageUrl(imageSnapshot));
             } catch (err: any) {
                 if (err?.name !== 'AbortError') {
                     const inScope = imageSnapshot.regions.filter(r =>
@@ -1109,7 +1112,7 @@ export function useImageProcessor(
                 await semaphore.acquire();
                 let payloadUrl: string | undefined;
                 try {
-                    const imgElement = await loadImage(img.originalUrl || img.previewUrl);
+                    const imgElement = await loadImage(baseImageUrl(img));
                     const maskImg = img.previewUrl && img.previewUrl !== img.originalUrl
                         ? await loadImage(img.previewUrl)
                         : imgElement;
@@ -1165,7 +1168,7 @@ export function useImageProcessor(
 
             let imgElement: HTMLImageElement;
             try {
-                imgElement = await loadImage(img.originalUrl || img.previewUrl);
+                imgElement = await loadImage(baseImageUrl(img));
             } catch (err: any) {
                 if (err?.name !== 'AbortError') failures++;
                 console.error('[translate] could not load image:', img.file?.name, err);

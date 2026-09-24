@@ -143,7 +143,7 @@ export interface UploadedImage {
   id: string;
   file: File;
   previewUrl: string;       // Display URL (may be compressed in balanced mode)
-  originalUrl: string;      // Original full-resolution URL for API crop (never compressed)
+  originalUrl: string;      // Untouched source file, full resolution (never compressed). API crops must go through baseImageUrl(), not this directly.
   /**
    * Set once 应用为原图 commits the current result: previewUrl now IS the picture
    * the canvas shows, while originalUrl still holds the pre-apply source file
@@ -165,6 +165,20 @@ export interface UploadedImage {
   history: ImageHistoryState[];
   historyIndex: number;
 }
+
+/**
+ * The picture the canvas currently shows as its base — the correct source for
+ * AI crops, masks and payloads.
+ *
+ * Normally that is the untouched full-resolution original (the preview may be a
+ * downscaled copy in balanced mode). After 应用为原图 the preview IS the
+ * committed picture while originalUrl still holds the pre-apply file, so
+ * reading the original would send the AI the OLD image and misalign every
+ * region box (which the user drew on the new one).
+ */
+export const baseImageUrl = (
+  img: Pick<UploadedImage, 'appliedAsOriginal' | 'originalUrl' | 'previewUrl'>
+): string => (img.appliedAsOriginal ? img.previewUrl : (img.originalUrl || img.previewUrl));
 
 export type AiProvider = 'openai' | 'gemini';
 
