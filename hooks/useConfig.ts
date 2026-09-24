@@ -124,6 +124,7 @@ const DEFAULT_CONFIG: AppConfig = {
   translationPromptNoContext: '',
   translationPromptWithContext: '',
   requireTranslationForGeneration: false,
+  translateBeforeRedraw: false,
   enableGlossary: true,
   glossaryText: '',
 
@@ -229,6 +230,9 @@ export function useConfig() {
         // Ensure the translation-stage / glossary settings exist
         if (typeof migratedConfig.requireTranslationForGeneration === 'undefined') {
             migratedConfig.requireTranslationForGeneration = false;
+        }
+        if (typeof migratedConfig.translateBeforeRedraw === 'undefined') {
+            migratedConfig.translateBeforeRedraw = false;
         }
         if (typeof migratedConfig.enableGlossary === 'undefined') {
             migratedConfig.enableGlossary = true;

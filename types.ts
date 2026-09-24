@@ -293,6 +293,16 @@ export interface AppConfig {
    *  enableTranslationMode. */
   requireTranslationForGeneration: boolean;
 
+  /** 重绘前翻译 (legacy behaviour, opt-in): when on together with
+   *  enableTranslationMode, the redraw pipeline fills a missing translation
+   *  inline (one extra translation call, cached like the translate stage would)
+   *  and then paints with it as context — instead of redrawing without it and
+   *  waiting for the separate 「翻译」 stage. Off by default: the two stages are
+   *  decoupled and redraw only consumes the existing cache. While on it
+   *  supersedes requireTranslationForGeneration's skip (a missing translation
+   *  is auto-filled rather than waited for). */
+  translateBeforeRedraw: boolean;
+
   /** Maintain a project-wide 术语表 while translating: each translation call
    *  also reports the term pairs it used, which are merged into `glossaryText`
    *  and fed back into the following translation prompts so naming stays

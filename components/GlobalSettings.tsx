@@ -615,21 +615,40 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         />
                                     </div>
 
-                                    {/* Stage separation: translation is an independent task
-                                        (sidebar 「翻译所有图片」) that fills the cache; with
-                                        必须翻译 on, generation only redraws boxes that
-                                        already have one and skips (not fails) the rest. */}
+                                    {/* Opt-in legacy behaviour: the redraw stage runs the
+                                        translation call itself for boxes that have no
+                                        cached translation yet. Off = the two stages stay
+                                        decoupled (redraw only reads the cache). */}
                                     <SubRow
-                                        title={t(lang, 'requireTranslation')}
-                                        help={t(lang, 'requireTranslationDesc')}
+                                        title={t(lang, 'translateBeforeRedraw')}
+                                        help={t(lang, 'translateBeforeRedrawDesc')}
                                         control={
                                             <Toggle
                                                 size="sm"
-                                                checked={config.requireTranslationForGeneration}
-                                                onChange={(v) => updateConfig('requireTranslationForGeneration', v)}
+                                                checked={config.translateBeforeRedraw}
+                                                onChange={(v) => updateConfig('translateBeforeRedraw', v)}
                                             />
                                         }
                                     />
+
+                                    {/* Stage separation: translation is an independent task
+                                        (sidebar 「翻译所有图片」) that fills the cache; with
+                                        必须翻译 on, generation only redraws boxes that
+                                        already have one and skips (not fails) the rest.
+                                        Moot while 重绘前翻译 auto-fills the cache inline. */}
+                                    <div className={config.translateBeforeRedraw ? 'opacity-40 pointer-events-none select-none' : ''}>
+                                        <SubRow
+                                            title={t(lang, 'requireTranslation')}
+                                            help={t(lang, 'requireTranslationDesc')}
+                                            control={
+                                                <Toggle
+                                                    size="sm"
+                                                    checked={config.requireTranslationForGeneration}
+                                                    onChange={(v) => updateConfig('requireTranslationForGeneration', v)}
+                                                />
+                                            }
+                                        />
+                                    </div>
                                 </SettingsCard>
 
                                 {/* Own card rather than a nested block: the glossary is

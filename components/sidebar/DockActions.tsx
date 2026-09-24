@@ -72,8 +72,10 @@ export const useRunGating = ({
     if (!hasValidKey) return 'Missing API Key (Check Settings)';
     if (!hasRegions && !canProceedWithEmptyRegions) return 'No regions selected';
     // 必须翻译 on but nothing translated yet: generating would only skip
-    // everything, so point the user at the translate stage instead.
-    if (config.enableTranslationMode && config.requireTranslationForGeneration && !translationReady) {
+    // everything, so point the user at the translate stage instead. Moot while
+    // 重绘前翻译 fills missing translations inline.
+    if (config.enableTranslationMode && config.requireTranslationForGeneration
+        && !config.translateBeforeRedraw && !translationReady) {
       return t(lang, 'requireTranslationNone');
     }
     return '';
@@ -203,7 +205,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
                 <span className="text-[10px] font-bold uppercase tracking-wider text-skin-muted">{t(lang, 'runTitle')}</span>
                 {/* The two-stage explainer used to be a 3-line paragraph under
                     the buttons; it now lives behind this "?". */}
-                {config.enableTranslationMode && (
+                {config.enableTranslationMode && !config.translateBeforeRedraw && (
                   <HelpTip text={t(lang, 'translateStageHint')} />
                 )}
               </div>
@@ -250,7 +252,8 @@ export const DockActions: React.FC<DockActionsProps> = ({
                   {generateReason && (
                     <p className="text-[10px] text-center text-skin-muted leading-tight">{generateReason}</p>
                   )}
-                  {config.enableTranslationMode && config.requireTranslationForGeneration && (
+                  {config.enableTranslationMode && config.requireTranslationForGeneration
+                    && !config.translateBeforeRedraw && (
                     <p className="flex items-start justify-center gap-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
                       <svg className="w-3 h-3 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path></svg>
                       <span>{t(lang, 'requireTranslation')}</span>
