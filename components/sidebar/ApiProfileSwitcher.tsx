@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ApiProfile, Language } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
+import { FloatingPanel } from './FloatingPanel';
 
 /** The three fields a preset snapshots — one URL/key/model triple. */
 export interface ApiProfileValues {
@@ -82,6 +83,20 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
   const [naming, setNaming] = useState<null | 'create' | 'rename'>(null);
   const [nameDraft, setNameDraft] = useState('');
   const [armedDelete, setArmedDelete] = useState(false);
+  const menuAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  // The ⋯ menu is portalled out of the panel, so it needs its own
+  // click-outside handling. Clicks inside it are stopped by FloatingPanel, and
+  // clicks on the ⋯ button itself are skipped here so its toggle keeps working.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (menuAnchorRef.current?.contains(e.target as Node)) return;
+      closeMenu();
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [menuOpen]);
 
   const active = profiles.find(p => p.id === activeId) ?? null;
   // Live values diverged from the selected preset → 「保存更改」 becomes usable.
@@ -185,15 +200,15 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
     <div className="rounded-lg border border-skin-border bg-skin-fill/30 p-2 space-y-1.5">
       <div className="flex items-center gap-1.5">
         <span className="text-[10px] uppercase font-bold text-skin-muted">{t(language, 'apiProfiles')}</span>
+        <HelpTip text={t(language, 'apiProfilesDesc')} />
         {dirty && (
           <span className="text-[9px] px-1 py-px rounded border border-amber-500/40 bg-amber-500/15 text-amber-600 dark:text-amber-400">
             {t(language, 'profileUnsaved')}
           </span>
         )}
-        <HelpTip className="ml-auto" text={t(language, 'apiProfilesDesc')} />
       </div>
 
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1" ref={menuAnchorRef}>
         <select
           value={active ? active.id : ''}
           onChange={(e) => handleSelect(e.target.value)}
@@ -281,8 +296,12 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
         </div>
       )}
 
-      {menuOpen && active && (
-        <div className="rounded-md border border-skin-border bg-skin-surface overflow-hidden animate-in fade-in slide-in-from-top-1">
+      <FloatingPanel
+        open={menuOpen && !!active}
+        anchorRef={menuAnchorRef}
+        maxHeight={240}
+        className="rounded-md border border-skin-border bg-skin-surface overflow-hidden animate-in fade-in"
+      >
           <button
             type="button"
             onClick={startRename}
@@ -301,8 +320,7 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
           >
             {armedDelete ? t(language, 'profileDeleteConfirm') : t(language, 'profileDelete')}
           </button>
-        </div>
-      )}
+      </FloatingPanel>
     </div>
   );
 };

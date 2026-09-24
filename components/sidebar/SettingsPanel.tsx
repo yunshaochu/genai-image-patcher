@@ -4,6 +4,7 @@ import { AppConfig } from '../../types';
 import { t } from '../../services/translations';
 import { ApiProfileSwitcher } from './ApiProfileSwitcher';
 import { SecretInput } from './SecretInput';
+import { FloatingPanel } from './FloatingPanel';
 
 interface SettingsPanelProps {
     config: AppConfig;
@@ -124,22 +125,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                                 className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
                                 placeholder={t(lang, 'modelIdPlaceholder')}
                             />
-                            {showModelDropdown && modelList.length > 0 && (
-                                <div className="absolute top-full left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-skin-surface border border-skin-border rounded-lg shadow-lg z-50 custom-scrollbar">
-                                    {modelList.map(model => (
-                                        <div 
-                                            key={model}
-                                            onClick={() => {
-                                                onChange('openaiModel', model);
-                                                setShowModelDropdown(false);
-                                            }}
-                                            className="px-3 py-2 text-xs hover:bg-skin-fill cursor-pointer truncate text-skin-text"
-                                        >
-                                            {model}
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
+                            <FloatingPanel
+                                open={showModelDropdown && modelList.length > 0}
+                                anchorRef={dropdownRef}
+                                maxHeight={160}
+                                className="overflow-y-auto bg-skin-surface border border-skin-border rounded-lg shadow-lg custom-scrollbar"
+                            >
+                                {modelList.map(model => (
+                                    <div
+                                        key={model}
+                                        onClick={() => {
+                                            onChange('openaiModel', model);
+                                            setShowModelDropdown(false);
+                                        }}
+                                        className="px-3 py-2 text-xs hover:bg-skin-fill cursor-pointer truncate text-skin-text"
+                                    >
+                                        {model}
+                                    </div>
+                                ))}
+                            </FloatingPanel>
                         </div>
                     </div>
                     <div className="animate-in fade-in slide-in-from-top-4 pt-1">

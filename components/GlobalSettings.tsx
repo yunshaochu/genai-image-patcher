@@ -7,6 +7,7 @@ import { HelpTip } from './sidebar/HelpTip';
 import { ApiProfileSwitcher } from './sidebar/ApiProfileSwitcher';
 import { SecretInput } from './sidebar/SecretInput';
 import { SettingsCard } from './sidebar/SettingsCard';
+import { FloatingPanel } from './sidebar/FloatingPanel';
 import {
     TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
@@ -130,6 +131,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
     const [initArmed, setInitArmed] = useState(false);
     const [backupStatus, setBackupStatus] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
     const configFileRef = useRef<HTMLInputElement>(null);
+    const transModelAnchorRef = useRef<HTMLDivElement>(null);
 
     const handleExportConfig = () => {
         try {
@@ -396,7 +398,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         <div className="bg-skin-fill/30 p-3 rounded-lg border border-skin-border space-y-2">
                                             <div className="flex items-center gap-2">
                                                 <label className="text-[10px] uppercase font-bold text-skin-muted">{t(lang, 'fullImageOpaquePercent')}</label>
-                                                <HelpTip className="ml-auto" text={t(lang, 'fullImageOpaquePercentDesc')} />
+                                                <HelpTip text={t(lang, 'fullImageOpaquePercentDesc')} />
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <input
@@ -515,26 +517,29 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             <label className="text-[10px] text-skin-muted block">{t(lang, 'model')}</label>
                                             <button onClick={fetchTransModels} className="text-[10px] text-skin-primary hover:underline">{t(lang, 'fetchList')}</button>
                                         </div>
-                                        <div className="relative">
+                                        <div className="relative" ref={transModelAnchorRef}>
                                             <input
                                                 type="text"
                                                 value={config.translationModel}
                                                 onChange={(e) => updateConfig('translationModel', e.target.value)}
                                                 className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
                                             />
-                                            {transModels.length > 0 && (
-                                                <div className="mt-1 max-h-24 overflow-y-auto border border-skin-border rounded bg-skin-surface absolute z-10 w-full shadow-lg">
-                                                    {transModels.map(m => (
-                                                        <div
-                                                            key={m}
-                                                            onClick={() => { updateConfig('translationModel', m); setTransModels([]); }}
-                                                            className="px-2 py-1 text-[10px] hover:bg-skin-fill cursor-pointer truncate"
-                                                        >
-                                                            {m}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
+                                            <FloatingPanel
+                                                open={transModels.length > 0}
+                                                anchorRef={transModelAnchorRef}
+                                                maxHeight={120}
+                                                className="overflow-y-auto border border-skin-border rounded bg-skin-surface shadow-lg"
+                                            >
+                                                {transModels.map(m => (
+                                                    <div
+                                                        key={m}
+                                                        onClick={() => { updateConfig('translationModel', m); setTransModels([]); }}
+                                                        className="px-2 py-1 text-[10px] hover:bg-skin-fill cursor-pointer truncate"
+                                                    >
+                                                        {m}
+                                                    </div>
+                                                ))}
+                                            </FloatingPanel>
                                         </div>
                                     </div>
                                 </SettingsCard>

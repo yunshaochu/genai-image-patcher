@@ -41,15 +41,18 @@ export const SettingsCard: React.FC<SettingsCardProps> = ({
 
     return (
         <section className="rounded-xl border border-skin-border bg-skin-surface p-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
                 <span className="text-xs font-bold text-skin-text">{title}</span>
+                {/* Tip sits on the title itself, BEFORE the status chip: after
+                    the chip it reads as if it explained the chip, and the chip
+                    had pushed it ~90px away from the name it belongs to. */}
+                {help && <HelpTip text={help} />}
                 {summary != null && (
                     <span className={`inline-flex items-center gap-1 shrink-0 text-[9px] px-1.5 py-px rounded-full border ${chipTone}`}>
                         {summary}
                     </span>
                 )}
                 <div className="ml-auto shrink-0 flex items-center gap-2">
-                    {help && <HelpTip text={help} />}
                     {action}
                 </div>
             </div>

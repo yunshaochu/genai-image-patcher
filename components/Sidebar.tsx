@@ -419,7 +419,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                                when the toggle is auto-disabled the icon turns amber
                                and carries the reason instead. */}
                            <HelpTip
-                               className="ml-auto mt-0.5"
+                               className="mt-0.5"
                                tone={squareFillDisabled ? 'warn' : 'default'}
                                text={squareFillDisabled
                                    ? t(lang, 'squareFillDisabledByInvertedTip')
@@ -447,6 +447,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                            Its description also lives behind the "?". */}
                        <label className="flex items-center gap-2 text-[11px]">
                            <span className="text-skin-muted">{t(lang, 'squareFillCropInset')}</span>
+                           <HelpTip text={t(lang, 'squareFillCropInsetDesc')} />
                            <input
                                type="number"
                                min={0}
@@ -455,7 +456,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                                onChange={(e) => handleConfigChange('squareFillCropInset', Math.max(0, Math.min(256, Math.round(Number(e.target.value)) || 0)))}
                                className="w-16 px-1.5 py-0.5 text-xs bg-skin-fill border border-skin-border rounded focus:outline-none focus:ring-1 focus:ring-skin-primary text-skin-text"
                            />
-                           <HelpTip className="ml-auto" text={t(lang, 'squareFillCropInsetDesc')} />
                        </label>
                        </div>
                )}
