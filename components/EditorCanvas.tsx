@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMe
 import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, isRegionPaintable } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
-import { renderRegionWithRestore, loadImage, releaseObjectURL } from '../services/imageUtils';
+import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
 
 // Helper: convert a canvas to a Blob-backed Object URL (memory-efficient,
 // avoids the giant base64 string that toDataURL produces).
@@ -48,6 +48,13 @@ interface EditorCanvasProps {
    * the other workflows, where Ctrl+wheel always zooms.
    */
   onStepSelectedFontSize?: (delta: number) => void;
+  /**
+   * Editor workflow only. When true, patch overlays may carry an overflow
+   * margin (typeset text spilling out of the box) drawn UNCLIPPED so the
+   * overflowing translation stays visible while typesetting. Default false:
+   * AI 重绘 / 手动修补工坊 clip the patch back to its box.
+   */
+  allowPatchOverflow?: boolean;
 }
 
 /**
@@ -90,6 +97,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     regionDisplay = 'editor',
     generationRegionSource = 'text',
     onStepSelectedFontSize,
+    allowPatchOverflow = false,
 }: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -811,18 +819,30 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             const aw = region.anchorWidth ?? region.width;
             const ah = region.anchorHeight ?? region.height;
             // Editor patches may carry an overflow margin (text spilling out
-            // of the box) — the patch box is the anchor enlarged by it. That
-            // margin is DELIBERATELY left unclipped: the patch is enlarged so
-            // the overflowing translation stays visible, and clipping it back
-            // to the region box (as this used to) hid exactly the overflow the
-            // margin was created for. AI patches carry no margin (mx = my = 0),
-            // so this only affects editor-composited ones.
+            // of the box) — the patch box is the anchor enlarged by it. The
+            // visible window is the patch cropped per side (shared with
+            // stitchImage, see resolvePatchWindowInsets):
+            //   - sides the user SHRANK past the anchor box are cropped, so
+            //     narrowing the frame reveals the untouched original underneath
+            //     instead of leaving the (larger) patch covering it;
+            //   - the other sides keep the overflow spill so typeset overflow
+            //     stays visible while adjusting the font size — but only in the
+            //     EDITOR workflow (AI 重绘 / 手动修补工坊 drop the margin).
+            // Insets are percent-of-image, so they convert to the element's own
+            // box by dividing by ew / eh.
             const mx = region.patchMarginX ?? 0;
             const my = region.patchMarginY ?? 0;
             const ex = ax - mx;
             const ey = ay - my;
             const ew = aw + 2 * mx;
             const eh = ah + 2 * my;
+            const insets = resolvePatchWindowInsets(
+              { x: ex, y: ey, w: ew, h: eh },
+              { x: ax, y: ay, w: aw, h: ah },
+              { x: region.x, y: region.y, w: region.width, h: region.height },
+              allowPatchOverflow
+            );
+            const clipped = insets.left > 0 || insets.top > 0 || insets.right > 0 || insets.bottom > 0;
             const hasRestore = (region.restoreBoxes && region.restoreBoxes.length > 0) || region.restoreMaskUrl;
             return (
               <img
@@ -837,6 +857,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   objectFit: 'contain',
                   objectPosition: 'center center',
                   zIndex: 5,
+                  ...(clipped
+                    ? {
+                        clipPath: `inset(${(insets.top / eh) * 100}% ${(insets.right / ew) * 100}% ${(insets.bottom / eh) * 100}% ${(insets.left / ew) * 100}%)`,
+                      }
+                    : {}),
                 }}
                 alt=""
               />

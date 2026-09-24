@@ -205,13 +205,15 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     }
   };
 
-  const getStitchedUrl = useCallback(async (image: UploadedImage): Promise<string> => {
-    const signature = computeStitchSignature(image);
+  const getStitchedUrl = useCallback(async (image: UploadedImage, honorPatchOverflow = true): Promise<string> => {
+    // The overflow flag changes the output pixels, so it is part of the cache
+    // key: switching workflows must not hand back the other variant's URL.
+    const signature = `${honorPatchOverflow ? 'ovf' : 'clip'}|${computeStitchSignature(image)}`;
     const cached = stitchCacheRef.current.get(image.id);
     if (cached && cached.signature === signature) {
       return cached.url;
     }
-    const url = await stitchImage(image.previewUrl, image.regions);
+    const url = await stitchImage(image.previewUrl, image.regions, honorPatchOverflow);
     if (cached) releaseObjectURL(cached.url);
     stitchCacheRef.current.set(image.id, { signature, url });
     return url;

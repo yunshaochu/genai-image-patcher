@@ -414,6 +414,10 @@ export default function App() {
    * elsewhere and must never be revoked.
    */
   const resolveResultUrl = useCallback(async (image: UploadedImage, fresh = false): Promise<ResolvedResultUrl> => {
+      // Patch overflow margins are an editor-workflow affordance only: in
+      // AI 重绘 / 手动修补工坊 the stitch crops them back to the box so the
+      // exported picture matches what those workflows show on the canvas.
+      const honorPatchOverflow = config.processingMode === 'editor';
       if (config.useInvertedMasking && image.fullAiResultUrl) {
           return {
               url: await stitchImageInverted(image.previewUrl, image.fullAiResultUrl, image.regions),
@@ -424,9 +428,9 @@ export default function App() {
       // the original file itself (the preview may be a downscaled copy).
       const hasPatch = image.regions.some(r => r.status === 'completed' && r.processedImageUrl);
       if (!hasPatch) return { url: image.originalUrl || image.previewUrl, release: false };
-      if (fresh) return { url: await stitchImage(image.previewUrl, image.regions), release: true };
-      return { url: await getStitchedUrl(image), release: false };
-  }, [config.useInvertedMasking, getStitchedUrl]);
+      if (fresh) return { url: await stitchImage(image.previewUrl, image.regions, honorPatchOverflow), release: true };
+      return { url: await getStitchedUrl(image, honorPatchOverflow), release: false };
+  }, [config.useInvertedMasking, config.processingMode, getStitchedUrl]);
 
   // ON-DEMAND STITCHING for Download — scope-aware: 当前图片 = that one file,
   // 全部 = ZIP of everything that has a result, plus the images marked as skipped.
@@ -805,6 +809,9 @@ export default function App() {
                     showRetryDiagnostics={!!config.showRetryDiagnostics}
                     regionDisplay={isEditorMode ? 'editor' : 'generation'}
                     generationRegionSource={config.generationRegionSource}
+                    // Typeset overflow stays visible ONLY in the editor workflow;
+                    // AI 重绘 / 手动修补工坊 clip patches back to their box.
+                    allowPatchOverflow={isEditorMode}
                     // Editor tab only: Ctrl+wheel over the selected box = 字号 ±5.
                     onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
                 />

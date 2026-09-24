@@ -611,12 +611,69 @@ export const renderRegionWithRestore = async (
 };
 
 /**
+ * The visible window of a region patch, returned as per-side insets measured
+ * from the patch box edges. Every input shares ONE coordinate space (percent of
+ * image for the canvas overlay, pixels for the stitcher) — only deltas matter.
+ *
+ * `patchBox` is the anchor box enlarged by the overflow margin, `anchorBox` is
+ * the box the patch was composited for, `regionRect` is the current (draggable)
+ * frame.
+ *
+ * Per side: when the user SHRANK the frame past the anchor box, the window
+ * stops at the frame edge — that is what reveals the untouched original
+ * underneath once a box is narrowed. Otherwise the side keeps the overflow
+ * margin, EXCEPT when `allowPatchOverflow` is false (AI 重绘 / 手动修补工坊),
+ * where the margin is dropped so overflowing typeset text is never visible.
+ *
+ * Shared by the canvas overlay and `stitchImage`, so the 已完成 tab and the
+ * exported file can never disagree.
+ */
+export const resolvePatchWindowInsets = (
+  patchBox: { x: number; y: number; w: number; h: number },
+  anchorBox: { x: number; y: number; w: number; h: number },
+  regionRect: { x: number; y: number; w: number; h: number },
+  allowPatchOverflow: boolean
+): { top: number; right: number; bottom: number; left: number } => {
+  const { x: ex, y: ey, w: ew, h: eh } = patchBox;
+  const { x: ax, y: ay, w: aw, h: ah } = anchorBox;
+  const { x, y, w, h } = regionRect;
+  // The anchor holds the exact frame geometry from composite time, so an
+  // untouched frame compares equal; the epsilon only absorbs float noise.
+  const EPS = 1e-6;
+  const left = x > ax + EPS
+    ? x
+    : (allowPatchOverflow ? ex : Math.max(ex, ax));
+  const top = y > ay + EPS
+    ? y
+    : (allowPatchOverflow ? ey : Math.max(ey, ay));
+  const right = x + w < ax + aw - EPS
+    ? x + w
+    : (allowPatchOverflow ? ex + ew : Math.min(ex + ew, ax + aw));
+  const bottom = y + h < ay + ah - EPS
+    ? y + h
+    : (allowPatchOverflow ? ey + eh : Math.min(ey + eh, ay + ah));
+  return {
+    top: Math.max(0, top - ey),
+    right: Math.max(0, ex + ew - right),
+    bottom: Math.max(0, ey + eh - bottom),
+    left: Math.max(0, left - ex),
+  };
+};
+
+/**
  * Stitches processed regions back onto the original image.
  * Returns an Object URL.
  */
 export const stitchImage = async (
   originalImageUrl: string,
-  regions: Region[]
+  regions: Region[],
+  /**
+   * Honour the editor patch overflow margin (typeset text spilling out of the
+   * box). Only the EDITOR workflow wants that; AI 重绘 / 手动修补工坊 crop the
+   * patch back to its box so the overflow is not visible there. Default true
+   * preserves the historical behaviour for any other caller.
+   */
+  honorPatchOverflow: boolean = true
 ): Promise<string> => {
   const baseImg = await loadImage(originalImageUrl);
   
@@ -676,17 +733,27 @@ export const stitchImage = async (
     const drawX = ex + (ew - drawW) / 2;
     const drawY = ey + (eh - drawH) / 2;
 
-    // Clip to the current region rect only when the user SHRANK the frame
-    // relative to the patch box (mirrors the overlay's clipPath). Otherwise
-    // draw unclipped so text overflowing the box stays visible.
-    const shrank =
-      x > ex + 0.5 || y > ey + 0.5 ||
-      x + w < ex + ew - 0.5 || y + h < ey + eh - 0.5;
+    // Same visible window as the overlay: sides the user shrank are cropped
+    // (so the original underneath shows through), the rest keep the overflow
+    // margin — dropped entirely in the AI 重绘 / 手动修补工坊 workflows.
+    const insets = resolvePatchWindowInsets(
+      { x: ex, y: ey, w: ew, h: eh },
+      { x: ax, y: ay, w: aw, h: ah },
+      { x, y, w, h },
+      honorPatchOverflow
+    );
+    const clipped =
+      insets.left > 0.5 || insets.top > 0.5 || insets.right > 0.5 || insets.bottom > 0.5;
 
     ctx.save();
-    if (shrank) {
+    if (clipped) {
       ctx.beginPath();
-      ctx.rect(x, y, w, h);
+      ctx.rect(
+        ex + insets.left,
+        ey + insets.top,
+        Math.max(1, ew - insets.left - insets.right),
+        Math.max(1, eh - insets.top - insets.bottom)
+      );
       ctx.clip();
     }
     ctx.drawImage(regionImg, drawX, drawY, drawW, drawH);
