@@ -239,7 +239,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
                     onClick={() => onProcess?.(processAll)}
                     disabled={!!generateReason}
                     title={generateReason}
-                    className="w-full h-10 rounded-lg bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed text-xs font-bold shadow-sm shadow-skin-primary/25 transition-all active:scale-[0.98] disabled:active:scale-100 flex items-center justify-center gap-1.5"
+                    className="w-full h-10 rounded-lg bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-surface disabled:cursor-not-allowed text-xs font-bold shadow-sm shadow-skin-primary/25 transition-all active:scale-[0.98] disabled:active:scale-100 flex items-center justify-center gap-1.5"
                   >
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                     {t(lang, processAll ? 'generateAll' : 'generate')}

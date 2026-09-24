@@ -46,6 +46,52 @@ const formatBytes = (bytes: number): string => {
 };
 
 /**
+ * Per-image pipeline state, shown as the corner badge on each thumbnail.
+ * A finished result wins, but an in-flight / failed region is surfaced even
+ * when earlier regions already completed — the whole point of the badge is to
+ * spot retries and leftovers without opening the image.
+ */
+type ThumbStatus = 'completed' | 'failed' | 'processing' | 'pending';
+
+const resolveThumbStatus = (img: UploadedImage): ThumbStatus | null => {
+  if (img.finalResultUrl) return 'completed';
+  if (img.regions.some(r => r.status === 'processing')) return 'processing';
+  if (img.regions.some(r => r.status === 'failed')) return 'failed';
+  if (img.regions.some(r => r.status === 'completed')) return 'completed';
+  if (img.regions.length > 0) return 'pending';
+  return null;
+};
+
+type GalleryStatusLabel =
+  | 'galleryStatusCompleted'
+  | 'galleryStatusFailed'
+  | 'galleryStatusProcessing'
+  | 'galleryStatusPending';
+
+const STATUS_BADGE: Record<ThumbStatus, { className: string; labelKey: GalleryStatusLabel; icon: React.ReactNode }> = {
+  completed: {
+    className: 'bg-emerald-500 text-white',
+    labelKey: 'galleryStatusCompleted',
+    icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7" />,
+  },
+  failed: {
+    className: 'bg-rose-500 text-white',
+    labelKey: 'galleryStatusFailed',
+    icon: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 8v4m0 3.5h.01" />,
+  },
+  processing: {
+    className: 'bg-skin-primary text-white animate-pulse',
+    labelKey: 'galleryStatusProcessing',
+    icon: <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />,
+  },
+  pending: {
+    className: 'bg-amber-500 text-white',
+    labelKey: 'galleryStatusPending',
+    icon: <circle cx="12" cy="12" r="4.5" strokeWidth="3" />,
+  },
+};
+
+/**
  * One gallery thumbnail, memoized on its own props.
  *
  * Editing in the editor replaces the edited image object — and with it the
@@ -69,18 +115,27 @@ const ThumbnailItem = React.memo(function ThumbnailItem({
   onToggleSkip: (imageId: string) => void;
   onDeleteImage: (imageId: string) => void;
 }) {
+  const status = img.isSkipped ? null : resolveThumbStatus(img);
   return (
     <div
       data-image-id={img.id}
-      className={`group relative flex flex-col p-2 rounded-lg border transition-all cursor-pointer overflow-hidden ${isSelected ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50'}`}
+      className={`group relative flex flex-col p-1.5 rounded-lg border transition-all cursor-pointer overflow-hidden ${isSelected ? 'border-skin-primary bg-skin-primary/5 shadow-sm ring-1 ring-skin-primary/30' : 'border-skin-border bg-skin-surface hover:border-skin-primary/50 hover:shadow-sm'}`}
       onClick={() => onSelectImage(img.id)}
     >
-      <div className="w-full aspect-square rounded overflow-hidden bg-checkerboard relative mb-1.5">
-        <img src={img.thumbnailUrl || img.previewUrl} className={`w-full h-full object-contain ${img.isSkipped ? 'grayscale opacity-50' : ''}`} loading="lazy" decoding="async" />
+      {/* Portrait-leaning frame: manga pages are tall, so the old square box
+          squeezed a whole page into a thin strip surrounded by empty checker. */}
+      <div className="w-full aspect-[3/4] rounded overflow-hidden bg-checkerboard relative mb-1.5">
+        <img
+          src={img.thumbnailUrl || img.previewUrl}
+          alt={img.file.name}
+          className={`w-full h-full object-contain transition-transform duration-200 group-hover:scale-[1.03] ${img.isSkipped ? 'grayscale opacity-50' : ''}`}
+          loading="lazy"
+          decoding="async"
+        />
 
         {img.isSkipped && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/20 z-0">
-            <span className="text-[9px] text-white font-bold bg-black/50 px-1 rounded">SKIP</span>
+          <div className="absolute inset-0 flex items-center justify-center bg-black/25 z-0">
+            <span className="text-[9px] text-white font-bold bg-black/55 px-1.5 py-0.5 rounded tracking-wide">{t(lang, 'skipped')}</span>
           </div>
         )}
 
@@ -104,16 +159,28 @@ const ThumbnailItem = React.memo(function ThumbnailItem({
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
         </button>
 
-        {(img.regions.some(r => r.status === 'completed') || img.finalResultUrl) && (
-          <div className="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm border border-white z-10" title="Completed"></div>
+        {status && (
+          <div
+            className={`absolute bottom-1 right-1 w-4 h-4 rounded-full flex items-center justify-center shadow-sm ring-1 ring-white/70 z-10 ${STATUS_BADGE[status].className}`}
+            title={t(lang, STATUS_BADGE[status].labelKey)}
+          >
+            <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">{STATUS_BADGE[status].icon}</svg>
+          </div>
         )}
       </div>
 
       <div className="flex-1 min-w-0 w-full px-0.5">
         <div className="text-[10px] font-medium truncate text-skin-text leading-tight" title={img.file.name}>{img.file.name}</div>
         <div className="flex items-center justify-between gap-1 mt-1">
-          <span className="text-[9px] text-skin-muted truncate">{img.originalWidth}x{img.originalHeight}</span>
-          {img.regions.length > 0 && <span className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted whitespace-nowrap">{img.regions.length} reg</span>}
+          <span className="text-[9px] text-skin-muted truncate">{img.originalWidth}×{img.originalHeight}</span>
+          {img.regions.length > 0 && (
+            <span
+              className="text-[9px] bg-skin-fill px-1 rounded text-skin-muted whitespace-nowrap"
+              title={t(lang, 'payloadRegionCount', { count: img.regions.length })}
+            >
+              {t(lang, 'galleryRegionBadge', { count: img.regions.length })}
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -284,14 +351,16 @@ const Sidebar: React.FC<SidebarProps> = ({
         
         {/* Gallery Section */}
         <Section title={t(lang, 'galleryTitle')} isOpen={sectionsState.gallery} onToggle={() => toggleSection('gallery')}>
+           {/* Compact single-row uploaders: the old stacked icon-over-label
+               cards spent 80px of sidebar height on two short actions. */}
            <div className="flex gap-2 mb-2">
-               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+               <label className="flex-1 h-11 border border-dashed border-skin-border hover:border-skin-primary rounded-lg px-2 cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex items-center justify-center gap-2">
                   <input type="file" multiple accept="image/*" className="hidden" onChange={onUpload} />
-                  <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                  <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFiles')}</span>
+                  <svg className="w-4 h-4 shrink-0 text-skin-muted group-hover:text-skin-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                  <span className="text-[11px] font-medium text-skin-muted group-hover:text-skin-text whitespace-nowrap">{t(lang, 'uploadFiles')}</span>
                </label>
-               
-               <label className="flex-1 border border-dashed border-skin-border hover:border-skin-primary rounded-xl p-2 text-center cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex flex-col items-center justify-center h-20">
+              
+               <label className="flex-1 h-11 border border-dashed border-skin-border hover:border-skin-primary rounded-lg px-2 cursor-pointer transition-colors bg-skin-fill/30 hover:bg-skin-fill group flex items-center justify-center gap-2">
                   <input 
                     type="file" 
                     multiple 
@@ -300,8 +369,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                     onChange={onUpload}
                     onClick={(e) => (e.currentTarget.value = '')}
                   />
-                  <svg className="w-5 h-5 text-skin-muted group-hover:text-skin-primary mb-1 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
-                  <span className="text-[10px] font-medium text-skin-muted group-hover:text-skin-text leading-tight">{t(lang, 'uploadFolder')}</span>
+                  <svg className="w-4 h-4 shrink-0 text-skin-muted group-hover:text-skin-primary transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                  <span className="text-[11px] font-medium text-skin-muted group-hover:text-skin-text whitespace-nowrap">{t(lang, 'uploadFolder')}</span>
                </label>
             </div>
 
@@ -365,7 +434,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 max-h-[240px] overflow-y-auto custom-scrollbar pr-1 border border-skin-border/30 rounded-lg p-1 bg-skin-fill/10">
+                <div className="grid grid-cols-2 gap-2 max-h-[320px] overflow-y-auto custom-scrollbar pr-1 border border-skin-border/30 rounded-lg p-1 bg-skin-fill/10">
                   {images.map(img => (
                     <ThumbnailItem
                       key={img.id}
@@ -380,8 +449,8 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </div>
 
                 <div className="text-[10px] text-skin-muted text-center flex justify-between px-1">
-                   <span>{images.length} images</span>
-                   <span>{processedCount} processed</span>
+                   <span>{t(lang, 'galleryImages', { count: images.length })}</span>
+                   <span>{t(lang, 'galleryProcessed', { count: processedCount })}</span>
                 </div>
 
                 {storageUsage !== null && config.enableSessionPersistence && (

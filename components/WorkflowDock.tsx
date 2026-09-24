@@ -163,7 +163,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                   onClick={() => onProcess(processAll)}
                   disabled={!!gating.generateReason}
                   title={gating.generateReason || t(lang, processAll ? 'generateAll' : 'generate')}
-                  className="w-6 h-6 rounded-md bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-muted disabled:cursor-not-allowed flex items-center justify-center transition-all"
+                  className="w-6 h-6 rounded-md bg-skin-primary text-skin-primary-fg hover:opacity-90 disabled:bg-skin-muted disabled:text-skin-surface disabled:cursor-not-allowed flex items-center justify-center transition-all"
                 >
                   <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
                 </button>
