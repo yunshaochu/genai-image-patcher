@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AppConfig, UploadedImage, ThemeType } from '../types';
+import { AppConfig, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { Section } from './sidebar/Section';
 import { MangaToolsPanel } from './sidebar/MangaToolsPanel';
@@ -36,14 +36,6 @@ interface SidebarProps {
 }
 
 const SECTION_STORAGE_KEY = 'genai_patcher_sidebar_sections_v1';
-
-const THEMES: { id: ThemeType; label: string; bg: string; ring: string }[] = [
-  { id: 'light', label: 'Light', bg: 'bg-slate-100', ring: 'ring-slate-400' },
-  { id: 'dark', label: 'Dark', bg: 'bg-zinc-800', ring: 'ring-zinc-500' },
-  { id: 'ocean', label: 'Blue', bg: 'bg-sky-400', ring: 'ring-sky-300' },
-  { id: 'rose', label: 'Rose', bg: 'bg-rose-400', ring: 'ring-rose-300' },
-  { id: 'forest', label: 'Green', bg: 'bg-emerald-400', ring: 'ring-emerald-300' },
-];
 
 const formatBytes = (bytes: number): string => {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -272,26 +264,7 @@ const Sidebar: React.FC<SidebarProps> = ({
            <h1 className="font-bold text-xl text-skin-primary tracking-tight">{t(lang, 'appTitle')}</h1>
            <p className="text-[10px] text-skin-muted uppercase tracking-wider">{t(lang, 'appSubtitle')}</p>
         </div>
-        
-        <div className="flex items-center justify-between bg-skin-fill p-2.5 rounded-xl border border-skin-border/50">
-           <span className="text-[10px] font-bold text-skin-muted uppercase tracking-wider">Theme Style</span>
-           <div className="flex items-center gap-3">
-             {THEMES.map(theme => (
-               <button
-                 key={theme.id}
-                 onClick={() => handleConfigChange('theme', theme.id)}
-                 className={`w-5 h-5 rounded-full ${theme.bg} border-2 border-transparent transition-all duration-200 ${
-                   config.theme === theme.id 
-                     ? 'ring-2 ring-skin-text scale-110 border-white shadow-md' 
-                     : 'hover:scale-110 hover:border-skin-border opacity-70 hover:opacity-100'
-                 }`}
-                 title={theme.label}
-                 aria-label={theme.label}
-               />
-             ))}
-           </div>
-        </div>
-      </div>
+     </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-4">
         

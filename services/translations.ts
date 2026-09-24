@@ -108,6 +108,8 @@ export const translations = {
     performanceMode: "性能模式",
     perfUnlimited: "无限制",
     perfBalanced: "性能优先",
+    performanceModeHint: "无限制＝画布预览直接用原图（最清晰，大图/多图时更占内存、切换更卡）；性能优先＝预览压缩到最长边 2048px（省内存、更流畅）。",
+    performanceModeDesc: "只影响画布上预览图的显示与内存占用。发送给 AI 的裁剪图始终取自原图，成品清晰度不受影响。",
     
     // Workflow Modes
     modeTitle: "工作流模式",
@@ -308,6 +310,17 @@ export const translations = {
     
     // Global Settings
     globalSettings: "全局设置",
+    groupGeneral: "常规",
+    groupManga: "漫画与重绘",
+    groupTranslation: "翻译",
+    groupData: "数据管理",
+    appearance: "主题与语言",
+    themeStyle: "主题",
+    interfaceLanguage: "界面语言",
+    translationApiLabel: "翻译接口",
+    translationApiDesc: "OpenAI 兼容接口，供「翻译所有图片」与编辑模式的整页翻译使用。与右侧面板的生图接口分开保存，互不影响。",
+    stateInverted: "反向遮罩",
+    stateNotSet: "未配置",
     enableMangaMode: "启用漫画模块",
     enableMangaModeDesc: "启用气泡检测、OCR 识别、手动涂抹嵌字等漫画汉化辅助功能",
     enableBubbleDetection: "启用气泡检测",
@@ -521,6 +534,8 @@ export const translations = {
     performanceMode: "Performance Mode",
     perfUnlimited: "Unlimited",
     perfBalanced: "Balanced",
+    performanceModeHint: "Unlimited = the canvas preview is the original (sharpest, but large or numerous images cost more memory and switch slower). Balanced = the preview is capped at 2048px (lighter and smoother).",
+    performanceModeDesc: "Affects the on-canvas preview only — the crop sent to the AI is always taken from the original, so output sharpness is unaffected.",
     
     // Workflow Modes
     modeTitle: "Workflow Mode",
@@ -721,6 +736,17 @@ export const translations = {
     
     // Global Settings
     globalSettings: "Global Settings",
+    groupGeneral: "General",
+    groupManga: "Manga & Redraw",
+    groupTranslation: "Translation",
+    groupData: "Data",
+    appearance: "Theme & Language",
+    themeStyle: "Theme",
+    interfaceLanguage: "Language",
+    translationApiLabel: "Translation API",
+    translationApiDesc: "OpenAI-compatible endpoint used by 翻译所有图片 and the editor's whole-page translation. Stored separately from the image-generation endpoint in the right dock.",
+    stateInverted: "Inverted",
+    stateNotSet: "Not set",
     enableMangaMode: "Enable Manga Module",
     enableMangaModeDesc: "Enables bubble detection, OCR, editor, and other manga tools",
     enableBubbleDetection: "Enable Bubble Detection",
