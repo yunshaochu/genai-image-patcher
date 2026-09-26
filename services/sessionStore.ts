@@ -22,16 +22,18 @@ const IMAGE_STORE = 'images';
 const META_STORE = 'meta';
 const META_KEY = 'session';
 
-/** blob: URLs are fetched to Blobs; data:/http(s) URLs are kept as strings. */
-type PersistableUrl = Blob | string | undefined;
+/** blob: URLs are fetched to Blobs; data:/http(s) URLs are kept as strings.
+ *  Also reused by workStateTransfer.ts, which writes the same records into a
+ *  ZIP instead of IndexedDB. */
+export type PersistableUrl = Blob | string | undefined;
 
-type RegionRecord = Omit<Region, 'processedImageUrl' | 'restoreMaskUrl' | 'editorBrushUrl'> & {
+export type RegionRecord = Omit<Region, 'processedImageUrl' | 'restoreMaskUrl' | 'editorBrushUrl'> & {
   processed?: PersistableUrl;
   restoreMask?: PersistableUrl;
   editorBrush?: PersistableUrl;
 };
 
-interface ImageRecord {
+export interface ImageRecord {
   id: string;
   file: File;
   /** undefined = identical to originalUrl (recreated from `file` on restore) */
@@ -116,7 +118,7 @@ function persistableToUrl(p: PersistableUrl): string | undefined {
   return typeof p === 'string' ? p : URL.createObjectURL(p);
 }
 
-async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
+export async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
   const [preview, thumbnail, finalResult, fullAi] = await Promise.all([
     img.previewUrl !== img.originalUrl ? urlToPersistable(img.previewUrl) : Promise.resolve(undefined),
     urlToPersistable(img.thumbnailUrl),
@@ -150,7 +152,7 @@ async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
   };
 }
 
-function deserializeImage(rec: ImageRecord): UploadedImage {
+export function deserializeImage(rec: ImageRecord): UploadedImage {
   const originalUrl = URL.createObjectURL(rec.file);
   const previewUrl = persistableToUrl(rec.preview) ?? originalUrl;
   const thumbnailUrl = persistableToUrl(rec.thumbnail) ?? previewUrl;

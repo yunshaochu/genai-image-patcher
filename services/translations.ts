@@ -36,7 +36,25 @@ export const translations = {
     sessionPersistence: "会话持久化 (防丢失)",
     sessionPersistenceDesc: "自动把编辑现场保存到本机磁盘，刷新或标签页被浏览器休眠回收后可完整恢复。关闭则不占用磁盘空间。",
     sessionPersistenceOffWarning: "持久化已关闭：浏览器休眠或刷新标签页将丢失未保存的编辑！请将本站加入浏览器“永不休眠”名单 —— Chrome：设置 → 性能 → 内存节省程序 → “始终使这些网站保持活跃”；Edge：设置 → 系统和性能 → “勿使这些站点进入睡眠”。",
-    
+
+    // Work state (whole session backup / restore)
+    workStateExport: "导出工作状态",
+    workStateImport: "导入工作状态",
+    workStateImportConfirm: "确认导入？",
+    workStateBusy: "打包中...",
+    workStateExportTip: "把当前全部工作现场打包成一个 ZIP：图库图片、选区、编辑器 / AI 重绘数据与全部设置。之后导入该 ZIP 即可完全恢复（含明文密钥，请妥善保管）。",
+    workStateImportTip: "从工作状态 ZIP 恢复图库与编辑现场（会整包替换当前内容）。",
+    workStateImportArmHint: "导入会整包替换当前图库与编辑现场，再点一次「导入工作状态」选择文件",
+    workStateExported: "已导出工作状态：{name}",
+    workStateExportFailed: "导出工作状态失败：{reason}",
+    workStateImportFailed: "导入工作状态失败：{reason}",
+    workStateImported: "已导入工作状态：恢复 {count} 张图片",
+    workStateImportedWithConfig: "已导入工作状态：恢复 {count} 张图片，同时应用了 {settings} 项设置",
+    workStateErrNotZip: "文件不是有效的工作状态 ZIP 包",
+    workStateErrBadManifest: "ZIP 中缺少有效的工作状态清单 (manifest.json)",
+    workStateErrVersion: "工作状态包版本比当前工具更新，请升级后再导入",
+    workStateErrEmpty: "工作状态包里没有可恢复的图片",
+
     // Manga Toolkit
     mangaTitle: "漫画工具箱",
     detectBtn: "✨ 自动检测气泡",
@@ -520,7 +538,25 @@ export const translations = {
     sessionPersistence: "Session persistence (anti-loss)",
     sessionPersistenceDesc: "Automatically saves your editing session to local disk so it fully survives reloads and browser tab discards. Turn off to free disk space.",
     sessionPersistenceOffWarning: "Persistence is OFF: a discarded or reloaded tab will lose unsaved work! Exempt this site from tab sleeping — Chrome: Settings → Performance → Memory Saver → “Always keep these sites active”; Edge: Settings → System and performance → “Never put these sites to sleep”.",
-    
+
+    // Work state (whole session backup / restore)
+    workStateExport: "Export work state",
+    workStateImport: "Import work state",
+    workStateImportConfirm: "Confirm?",
+    workStateBusy: "Packing...",
+    workStateExportTip: "Pack the whole working state into one ZIP — gallery images, regions, editor / AI-redraw data and all settings. Import it later to restore everything exactly (contains plaintext keys — keep it safe).",
+    workStateImportTip: "Restore the gallery and editing session from a work-state ZIP (replaces the current content).",
+    workStateImportArmHint: "Import replaces the whole gallery and editing session. Click Import work state again to choose a file.",
+    workStateExported: "Work state exported: {name}",
+    workStateExportFailed: "Work state export failed: {reason}",
+    workStateImportFailed: "Work state import failed: {reason}",
+    workStateImported: "Work state imported: {count} image(s) restored",
+    workStateImportedWithConfig: "Work state imported: {count} image(s) restored, {settings} setting(s) applied",
+    workStateErrNotZip: "The file is not a valid work-state ZIP",
+    workStateErrBadManifest: "The ZIP has no valid work-state manifest (manifest.json)",
+    workStateErrVersion: "This work-state package is newer than this tool — please update before importing",
+    workStateErrEmpty: "The work-state package contains no restorable images",
+
     // Manga Toolkit
     mangaTitle: "Manga Toolkit",
     detectBtn: "✨ Auto Detect Bubbles",

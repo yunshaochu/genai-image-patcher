@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AppConfig, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { Section } from './sidebar/Section';
@@ -29,6 +29,12 @@ interface SidebarProps {
    *  now live in the right-hand dock). */
   onDownloadAllZip: () => void;
   isZipping: boolean;
+  /** Whole-work-state pack: gallery + editing session + settings as one ZIP. */
+  onExportWorkState: () => void;
+  /** Restore a work-state ZIP (replaces the gallery, merges settings). */
+  onImportWorkState: (file: File) => void;
+  workStateBusy: boolean;
+  workStateStatus: { text: string; tone: 'ok' | 'warn' } | null;
   uploadProgress?: { current: number; total: number } | null;
   /** Nudge to clear the gallery after a download. Owned by App: the run/save
    *  actions live in the right-hand dock now, but the 清空图库 button they point
@@ -205,6 +211,10 @@ const Sidebar: React.FC<SidebarProps> = ({
   onOpenPayloadInspector,
   onDownloadAllZip,
   isZipping,
+  onExportWorkState,
+  onImportWorkState,
+  workStateBusy,
+  workStateStatus,
   uploadProgress,
   clearHighlight,
   setClearHighlight,
@@ -212,6 +222,27 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [detectScope, setDetectScope] = useState<'current' | 'all'>('current');
   const [clearConfirmation, setClearConfirmation] = useState(false);
   const [storageUsage, setStorageUsage] = useState<number | null>(null);
+  // Work-state import replaces the whole gallery, so it is armed first (same
+  // two-step pattern as 清空图库 / 导入配置) before the file picker opens.
+  const [workStateImportArmed, setWorkStateImportArmed] = useState(false);
+  const workStateFileRef = useRef<HTMLInputElement>(null);
+
+  const handleWorkStateImportClick = () => {
+    if (workStateBusy) return;
+    if (!workStateImportArmed) {
+      setWorkStateImportArmed(true);
+      window.setTimeout(() => setWorkStateImportArmed(false), 4000);
+      return;
+    }
+    setWorkStateImportArmed(false);
+    workStateFileRef.current?.click();
+  };
+
+  const handleWorkStateFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the same file be picked again after a failure
+    if (file) onImportWorkState(file);
+  };
 
   // Poll the origin's storage usage (IndexedDB session + everything else on
   // this origin). Refresh immediately when the image count changes, and on a
@@ -387,6 +418,60 @@ const Sidebar: React.FC<SidebarProps> = ({
                   ></div>
                 </div>
               </div>
+            )}
+
+            {/* 工作状态整包：图库 + 编辑现场（编辑器 / AI 重绘数据）+ 设置。
+                导出只读，导入会整包替换当前现场，所以走两步确认。常驻显示，
+                这样图库为空时也能直接导入一个工作状态包恢复。 */}
+            <div className="flex gap-2 mb-2">
+                <button
+                    type="button"
+                    onClick={onExportWorkState}
+                    disabled={workStateBusy || images.length === 0}
+                    title={t(lang, 'workStateExportTip')}
+                    className="flex-1 py-1.5 text-xs border border-skin-border rounded-lg text-skin-muted hover:text-skin-primary hover:border-skin-primary transition-colors flex items-center justify-center gap-2 bg-skin-fill/30 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-skin-muted disabled:hover:border-skin-border"
+                >
+                    {workStateBusy ? (
+                        <>
+                            <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                            {t(lang, 'workStateBusy')}
+                        </>
+                    ) : (
+                        <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                            {t(lang, 'workStateExport')}
+                        </>
+                    )}
+                </button>
+
+                <button
+                    type="button"
+                    onClick={handleWorkStateImportClick}
+                    disabled={workStateBusy}
+                    title={workStateImportArmed ? t(lang, 'workStateImportArmHint') : t(lang, 'workStateImportTip')}
+                    className={`flex-1 py-1.5 text-xs border rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed ${
+                        workStateImportArmed
+                            ? 'bg-rose-500 border-rose-600 text-white'
+                            : 'border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary bg-skin-fill/30'
+                    }`}
+                >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 12V4m0 8l-4-4m4 4l4-4"></path></svg>
+                    {workStateImportArmed ? t(lang, 'workStateImportConfirm') : t(lang, 'workStateImport')}
+                </button>
+            </div>
+
+            <input
+                ref={workStateFileRef}
+                type="file"
+                accept=".zip,application/zip,application/x-zip-compressed"
+                className="hidden"
+                onChange={handleWorkStateFile}
+            />
+
+            {workStateStatus && (
+                <p className={`mb-2 text-[10px] leading-snug ${workStateStatus.tone === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                    {workStateStatus.text}
+                </p>
             )}
 
             {images.length > 0 ? (

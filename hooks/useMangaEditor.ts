@@ -1356,6 +1356,27 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     return result?.url ?? null;
   }, [getImage]);
 
+  /**
+   * Drop every in-memory editor cache. Called when the gallery is wholesale
+   * replaced (work-state import): the erased-base cache is keyed by region
+   * geometry only (`regionGeomKey`), so leftovers from the previous gallery
+   * could otherwise be reused for restored images that happen to share a
+   * region id and box.
+   */
+  const clearEditorCaches = useCallback(() => {
+    erasedCacheRef.current.forEach(e => releaseObjectURL(e.url));
+    erasedCacheRef.current.clear();
+    debounceRef.current.forEach(t => clearTimeout(t));
+    debounceRef.current.clear();
+    editStampRef.current.clear();
+    compositingRef.current.clear();
+    compositedAtRef.current.clear();
+    aiBaseRebasedRef.current.clear();
+    freezeUndoStackRef.current = [];
+    setFreezeUndoDepth(0);
+    setComputedFontSizes(prev => (Object.keys(prev).length === 0 ? prev : {}));
+  }, []);
+
   return {
     busy,
     translating,
@@ -1385,5 +1406,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     resyncEditedRegions,
     refreshEditorPatches,
     buildBrushBase,
+    clearEditorCaches,
   };
 }

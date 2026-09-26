@@ -369,6 +369,32 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     setSelectedRegionId(null);
   }, []);
 
+  /**
+   * Replace the whole gallery with `newImages` (work-state import).
+   *
+   * The previous images' Object URLs are revoked and the stitch cache dropped.
+   * `savedRefsRef` is deliberately left untouched: the next autosave then sees
+   * the old ids as removed (deleting their IndexedDB records instead of
+   * orphaning them) and re-serializes every imported image, because imported
+   * objects are always fresh references.
+   */
+  const replaceStore = useCallback((newImages: UploadedImage[], newSelectedId: string | null) => {
+    setStore((s) => {
+      for (const id of s.order) cleanupImageUrls(s.byId[id]);
+      const byId: Record<string, UploadedImage> = {};
+      const order: string[] = [];
+      for (const img of newImages) {
+        byId[img.id] = img;
+        order.push(img.id);
+      }
+      return { byId, order };
+    });
+    stitchCacheRef.current.forEach((v) => releaseObjectURL(v.url));
+    stitchCacheRef.current.clear();
+    setSelectedImageId(newSelectedId ?? newImages[0]?.id ?? null);
+    setSelectedRegionId(null);
+  }, []);
+
   // --- HISTORY ACTIONS ---
 
   const handleApplyResultAsOriginal = useCallback((imageId: string, stitchedUrl: string) => {
@@ -476,6 +502,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage,
-    getStitchedUrl
+    getStitchedUrl,
+    replaceStore
   };
 }

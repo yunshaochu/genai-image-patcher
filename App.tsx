@@ -10,6 +10,7 @@ import { downloadImagesAsZip } from './services/downloadZip';
 // Type-only: mixing an interface into a value import makes the dev server emit a
 // runtime import for a name that does not exist ('does not provide an export named …').
 import type { ResolvedResultUrl } from './services/downloadZip';
+import { downloadWorkStateZip, readWorkStateZip } from './services/workStateTransfer';
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
@@ -55,7 +56,8 @@ export default function App() {
     handleApplyResultAsOriginal,
     handleUndoImage,
     handleRedoImage,
-    getStitchedUrl
+    getStitchedUrl,
+    replaceStore
   } = useImageManager(config.performanceMode, config.enableSessionPersistence);
 
   // Glossary grown by the translate stage is persisted through the config so it
@@ -106,6 +108,7 @@ export default function App() {
       resyncEditedRegions,
       refreshEditorPatches,
       buildBrushBase,
+      clearEditorCaches,
   } = useMangaEditor({ images, updateImage, config, setErrorMsg });
 
   const [isDragging, setIsDragging] = useState(false);
@@ -124,6 +127,9 @@ export default function App() {
   // Gallery ZIP export (button lives in the sidebar header, the work is here
   // because it needs the same result-URL resolver as Download / Apply).
   const [isZipping, setIsZipping] = useState(false);
+  // Whole-work-state pack / restore (gallery + editing session + settings).
+  const [workStateBusy, setWorkStateBusy] = useState(false);
+  const [workStateStatus, setWorkStateStatus] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
 
   const [transModels, setTransModels] = useState<string[]>([]);
 
@@ -536,6 +542,70 @@ export default function App() {
       }
   }, [images, resolveResultUrl, setErrorMsg]);
 
+  /**
+   * Whole-work-state export: the gallery, every image's editing state (regions,
+   * AI patches, editor text/erase/brush layers, history-relevant blobs) and the
+   * settings, as one ZIP. Unlike the IndexedDB session mirror this file is
+   * portable — import it later (or on another machine) to restore everything.
+   */
+  const handleExportWorkState = useCallback(async () => {
+      if (images.length === 0) return;
+      setWorkStateBusy(true);
+      setWorkStateStatus(null);
+      try {
+          const name = await downloadWorkStateZip(images, selectedImageId, config);
+          setWorkStateStatus({ text: t(config.language, 'workStateExported', { name }), tone: 'ok' });
+      } catch (e: any) {
+          console.error("Work state export failed", e);
+          setWorkStateStatus({
+              text: t(config.language, 'workStateExportFailed', { reason: e?.message || '' }),
+              tone: 'warn',
+          });
+      } finally {
+          setWorkStateBusy(false);
+      }
+  }, [images, selectedImageId, config]);
+
+  /** Restore a previously exported work-state ZIP: replaces the gallery and
+   *  merges the packaged settings (validated — see workStateTransfer.ts). */
+  const handleImportWorkState = useCallback(async (file: File) => {
+      setWorkStateBusy(true);
+      setWorkStateStatus(null);
+      try {
+          const outcome = await readWorkStateZip(file, config);
+          if (outcome.status === 'error') {
+              const errorKey = outcome.error === 'not-a-zip'
+                  ? 'workStateErrNotZip'
+                  : outcome.error === 'bad-manifest'
+                      ? 'workStateErrBadManifest'
+                      : outcome.error === 'version-unsupported'
+                          ? 'workStateErrVersion'
+                          : 'workStateErrEmpty';
+              setWorkStateStatus({ text: t(config.language, errorKey), tone: 'warn' });
+              return;
+          }
+          // Editor caches are keyed by region geometry only — dropping them
+          // keeps a restored region from reusing a base erased for another one.
+          clearEditorCaches();
+          replaceStore(outcome.images, outcome.selectedImageId);
+          if (outcome.config) setConfig(outcome.config);
+          setWorkStateStatus({
+              text: outcome.configAppliedCount > 0
+                  ? t(config.language, 'workStateImportedWithConfig', { count: outcome.images.length, settings: outcome.configAppliedCount })
+                  : t(config.language, 'workStateImported', { count: outcome.images.length }),
+              tone: 'ok',
+          });
+      } catch (e: any) {
+          console.error("Work state import failed", e);
+          setWorkStateStatus({
+              text: t(config.language, 'workStateImportFailed', { reason: e?.message || '' }),
+              tone: 'warn',
+          });
+      } finally {
+          setWorkStateBusy(false);
+      }
+  }, [config, replaceStore, setConfig, clearEditorCaches]);
+
   // ON-DEMAND STITCHING for Apply — scope-aware. 全部 applies every image that
   // HAS a result; untouched images are skipped on purpose: applying one would
   // clear its regions and push a history entry for a picture that would look
@@ -711,6 +781,10 @@ export default function App() {
         onOpenPayloadInspector={sidebarOnOpenPayloadInspector}
         onDownloadAllZip={handleDownloadAllZip}
         isZipping={isZipping}
+        onExportWorkState={handleExportWorkState}
+        onImportWorkState={handleImportWorkState}
+        workStateBusy={workStateBusy}
+        workStateStatus={workStateStatus}
         uploadProgress={uploadProgress}
         clearHighlight={clearHighlight}
         setClearHighlight={setClearHighlight}
