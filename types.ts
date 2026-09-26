@@ -109,10 +109,6 @@ export interface Region {
    *  「涂白 text_free 并解冻」action, which is what makes its reverse
    *  (「再次冻结」) able to recognise its own output. */
   editorWhitedOut?: boolean;
-  /** The user froze / unfroze THIS box explicitly from the dock. Page-wide
-   *  shortcuts (涂白 text_free 并解冻 / 再次冻结) skip such boxes — an explicit
-   *  manual decision must not be overridden by a batch quick fix. */
-  freezeManual?: boolean;
   /** Set when a completed AI-redrawn bubble (generationRegionSource='bubble')
    *  fully contains this text region: the bubble's patch already wiped the
    *  original text, so the region's base is clean. Effects:

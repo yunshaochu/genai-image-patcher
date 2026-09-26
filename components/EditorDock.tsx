@@ -60,8 +60,15 @@ interface EditorDockProps {
   onFreeze: (regionId: string) => void;
   /** Batch quick-fix for frozen text_free: whiten the box + typeset. */
   onWhitenFrozenTextFree: () => void;
+  /** Scope「所有图片」variant: same whiten over every loaded image. */
+  onWhitenFrozenTextFreeAll: () => void;
   /** Its reverse: re-freeze the boxes that quick-fix whitened. */
   onRefreezeWhitedTextFree: () => void;
+  /** Scope「所有图片」variant of the reverse. */
+  onRefreezeWhitedTextFreeAll: () => void;
+  /** Roll the most recent whiten / re-freeze quick-fix back (0 = nothing to undo). */
+  onUndoFreezeFix: () => void;
+  freezeUndoDepth: number;
   /** One-click reveal of every frozen translation sitting on an AI bubble base. */
   onRevealAiBase: () => void;
   /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
@@ -669,7 +676,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onOcrAll, onTranslate, onTranslateAll,
   translating, translatingImageId, onStopTranslate,
-  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRefreezeWhitedTextFree, onRevealAiBase,
+  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onWhitenFrozenTextFreeAll,
+  onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
+  onUndoFreezeFix, freezeUndoDepth, onRevealAiBase,
   onDownload, onApplyAsOriginal,
 }) => {
   const lang = config.language;
@@ -680,12 +689,19 @@ const EditorDock: React.FC<EditorDockProps> = ({
   /** 原图吸管面板是否展开（选中的框一变就收起）。 */
   const [pickColorOpen, setPickColorOpen] = useState(false);
   /** Batch scope of the no-selection actions: the current image only, or every
-   *  loaded image (erase / restore / translate all respect it). */
+   *  loaded image (erase / restore / translate / 涂白 all respect it). */
   const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
+  /** Two-click arm for the 涂白 / 再次冻结 quick-fix when 作用范围 is 「所有图片」
+   *  — same guard as the gallery's 清空 button, since a mis-click there rewrites
+   *  every page at once. */
+  const [whitenConfirm, setWhitenConfirm] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
   }, [collapsed]);
+
+  // Switching scope re-arms the confirmation: 「所有图片」must be confirmed again.
+  useEffect(() => { setWhitenConfirm(false); }, [imageScope]);
 
   const editableRegions = image.regions.filter(r => !r.contextOnly);
   const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
@@ -753,21 +769,26 @@ const EditorDock: React.FC<EditorDockProps> = ({
     // Editable but untranslatable → everything is already translated/frozen.
     const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
     const allTranslated = editableCount > 0 && translateTargetCount === 0;
+    // Whiten quick-fix scope: the current image, or every loaded image when 作用
+    // 范围 is 「所有图片」. Counts cover the SAME set the button will rewrite, so
+    // the (n) badge never lies.
+    const scopedImages = imageScope === 'all' ? images : [image];
     // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
-    // Boxes the user froze / unfroze by hand are left alone (freezeManual): an
-    // explicit per-box decision outranks a page-wide shortcut.
-    const frozenFreeCount = image.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
+    // Boxes the user froze / unfroze by hand are included: the quick fix is a
+    // page-wide batch (the undo button below is the safety net).
+    const frozenFreeCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) &&
       r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
-    ).length;
+    ).length, 0);
     // The reverse direction: text_free boxes this quick-fix whitened and
     // unfroze earlier (editorWhitedOut is only ever set by it).
-    const whitedFreeCount = image.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) && !r.freezeManual &&
+    const whitedFreeCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) &&
       r.detectedClass === 'text_free' && !!r.editorWhitedOut && !!r.editorText?.trim()
-    ).length;
+    ).length, 0);
     // One button, two directions: 涂白解冻 when there is anything still frozen,
-    // otherwise 再次冻结 undoes what the button did before.
+    // otherwise 再次冻结 undoes what the button did before. The direction is
+    // decided over the WHOLE scope, so a batch run never mixes directions.
     const whitenDirection = frozenFreeCount > 0;
     const whitenCount = whitenDirection ? frozenFreeCount : whitedFreeCount;
     // Frozen translations held back on AI-redrawn bubble bases — the
@@ -782,6 +803,23 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const runRestore = (scope: RestoreScope) =>
       imageScope === 'all' ? onRestoreEraseAllImages(scope) : onRestoreErase(scope);
     const runTranslate = () => (imageScope === 'all' ? onTranslateAll() : onTranslate());
+    // 涂白 / 再次冻结 over the whole scope. On 「所有图片」it is destructive and
+    // hard to eyeball, so it arms first and runs on the second click (3 s
+    // window) — same guard as the gallery's 清空 button.
+    const runWhiten = () => {
+      const isAll = imageScope === 'all';
+      if (isAll && !whitenConfirm) {
+        setWhitenConfirm(true);
+        setTimeout(() => setWhitenConfirm(false), 3000);
+        return;
+      }
+      setWhitenConfirm(false);
+      if (whitenDirection) {
+        isAll ? onWhitenFrozenTextFreeAll() : onWhitenFrozenTextFree();
+      } else {
+        isAll ? onRefreezeWhitedTextFreeAll() : onRefreezeWhitedTextFree();
+      }
+    };
 
     return (
       <aside className="h-full w-[272px] shrink-0 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
@@ -893,13 +931,36 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 </button>
               )}
               <button
-                onClick={whitenDirection ? onWhitenFrozenTextFree : onRefreezeWhitedTextFree}
+                onClick={runWhiten}
                 disabled={busy || whitenCount === 0}
-                className="w-full px-2 py-1.5 text-[10px] font-bold border border-violet-300 text-violet-600 bg-violet-500/10 rounded hover:bg-violet-500/20 disabled:opacity-50 transition-colors"
-                title={whitenDirection ? t(lang, 'editorWhitenFreeTip') : t(lang, 'editorRefreezeFreeTip')}
+                className={`w-full px-2 py-1.5 text-[10px] font-bold rounded transition-colors disabled:opacity-50 ${
+                  whitenConfirm
+                    ? 'border border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
+                    : 'border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20'
+                }`}
+                title={
+                  whitenConfirm
+                    ? t(lang, 'editorWhitenConfirmTip')
+                    : imageScope === 'all'
+                      ? t(lang, 'editorWhitenFreeAllTip')
+                      : whitenDirection ? t(lang, 'editorWhitenFreeTip') : t(lang, 'editorRefreezeFreeTip')
+                }
               >
-                {t(lang, whitenDirection ? 'editorWhitenFree' : 'editorRefreezeFree')}{whitenCount > 0 ? ` (${whitenCount})` : ''}
+                {whitenConfirm
+                  ? t(lang, 'editorConfirmTwice')
+                  : <>{t(lang, whitenDirection ? 'editorWhitenFree' : 'editorRefreezeFree')}{whitenCount > 0 ? ` (${whitenCount})` : ''}</>}
               </button>
+              {freezeUndoDepth > 0 && (
+                <button
+                  onClick={onUndoFreezeFix}
+                  disabled={busy}
+                  className="w-full px-2 py-1.5 text-[10px] font-bold border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
+                  title={t(lang, 'editorUndoFreezeTip')}
+                >
+                  <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
+                  {t(lang, 'editorUndoFreeze')}
+                </button>
+              )}
               <button
                 onClick={onRevealAiBase}
                 disabled={busy || aiBaseFrozenCount === 0}

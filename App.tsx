@@ -97,7 +97,11 @@ export default function App() {
       freezeTranslation,
       resetRegion,
       whitenFrozenTextFree,
+      whitenFrozenTextFreeAllImages,
       refreezeWhitedTextFree,
+      refreezeWhitedTextFreeAllImages,
+      undoFreezeFix,
+      freezeUndoDepth,
       unfreezeAiBubbleRegions,
       resyncEditedRegions,
       refreshEditorPatches,
@@ -929,7 +933,11 @@ export default function App() {
             onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
             onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
             onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
+            onWhitenFrozenTextFreeAll={whitenFrozenTextFreeAllImages}
             onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
+            onRefreezeWhitedTextFreeAll={refreezeWhitedTextFreeAllImages}
+            onUndoFreezeFix={undoFreezeFix}
+            freezeUndoDepth={freezeUndoDepth}
             onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
             onDownload={handleDownload}
             onApplyAsOriginal={handleApplyAsOriginalWrapper}
