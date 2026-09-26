@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppConfig, Region, UploadedImage } from '../types';
+import { AppConfig, Region, UploadedImage, RedrawIntent } from '../types';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { recognizeText } from '../services/detectionService';
 import { translateEditorRegions } from '../services/editorTranslate';
@@ -248,6 +248,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     []
   );
 
+  /** 有效重绘场景：本框覆盖 ?? 全局默认场景（未表态的框走默认）。 */
+  const intentOf = useCallback((r: Region): RedrawIntent =>
+    r.redrawIntent ?? configRef.current.defaultRedrawIntent ?? 'translate', []);
+
   /**
    * Rebuild the region's patch from its editor fields and write the result
    * into processedImageUrl. Completion semantics:
@@ -484,21 +488,44 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [images, recompositeRegion]);
 
-  // AI「擦除」意图完成后，若该框本来就有译文（editorText），要把它排到 AI 抹干净
-  // 的底图上（合成器用 aiErasedBase 作底图并跳过擦除）。每次 (region, patch URL)
-  // 只跑一次，避免 update → effect → recomposite 的自激。
+  // AI「擦除」场景产出干净底图后，编辑器这边自动接手：
+  //  1. 自动解冻 —— 该框若挂着 held-back 译文，把底图已无原文，直接放出来排版
+  //     （不泛洪擦除、不会和图上文字重叠）；
+  //  2. 已有 editorText 的，把文字排到 AI 抹干净的底图上（合成器用 aiErasedBase
+  //     作底图并跳过擦除）。
+  // 每次 (region, patch URL) 只处理一次，避免 update → effect → recomposite 自激；
+  // 也保证用户此后手动重新冻结的决定不会被再次覆盖。
   const erasedBaseCompositedRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     for (const img of images) {
       for (const r of img.regions) {
-        if (!r.aiErasedBase || r.editorComposited) continue;
-        if (!r.editorText?.trim() || !r.processedImageUrl) continue;
+        if (!r.aiErasedBase || !r.processedImageUrl) continue;
         if (erasedBaseCompositedRef.current.get(r.id) === r.processedImageUrl) continue;
+
+        const frozen = r.editorFrozenText?.trim();
+        if (frozen && !r.editorText?.trim()) {
+          erasedBaseCompositedRef.current.set(r.id, r.processedImageUrl);
+          const next: Region = {
+            ...r,
+            editorText: frozen,
+            editorFrozenText: undefined,
+            // 底图是 AI 擦出来的干净图，不需要再泛洪擦除。
+            editorErased: false,
+          };
+          updateImage(img.id, current => ({
+            ...current,
+            regions: current.regions.map(x => (x.id === r.id ? next : x)),
+          }));
+          void recompositeRegion(img.id, r.id, next);
+          continue;
+        }
+
+        if (r.editorComposited || !r.editorText?.trim()) continue;
         erasedBaseCompositedRef.current.set(r.id, r.processedImageUrl);
         void recompositeRegion(img.id, r.id);
       }
     }
-  }, [images, recompositeRegion]);
+  }, [images, recompositeRegion, updateImage]);
 
   // 气泡框 ⇄ 文字框共享完成状态：气泡内的 text_bubble 全部完成 → 气泡完成；
   // 有一个被重置 → 气泡回到 pending（见 syncBubbleStatuses 的升降级规则）。
@@ -753,10 +780,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       // AI「翻译」意图的完成框也要翻译：译文会 held back（冻结）在编辑器里，不会
       // 和图上 AI 已经画好的中文重叠。其它 AI 独占框（自定义 / 旧版）跳过 ——
       // 它们的内容已经是最终形态。
-      if (isAiOwned(r) && r.redrawIntent !== 'translate') return false;
+      if (isAiOwned(r) && intentOf(r) !== 'translate') return false;
       if (r.editorText?.trim() || r.editorFrozenText?.trim() || r.customTranslation?.trim()) return false;
       return true;
-    }), []);
+    }), [intentOf]);
 
   /** Stop button: aborts the in-flight translation (single page or batch). */
   const stopTranslation = useCallback(() => {
@@ -832,7 +859,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         };
         // AI「翻译」意图已经把这格的中文画进图了：译文一律 held back（冻结），
         // 绝不重新排版 —— 否则会和图上的 AI 文字重叠。
-        const isAiTranslated = r.redrawIntent === 'translate' && r.status === 'completed' && !r.editorComposited;
+        const isAiTranslated = intentOf(r) === 'translate' && r.status === 'completed' && !r.editorComposited;
         if (res.freeze || r.aiBubbleBase || isAiTranslated) {
           // aiBubbleBase forces the frozen landing even when the AI would
           // typeset: the translation is held back (editorFrozenText) so the

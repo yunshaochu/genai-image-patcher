@@ -118,6 +118,14 @@ const mergeProcessedRegions = (
             anchorY: processed.anchorY ?? r.anchorY,
             anchorWidth: processed.anchorWidth ?? r.anchorWidth,
             anchorHeight: processed.anchorHeight ?? r.anchorHeight,
+            // 结果形态标记由管线产出，必须跟着 processed 走，否则会被上面这层
+            // "保留用户字段"的逻辑丢掉，编辑器就会把擦除结果误判成 AI 独占只读：
+            //  - aiErasedBase：AI「擦除」场景产出的干净底图；
+            //  - editorFrozenText：AI「翻译」场景 hold back 的译文。
+            // editorFrozenText 只在管线确实要 hold back（非空）时才覆盖 —— 清空不属于
+            // 管线职责，免得冲掉用户手动冻结的译文。
+            aiErasedBase: processed.aiErasedBase ?? r.aiErasedBase,
+            ...(processed.editorFrozenText?.trim() ? { editorFrozenText: processed.editorFrozenText } : {}),
             // Retry diagnostics — processed.* always wins so we don't lose
             // the latest count/history when a parallel region update races.
             retryCount: processed.retryCount ?? r.retryCount,
@@ -567,8 +575,8 @@ export function useImageProcessor(
                             editorComposited: false,
                             patchMarginX: undefined,
                             patchMarginY: undefined,
-                            // 记录意图：编辑器据此显示 已冻结（翻译）/ 已擦除（擦除）。
-                            redrawIntent: imageIntent,
+                            // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身
+                            // 不写回：它属于用户设置（覆盖 ?? 默认场景），运行时不落库。
                             ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         });
@@ -621,8 +629,7 @@ export function useImageProcessor(
                             anchorY: region.y,
                             anchorWidth: region.width,
                             anchorHeight: region.height,
-                            // 记录意图：编辑器据此显示 已冻结（翻译）/ 已擦除（擦除）。
-                            redrawIntent: imageIntent,
+                            // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。
                             ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         };
@@ -868,7 +875,8 @@ export function useImageProcessor(
                     anchorY: region.y,
                     anchorWidth: region.width,
                     anchorHeight: region.height,
-                    redrawIntent: regionIntentValue,
+                    // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身不写回：
+                    // 它属于用户设置（覆盖 ?? 默认场景），运行时按需推导。
                     ...(regionIntentValue === 'erase' ? { aiErasedBase: true } : {}),
                     ...(regionIntentValue === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                 };

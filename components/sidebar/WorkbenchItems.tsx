@@ -1,6 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region, Language, isRegionPaintable } from '../../types';
+import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable } from '../../types';
+import { defaultRegionPrompt } from '../../hooks/useConfig';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
 import { CopyOutcome, buildWorkbenchPrompt, copyImageAndTextToClipboard, copyTextToClipboard } from '../../services/workbenchCopy';
@@ -58,17 +59,23 @@ const copyButtonClass =
     'flex-1 min-w-0 text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate disabled:opacity-40 disabled:cursor-not-allowed';
 
 /**
- * The intent-specific prompt slot of a region / image. The workbench copies the
- * SAME text the app would send for the box's current redraw intent, so what the
- * user pastes into an external AI matches the in-app run.
+ * The intent-specific prompt text of a region / image — the SAME text the app
+ * would send for the box's current redraw scene, so what the user pastes into
+ * an external AI matches the in-app run.
+ *
+ * The default scene prompt is NOT materialised into the slot (it is shown as a
+ * placeholder), so an empty slot must fall back to it — otherwise the copy
+ * would only carry the global prompt.
  */
 const intentSlotText = (
-    v: { customPrompt?: string; customPromptErase?: string; customPromptFree?: string; redrawIntent?: 'translate' | 'erase' | 'custom' }
+    v: { customPrompt?: string; customPromptErase?: string; customPromptFree?: string; redrawIntent?: RedrawIntent },
+    defaultIntent: RedrawIntent
 ): string => {
-    const intent = v.redrawIntent ?? 'translate';
-    return (intent === 'erase' ? v.customPromptErase
+    const intent = v.redrawIntent ?? defaultIntent ?? 'translate';
+    const slot = (intent === 'erase' ? v.customPromptErase
         : intent === 'custom' ? v.customPromptFree
             : v.customPrompt) ?? '';
+    return slot.trim() || defaultRegionPrompt(intent);
 };
 
 export const FullImageMaskRow: React.FC<{
@@ -82,8 +89,10 @@ export const FullImageMaskRow: React.FC<{
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
   // The whole-image row has no region: the prompt it exports is the global one
-  // plus this image's intent-specific prompt.
-  const promptText = buildWorkbenchPrompt(config, { imagePrompt: intentSlotText(image) });
+  // plus this image's intent-specific prompt (default scene prompt included).
+  const promptText = buildWorkbenchPrompt(config, {
+    imagePrompt: intentSlotText(image, config.defaultRedrawIntent ?? 'translate'),
+  });
 
   useEffect(() => {
     let active = true;
@@ -242,8 +251,10 @@ export const ManualPatchRow: React.FC<{
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
   // Exactly what the app would send for this box: global prompt + this box's
-  // intent-specific prompt.
-  const promptText = buildWorkbenchPrompt(config, { regionPrompt: intentSlotText(region) });
+  // intent-specific prompt (default scene prompt included when the slot is empty).
+  const promptText = buildWorkbenchPrompt(config, {
+    regionPrompt: intentSlotText(region, config.defaultRedrawIntent ?? 'translate'),
+  });
 
   useEffect(() => {
     let active = true;

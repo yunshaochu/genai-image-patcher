@@ -1,4 +1,4 @@
-import { Region } from '../types';
+import { Region, RedrawIntent } from '../types';
 import { loadImage, releaseObjectURL, previewPixelSize } from './imageUtils';
 import { eraseTextInCanvasAuto, EraseKind } from './textErase';
 import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
@@ -283,16 +283,22 @@ export type EditorRegionDisplay = 'completed' | 'erased' | 'frozen' | 'pending';
 /**
  * 由数据推导「这一格在编辑器里显示成什么」。规则（按优先级）：
  *  - 编辑器自己嵌字完成（editorComposited）→ 已完成；
- *  - AI「翻译」意图完成（译文已画进图）→ 已冻结；
- *  - AI「擦除」意图完成（本框底图已干净）→ 已擦除；
+ *  - 有效场景=翻译 且 AI 已完成（译文已画进图）→ 已冻结；
+ *  - 有效场景=擦除 且 AI 已完成（本框底图已干净）→ 已擦除；
  *  - 有 held-back 译文 → 已冻结；
  *  - 已擦除（本地泛洪 / AI 擦除底图）→ 已擦除；
  *  - 其余 completed（手工回填 / 旧版 AI 贴图）→ 已完成。
+ *
+ * `defaultIntent` = 全局默认场景：本框没单独设过红绘场景时按它判定意图。
  */
-export const editorRegionDisplay = (region: Region): EditorRegionDisplay => {
+export const editorRegionDisplay = (
+  region: Region,
+  defaultIntent: RedrawIntent = 'translate'
+): EditorRegionDisplay => {
+  const intent = region.redrawIntent ?? defaultIntent;
   if (region.status === 'completed' && region.editorComposited) return 'completed';
-  if (region.redrawIntent === 'translate' && region.status === 'completed' && !region.editorComposited) return 'frozen';
-  if (region.redrawIntent === 'erase' && region.aiErasedBase && !region.editorComposited) return 'erased';
+  if (intent === 'translate' && region.status === 'completed' && !region.editorComposited) return 'frozen';
+  if (intent === 'erase' && region.aiErasedBase && !region.editorComposited) return 'erased';
   if (region.editorFrozenText?.trim()) return 'frozen';
   if (region.editorErased || region.aiErasedBase) return 'erased';
   if (region.status === 'completed') return 'completed';

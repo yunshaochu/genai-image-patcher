@@ -1075,7 +1075,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
         {(() => {
           // 显示态由数据推导（AI 意图 + 编辑器字段）：翻译→已冻结 / 擦除→已擦除 /
           // 嵌字完成→已完成。和画布上的徽标共用同一条规则。
-          const display = editorRegionDisplay(region);
+          const display = editorRegionDisplay(region, config.defaultRedrawIntent ?? 'translate');
           if (display === 'completed') {
             return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">{t(lang, 'status_completed')}</span>;
           }

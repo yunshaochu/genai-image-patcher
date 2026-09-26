@@ -33,7 +33,10 @@ const LEGACY_DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文�
 export const DEFAULT_TRANSLATE_REGION_PROMPT = `请用中文翻译替换掉图里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。`;
 
 /** 「擦除」tab 的选区默认提示词（物化进 customPromptErase）。 */
-export const DEFAULT_ERASE_REGION_PROMPT = `把图中文字完整擦除，恢复成干净的背景/气泡底色，不要添加任何新文字（尤其不要写中文），气泡边框与画面内容保持原样。`;
+export const DEFAULT_ERASE_REGION_PROMPT = `把图中文字完整擦除，不要添加任何新文字（尤其不要写中文）。
+1. 原图里有气泡的：保留气泡的边框和底色，只擦掉里面的文字。
+2. 原图里没有气泡的：直接把文字擦成干净的背景，绝对不要凭空新增一个气泡或边框。
+3. 网点、渐变、人物、景物等画面内容保持原样。`;
 
 /** 意图对应的选区默认提示词。'custom' 没有默认值（空 = 只带全局不变量）。 */
 export const defaultRegionPrompt = (intent: RedrawIntent): string =>
