@@ -89,6 +89,45 @@ def _flat_seeds_center(gray, max_seeds=5):
     return seeds
 
 
+# 描边判定的最小亮度差：描边色与底色至少差这么多才算「一圈描边」，
+# 低于这个量级就当作底色自身的渐变/网点噪声，不做额外处理。
+_OUTLINE_MIN_DELTA = 12
+
+
+def _outline_mask(gray, allowed, text, med, dark_text, dl):
+    """文字描边（黑边/白边）掩码：文字与底色之间那一圈过渡色的连通区。
+
+    宽描边会被 flood fill 吞掉 —— 描边色和底色只差几十灰度时同一个容差能
+    一口气爬过去（此时描边并进 R），容差差一点时描边反倒整块成了「洞」。
+    两种情况下「洞」里都只剩笔画本身，inpaint 修笔画时采样边界正好落在描边
+    上，就补出一团描边色（白字擦完成白团）。所以这里在 allowed（= ~ext）
+    里找描边，不管它有没有被并进 R。
+
+    描边是给文字加对比用的，必然落在底色的另一侧：底色亮、文字暗，描边就亮
+    （黑字配白边）；底色暗、文字亮，描边就暗。所以只从文字出发，沿「与文字
+    反向偏离底色」的像素连通扩张 —— 不会顺着底色自己的渐变漏满整个气泡，
+    也不会啃到气泡描边/框外画面。
+    """
+    side = 1.0 if dark_text else -1.0
+    delta = (gray.astype(np.float32) - float(med)) * side
+    cand = allowed & (delta > _OUTLINE_MIN_DELTA)
+    if not cand.any():
+        return np.zeros_like(text)
+
+    # 起点：文字外扩 dl 圈（跨过笔画边缘的抗锯齿过渡带，落到描边上）里的候选像素
+    k = np.ones((max(3, dl * 2 + 1),) * 2, np.uint8)
+    seed = cand & (cv2.dilate(text.astype(np.uint8), k) > 0)
+    if not seed.any():
+        return np.zeros_like(text)
+
+    # 与文字相连的那几块候选区就是描边；远处各自连通的候选区（底色渐变而已）不动
+    num, labels = cv2.connectedComponents(cand.astype(np.uint8), connectivity=8)
+    hit = np.zeros(num, bool)
+    hit[np.unique(labels[seed])] = True
+    hit[0] = False
+    return hit[labels]
+
+
 def _bgr_to_hex(bgr):
     """BGR 三元组 → '#rrggbb'（前端 CSS 直接用）。"""
     b, g, r = (int(v) for v in bgr[:3])
@@ -127,7 +166,8 @@ def _measure_text_stats(bgr_roi, text, R, dark_text):
 
 
 def _inpaint_holes(bgr_roi, gray, R, dl, rad):
-    """文字 = R 的洞 ∩ 与底色差异大；inpaint 两轮，掩码不越 ext（描边/外部）。
+    """文字 = R 的洞 ∩ 与底色差异大，再并上文字描边（见 _outline_mask）；
+    inpaint 两轮，掩码不越 ext（气泡描边/框外画面）。
 
     返回 `(擦除后的 ROI, stats)`；stats 是这次的取色量测（没找到文字时为 None），
     量测必须在 inpaint 之前做 —— inpaint 之后笔画像素就没了。
@@ -151,15 +191,19 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
 
     stats = _measure_text_stats(bgr_roi, text, R, dark_text)
 
-    # 掩码膨胀抓抗锯齿边，但被 ext 挡住（不啃描边、不越界到邻气泡）
-    m = cv2.dilate(text.astype(np.uint8),
+    # 文字 + 描边一起擦：只擦笔画的话，inpaint 的采样边界正好落在宽描边上，
+    # 补出来的是描边色（白团）；描边掩码只往"与文字反向偏离底色"的方向长。
+    erase_src = text | _outline_mask(gray, ~ext, text, med, dark_text, dl)
+
+    # 掩码膨胀抓抗锯齿边，但被 ext 挡住（不啃气泡描边、不越界到邻气泡）
+    m = cv2.dilate(erase_src.astype(np.uint8),
                    np.ones((dl * 2 + 1, dl * 2 + 1), np.uint8))
     m = (m > 0) & (~ext)
     roi = cv2.inpaint(bgr_roi, (m.astype(np.uint8)) * 255, rad, cv2.INPAINT_TELEA)
 
     # 二轮：清文字附近的浅残留（同样不越 ext）
     g2 = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    near = cv2.dilate(text.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    near = cv2.dilate(erase_src.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
     if dark_text:
         residue = near & (g2 < med - 35) & (~ext)
     else:
