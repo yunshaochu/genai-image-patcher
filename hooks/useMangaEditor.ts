@@ -429,6 +429,23 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [images, recompositeRegion]);
 
   /**
+   * Drop a region's cached erased base (the blob URL + the decoded copy).
+   *
+   * The cache is only advisory: it invalidates on geometry / original-vs-AI-base
+   * change, so it must be dropped EXPLICITLY when the user takes an erasure back
+   * — otherwise re-erasing the same box would silently reuse the stale result
+   * and never ask the backend again (a backend algorithm update or a residue-y
+   * pass would stay on screen forever).
+   */
+  const dropErasedCache = useCallback((regionId: string) => {
+    const entry = erasedCacheRef.current.get(regionId);
+    if (entry) {
+      releaseObjectURL(entry.url);
+      erasedCacheRef.current.delete(regionId);
+    }
+  }, []);
+
+  /**
    * Merge editor field updates into a region and schedule a recomposite.
    *
    * `opts.debounceMs` overrides the wait before that recomposite: typing wants
@@ -444,6 +461,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   ) => {
     const target = getImage(imageId)?.regions.find(r => r.id === regionId);
     if (target && isAiOwned(target)) return;
+    // 撤回擦除（editorErased: false）—— 这一版擦除结果不要了，缓存一并丢弃，
+    // 之后再点擦除就会重新请求后端。缓存不能等几何变化才失效，见上。
+    if (updates.editorErased === false) dropErasedCache(regionId);
     // The region as it will look once this update commits. It is handed to
     // scheduleRecomposite because the leading-edge composite may run before
     // React commits, and reading the store back at that point would compose the
@@ -454,7 +474,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       regions: img.regions.map(r => (r.id === regionId ? mergeEditorUpdates(r, updates) : r)),
     }));
     scheduleRecomposite(imageId, regionId, opts?.debounceMs, nextRegion);
-  }, [getImage, updateImage, scheduleRecomposite]);
+  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache]);
 
   /**
    * Replace (or clear) the brush-stroke layer of a region.
@@ -571,6 +591,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     });
     if (targets.length === 0) return;
 
+    // 撤回擦除 = 这份结果不要了，缓存一并丢弃（见 dropErasedCache）：
+    // 之后再点擦除会重新请求后端，而不是复用旧结果。
+    targets.forEach(t => dropErasedCache(t.id));
+
     const ids = new Set(targets.map(t => t.id));
     updateImage(imageId, current => ({
       ...current,
@@ -581,7 +605,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     for (const t of targets) {
       await recompositeRegion(imageId, t.id, { ...t, editorErased: false });
     }
-  }, [getImage, recompositeRegion, updateImage]);
+  }, [getImage, recompositeRegion, updateImage, dropErasedCache]);
 
   /** Undo erasure on the current image. */
   const restoreErase = useCallback(async (
@@ -613,18 +637,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   /** Drop the per-region erase cache + any pending composite (region deleted). */
   const dropRegionCache = useCallback((imageId: string, regionId: string) => {
-    const entry = erasedCacheRef.current.get(regionId);
-    if (entry) {
-      releaseObjectURL(entry.url);
-      erasedCacheRef.current.delete(regionId);
-    }
+    dropErasedCache(regionId);
     const key = `${imageId}|${regionId}`;
     const timer = debounceRef.current.get(key);
     if (timer) {
       clearTimeout(timer);
       debounceRef.current.delete(key);
     }
-  }, []);
+  }, [dropErasedCache]);
 
   /**
    * Translate-target picker: every editable text region (text_bubble +
