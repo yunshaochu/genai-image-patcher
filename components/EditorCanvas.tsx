@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, isRegionPaintable } from '../types';
+import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, RedrawIntent, isRegionPaintable } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
@@ -42,6 +42,8 @@ interface EditorCanvasProps {
    *  generationRegionSource. Default 'editor' preserves historical behavior. */
   regionDisplay?: 'editor' | 'generation';
   generationRegionSource?: GenerationRegionSource;
+  /** 全局默认重绘场景：框没单独设过场景时，编辑器的显示态（已冻结/已擦除）按它判定。 */
+  defaultRedrawIntent?: RedrawIntent;
   /**
    * Editor workflow only. When provided, Ctrl+wheel with the cursor over the
    * SELECTED box steps its font size by `delta` px (passed as ±5) instead of
@@ -105,6 +107,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     showRetryDiagnostics = false,
     regionDisplay = 'editor',
     generationRegionSource = 'text',
+    defaultRedrawIntent = 'translate',
     onStepSelectedFontSize,
     allowPatchOverflow = false,
     onResetRegion,
@@ -913,7 +916,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                      // Editor mode: colour the box by its derived display, so an
                      // AI「擦除」box reads blue (已擦除) and an AI「翻译」box reads
                      // violet (已冻结) instead of the generic green "completed".
-                     const display = isEditMode ? editorRegionDisplay(region) : 'completed';
+                     const display = isEditMode ? editorRegionDisplay(region, defaultRedrawIntent) : 'completed';
                      styleClasses = display === 'frozen'
                        ? (isSelected
                            ? 'border-2 border-violet-500 bg-violet-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#8b5cf6] z-30 cursor-move'
@@ -967,6 +970,43 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               transform: `translate(-50%, -50%) scale(${invZoom})`,
               transformOrigin: 'center',
             });
+
+            // Status badge placement. The badge must never cover the text it sits
+            // over, so it hangs OUTSIDE the box and only drops into the corner when
+            // the box all but fills the image — same strategy (above → below →
+            // right → left) as the numbered badges drawn by buildAnnotatedImage
+            // (services/editorTranslate.ts) for editor whole-page translation.
+            const badgePlacement = (() => {
+              const rx = (x / 100) * imgW;
+              const ry = (y / 100) * imgH;
+              const rw = (width / 100) * imgW;
+              const rh = (height / 100) * imgH;
+              // The badge keeps a constant SCREEN size (scale(invZoom)); measured
+              // in the image's own pixel space it therefore shrinks by invZoom.
+              // Over-estimated on purpose so a tight box still prefers the outside.
+              const bw = 40 * invZoom;
+              const bh = 16 * invZoom;
+              if (ry - bh >= 0) return 'above' as const;
+              if (ry + rh + bh <= imgH) return 'below' as const;
+              if (rx + rw + bw <= imgW) return 'right' as const;
+              if (rx - bw >= 0) return 'left' as const;
+              return 'inside' as const;
+            })();
+            const badgeGap = 2 * invZoom;
+            const badgeStyle = (): React.CSSProperties => {
+              switch (badgePlacement) {
+                case 'above':
+                  return { bottom: `calc(100% + ${badgeGap}px)`, left: 0, transform: `scale(${invZoom})`, transformOrigin: 'bottom left' };
+                case 'below':
+                  return { top: `calc(100% + ${badgeGap}px)`, left: 0, transform: `scale(${invZoom})`, transformOrigin: 'top left' };
+                case 'right':
+                  return { left: `calc(100% + ${badgeGap}px)`, top: 0, transform: `scale(${invZoom})`, transformOrigin: 'top left' };
+                case 'left':
+                  return { right: `calc(100% + ${badgeGap}px)`, top: 0, transform: `scale(${invZoom})`, transformOrigin: 'top right' };
+                default:
+                  return { top: badgeGap, left: badgeGap, transform: `scale(${invZoom})`, transformOrigin: 'top left' };
+              }
+            };
 
             return (
               <div
@@ -1143,7 +1183,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                     (已完成 / 已擦除 / 已冻结 — see editorRegionDisplay), so the
                     three AI-result shapes (翻译/擦除/自定义) each read correctly;
                     in-flight / failed still show their own status. Generation
-                    mode keeps the plain status badge. */}
+                    mode keeps the plain status badge. Positioned OUTSIDE the box
+                    (see badgeStyle) so it never covers the text underneath. */}
                 {boxesInteractive && !isManipulating && (() => {
                   if (region.status === 'processing' || region.status === 'failed') {
                     return (
@@ -1153,12 +1194,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                             ? 'bg-amber-100/90 text-amber-700 border-amber-200'
                             : 'bg-rose-100/90 text-rose-700 border-rose-200'
                         }`}
-                        style={{
-                          top: 2 * invZoom,
-                          left: 2 * invZoom,
-                          transform: `scale(${invZoom})`,
-                          transformOrigin: 'top left',
-                        }}
+                        style={badgeStyle()}
                       >
                         {t(language, `status_${region.status}` as any)}
                         {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (
@@ -1168,7 +1204,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                     );
                   }
                   const display = isEditMode
-                    ? editorRegionDisplay(region)
+                    ? editorRegionDisplay(region, defaultRedrawIntent)
                     : (region.status === 'completed' ? 'completed' as const : 'pending' as const);
                   if (display === 'pending') return null;
                   const cls = display === 'completed'
@@ -1182,12 +1218,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   return (
                     <div
                       className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${cls}`}
-                      style={{
-                        top: 2 * invZoom,
-                        left: 2 * invZoom,
-                        transform: `scale(${invZoom})`,
-                        transformOrigin: 'top left',
-                      }}
+                      style={badgeStyle()}
                     >
                       {t(language, labelKey as any)}
                     </div>
