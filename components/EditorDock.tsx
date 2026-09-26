@@ -392,6 +392,179 @@ const BrushPainter: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
+// 原图吸管（字色从「未被编辑」的源图取）
+// ---------------------------------------------------------------------------
+
+/** 取样画布的长边上限：只是取色，颜色不随缩放变化，没必要为一个大框铺满整张原图。 */
+const PICK_MAX_PX = 1024;
+/** 放大镜：source 邻域 = 64/8 = 8px（原图裁剪像素）。 */
+const LOUPE_ZOOM = 8;
+const LOUPE_SIZE = 64;
+
+/**
+ * 从**原图**吸取文字颜色。
+ *
+ * 为什么不在画布上取：编辑标签页显示的底图上面盖着「已擦除 / 已嵌字」的贴图，
+ * 文字像素早被抹掉了，在渲染结果上点只会点到气泡底色。而区域框对应的原图裁剪
+ * 始终还在（UploadedImage.originalUrl 是未被编辑的源文件），在它上面取色既拿得到
+ * 真实墨色，也看得见文字 —— 用户才知道该点哪儿。
+ *
+ * 放大镜把指针周围的像素 8× 铺开、中间套一个 1px 方框标出「会取走哪一颗」，
+ * 免得在细笔画上点偏。
+ */
+const OriginalColorPicker: React.FC<{
+  region: Region;
+  image: UploadedImage;
+  lang: 'zh' | 'en';
+  onPick: (hex: string) => void;
+}> = ({ region, image, lang, onPick }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const loupeRef = useRef<HTMLCanvasElement>(null);
+  /** 原图裁剪（离屏 canvas，1:1 像素）。取色只读它，与显示尺寸/DPR 无关。 */
+  const cropRef = useRef<HTMLCanvasElement | null>(null);
+  const [ready, setReady] = useState(false);
+  const [hover, setHover] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setReady(false);
+    (async () => {
+      try {
+        const img = await loadImage(image.originalUrl);
+        const iw = img.naturalWidth;
+        const ih = img.naturalHeight;
+        const x = Math.max(0, Math.floor((region.x / 100) * iw));
+        const y = Math.max(0, Math.floor((region.y / 100) * ih));
+        const w = Math.max(1, Math.min(iw - x, Math.round((region.width / 100) * iw)));
+        const h = Math.max(1, Math.min(ih - y, Math.round((region.height / 100) * ih)));
+        const scale = Math.min(1, PICK_MAX_PX / Math.max(w, h));
+        const cw = Math.max(1, Math.round(w * scale));
+        const ch = Math.max(1, Math.round(h * scale));
+        const crop = document.createElement('canvas');
+        crop.width = cw;
+        crop.height = ch;
+        const cctx = crop.getContext('2d');
+        if (!cctx) return;
+        cctx.drawImage(img, x, y, w, h, 0, 0, cw, ch);
+        if (!active) return;
+        cropRef.current = crop;
+        setReady(true);
+      } catch (e) {
+        console.error('Failed to load the original image for the colour picker', e);
+      }
+    })();
+    return () => { active = false; };
+  }, [image.originalUrl, region.x, region.y, region.width, region.height]);
+
+  // 把裁剪图铺到显示 canvas 上。
+  //
+  // 必须单独一个 effect：ready=false 时渲染的是 loading 骨架，`<canvas>` 还不存在
+  // ——在加载的 effect 里直接画会被 canvasRef.current === null 静默跳过，等 ready
+  // 翻过来 canvas 才挂上，尺寸停在默认的 300×150 且全透明（只看得见棋盘格底）。
+  // 取色读的是离屏 cropRef，不受这里影响；这一笔纯粹是让人看得见。
+  useEffect(() => {
+    const crop = cropRef.current;
+    const display = canvasRef.current;
+    if (!ready || !crop || !display) return;
+    display.width = crop.width;
+    display.height = crop.height;
+    display.getContext('2d')?.drawImage(crop, 0, 0);
+  }, [ready]);
+
+  /** 指针位置 → 原图裁剪里的像素坐标 + 该点颜色；越界返回 null。 */
+  const sampleAt = (e: { clientX: number; clientY: number }) => {
+    const crop = cropRef.current;
+    const display = canvasRef.current;
+    if (!crop || !display) return null;
+    const rect = display.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const px = Math.floor(((e.clientX - rect.left) / rect.width) * crop.width);
+    const py = Math.floor(((e.clientY - rect.top) / rect.height) * crop.height);
+    if (px < 0 || py < 0 || px >= crop.width || py >= crop.height) return null;
+    const d = crop.getContext('2d')?.getImageData(px, py, 1, 1).data;
+    if (!d) return null;
+    const hex = '#' + [d[0], d[1], d[2]].map(v => v.toString(16).padStart(2, '0')).join('');
+    return { px, py, hex };
+  };
+
+  const handleMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const s = sampleAt(e);
+    if (!s) {
+      setHover(null);
+      return;
+    }
+    setHover(s.hex);
+    const crop = cropRef.current;
+    const loupe = loupeRef.current;
+    const lctx = loupe?.getContext('2d');
+    if (!crop || !loupe || !lctx) return;
+    const src = LOUPE_SIZE / LOUPE_ZOOM;
+    lctx.imageSmoothingEnabled = false;
+    lctx.clearRect(0, 0, loupe.width, loupe.height);
+    lctx.drawImage(crop, s.px - src / 2, s.py - src / 2, src, src, 0, 0, loupe.width, loupe.height);
+    // 中心方框 = 会被取走的那一颗像素
+    const c = loupe.width / 2 - LOUPE_ZOOM / 2;
+    lctx.imageSmoothingEnabled = true;
+    lctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    lctx.lineWidth = 3;
+    lctx.strokeRect(c, c, LOUPE_ZOOM, LOUPE_ZOOM);
+    lctx.strokeStyle = '#ffffff';
+    lctx.lineWidth = 1;
+    lctx.strokeRect(c, c, LOUPE_ZOOM, LOUPE_ZOOM);
+  };
+
+  const crop = cropRef.current;
+  const aspect = crop ? crop.height / crop.width : 1;
+  const displayW = 232;
+  const displayH = Math.min(240, Math.max(48, Math.round(displayW * aspect)));
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-1">
+        <span className="text-[9px] font-bold text-skin-muted shrink-0">{t(lang, 'editorPickColor')}</span>
+        <span className="text-[9px] text-skin-muted italic truncate" title={t(lang, 'editorPickColorHint')}>
+          {t(lang, 'editorPickColorHint')}
+        </span>
+      </div>
+      <div className="border border-skin-border rounded overflow-hidden bg-checkerboard flex justify-center">
+        {ready ? (
+          <canvas
+            ref={canvasRef}
+            style={{ width: displayW, height: displayH, touchAction: 'none', cursor: 'crosshair' }}
+            onPointerMove={handleMove}
+            onPointerLeave={() => setHover(null)}
+            onClick={(e) => {
+              const s = sampleAt(e);
+              if (s) onPick(s.hex);
+            }}
+          />
+        ) : (
+          <div className="w-full h-16 animate-pulse bg-skin-fill flex items-center justify-center text-[9px] text-skin-muted">
+            {t(lang, 'editorPickColorLoading')}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <canvas
+          ref={loupeRef}
+          width={LOUPE_SIZE}
+          height={LOUPE_SIZE}
+          className="rounded border border-skin-border shrink-0 bg-skin-fill"
+          style={{ width: LOUPE_SIZE, height: LOUPE_SIZE, imageRendering: 'pixelated' }}
+        />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="w-5 h-5 rounded border border-skin-border shrink-0"
+            style={{ backgroundColor: hover ?? 'transparent' }}
+          />
+          <span className="text-[10px] font-mono truncate">{hover ?? '—'}</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Font picker (per-region override of the global 「编辑器字体」)
 // ---------------------------------------------------------------------------
 
@@ -500,6 +673,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
     try { return localStorage.getItem(COLLAPSE_STORAGE_KEY) === '1'; } catch { return false; }
   });
   const [brushOpen, setBrushOpen] = useState(false);
+  /** 原图吸管面板是否展开（选中的框一变就收起）。 */
+  const [pickColorOpen, setPickColorOpen] = useState(false);
   /** Batch scope of the no-selection actions: the current image only, or every
    *  loaded image (erase / restore / translate all respect it). */
   const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
@@ -511,6 +686,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const editableRegions = image.regions.filter(r => !r.contextOnly);
   const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
   const region = idx >= 0 ? editableRegions[idx] : null;
+
+  // 吸管是「这一个框」的工具：换框就收起，免得在上一个框的原图裁剪上取色。
+  useEffect(() => { setPickColorOpen(false); }, [selectedRegionId, image.id]);
 
   // Result gating for the collapsed rail (same rule as the pinned footer, so the
   // icon rail and the footer can never disagree about what is available).
@@ -941,35 +1119,79 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         </div>
 
-        {/* Text colour: auto (AI-chosen / default black) or manual override.
+        {/* Text colour: auto (AI-chosen / measured ink) or manual override.
             The outline auto-derives as the opposite colour and its width
-            scales with the resolved font size. */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorTextColor')}</span>
-          <div className="flex border border-skin-border rounded overflow-hidden">
-            {(['auto', 'black', 'white'] as const).map(v => (
-              <button
-                key={v}
-                onClick={() => onUpdateRegion(region.id, {
-                  editorStyle: v === 'auto'
-                    ? { color: undefined, outlineColor: undefined, outlineWidth: undefined }
-                    : v === 'black'
-                      ? { color: '#000000', outlineColor: '#ffffff', outlineWidth: undefined }
-                      : { color: '#ffffff', outlineColor: '#000000', outlineWidth: undefined },
-                })}
-                disabled={busy || aiLocked}
-                className={`px-2 py-1 text-[9px] font-bold transition-colors ${
-                  (region.editorStyle?.color === '#000000' ? 'black'
-                    : region.editorStyle?.color === '#ffffff' ? 'white'
-                    : 'auto') === v
-                    ? 'bg-skin-primary text-white'
-                    : 'text-skin-muted hover:bg-skin-primary/10'
-                } disabled:opacity-50`}
-              >
-                {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'black' ? 'editorColorBlack' : 'editorColorWhite')}
-              </button>
-            ))}
+            scales with the resolved font size.
+            手动选的会打上 colorSource 'manual' —— 开启「自动取色」时，擦除量到的
+            实测墨色只会覆盖非 manual 的值，所以这里点过的颜色钉得住。 */}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorTextColor')}</span>
+            <div className="flex border border-skin-border rounded overflow-hidden">
+              {(['auto', 'black', 'white'] as const).map(v => (
+                <button
+                  key={v}
+                  onClick={() => onUpdateRegion(region.id, {
+                    editorStyle: v === 'auto'
+                      ? { color: undefined, outlineColor: undefined, outlineWidth: undefined, colorSource: undefined }
+                      : v === 'black'
+                        ? { color: '#000000', outlineColor: '#ffffff', outlineWidth: undefined, colorSource: 'manual' }
+                        : { color: '#ffffff', outlineColor: '#000000', outlineWidth: undefined, colorSource: 'manual' },
+                  })}
+                  disabled={busy || aiLocked}
+                  className={`px-2 py-1 text-[9px] font-bold transition-colors ${
+                    (region.editorStyle?.color === '#000000' ? 'black'
+                      : region.editorStyle?.color === '#ffffff' ? 'white'
+                      : 'auto') === v
+                      ? 'bg-skin-primary text-white'
+                      : 'text-skin-muted hover:bg-skin-primary/10'
+                  } disabled:opacity-50`}
+                >
+                  {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'black' ? 'editorColorBlack' : 'editorColorWhite')}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setPickColorOpen(o => !o)}
+              disabled={busy || aiLocked}
+              title={t(lang, 'editorPickColorTip')}
+              className={`ml-auto px-1.5 py-1 rounded border text-[9px] font-bold transition-colors disabled:opacity-50 ${
+                pickColorOpen
+                  ? 'border-skin-primary text-skin-primary bg-skin-primary/10'
+                  : 'border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary'
+              }`}
+            >
+              {t(lang, 'editorPickColor')}
+            </button>
+            {/* 生效中的字色。三态按钮读不出「自动取色量到的墨色」（既不是纯黑也
+                不是纯白），所以再放一个色块 + 来源说明。 */}
+            <span
+              className="w-4 h-4 rounded border border-skin-border shrink-0"
+              style={{ backgroundColor: region.editorStyle?.color ?? '#000000' }}
+              title={`${region.editorStyle?.color ?? '#000000'} · ${
+                region.editorStyle?.colorSource === 'manual'
+                  ? t(lang, 'editorColorSourceManual')
+                  : t(lang, 'editorColorSourceAuto')
+              }`}
+            />
           </div>
+          {pickColorOpen && (
+            <div className="border border-skin-border rounded-lg p-2 bg-skin-fill/20">
+              <OriginalColorPicker
+                region={region}
+                image={image}
+                lang={lang}
+                onPick={(hex) => {
+                  onUpdateRegion(
+                    region.id,
+                    { editorStyle: { color: hex, outlineColor: undefined, outlineWidth: undefined, colorSource: 'manual' } },
+                    { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+                  );
+                  setPickColorOpen(false);
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Font: follow the global editor font, or override it for this box. */}

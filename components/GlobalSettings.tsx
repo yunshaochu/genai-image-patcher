@@ -391,6 +391,13 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                                 }
                                             />
                                         )}
+                                        {config.enableManualEditor && (
+                                            <SubRow
+                                                title={t(lang, 'editorAutoTextColor')}
+                                                help={t(lang, 'editorAutoTextColorDesc')}
+                                                control={<Toggle size="sm" checked={config.editorAutoTextColor} onChange={(v) => updateConfig('editorAutoTextColor', v)} />}
+                                            />
+                                        )}
                                     </OffDim>
                                 </SettingsCard>
 

@@ -158,12 +158,23 @@ const wrapWithKinsoku = (text: string, fits: (s: string) => boolean): string[] =
   return out;
 };
 
-/** Luminance check for '#rrggbb' colours (used to derive the outline). */
-const isLightHex = (c: string): boolean => {
+/**
+ * 「白字」的判定阈值 —— 黑描边只配白字，其余（黑字、彩字、灰字）一律白描边。
+ *
+ * 不用「偏亮就算白」的 128 阈值：中间调的灰字/彩字配白边才认得出字形，配黑边
+ * 会和深色笔画糊在一起。
+ *
+ * 也不做 `=== '#ffffff'` 的严格相等：自动取色量出来的白字几乎不会正好落在
+ * #ffffff 上（#fdfdfd / #f8f8f8 之类很常见），严格相等会让这些字拿到白边 ——
+ * 白底白边，字直接消失。240 既能吸掉这点噪声，又远高于任何不会被叫作「白」的
+ * 颜色（浅粉 237、浅黄 221、浅灰 #d0d0d0 208 都判为非白）。
+ */
+const WHITE_LUMINANCE = 240;
+const isWhiteHex = (c: string): boolean => {
   const m = /^#?([0-9a-f]{6})$/i.exec(c.trim());
   if (!m) return false;
   const v = parseInt(m[1], 16);
-  return 0.299 * ((v >> 16) & 0xff) + 0.587 * ((v >> 8) & 0xff) + 0.114 * (v & 0xff) >= 128;
+  return 0.299 * ((v >> 16) & 0xff) + 0.587 * ((v >> 8) & 0xff) + 0.114 * (v & 0xff) >= WHITE_LUMINANCE;
 };
 
 const resolveStyle = (
@@ -180,11 +191,10 @@ const resolveStyle = (
   return {
     isVertical,
     color,
-    // Explicit text colour without an explicit outline → opposite colour
-    // (黑字白边，白字黑边); colourless regions keep the legacy default.
-    outlineColor:
-      style?.outlineColor ??
-      (style?.color ? (isLightHex(color) ? '#000000' : '#ffffff') : '#ffffff'),
+    // 没显式给 outlineColor 时按字色推：只有白字配黑边，其余一律白边
+    // （黑字白边、彩字/灰字白边）。显式值优先 —— dock 的黑字/白字按钮和 AI
+    // 颜色模块都按同一条规则写值。
+    outlineColor: style?.outlineColor ?? (isWhiteHex(color) ? '#000000' : '#ffffff'),
     outlineWidth: style?.outlineWidth ?? 0,
     isBold: style?.isBold ?? true,
     // 区域显式指定优先，否则跟随「编辑器字体」全局设置。

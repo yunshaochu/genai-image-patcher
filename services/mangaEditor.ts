@@ -53,6 +53,10 @@ export interface ErasedCacheEntry {
   /** Cached ROI size (px). */
   w: number;
   h: number;
+  /** 擦除时量到的原文墨色 / 底色（后端 /erase 响应头，离线时是本地算法统计）。
+   *  存在缓存条目上是因为同一个几何只会擦一次，但每一版贴图都要用这个颜色。 */
+  textColor?: string;
+  bgColor?: string;
 }
 
 const regionGeomKey = (region: Region): string =>
@@ -239,6 +243,9 @@ export interface CompositeResult {
   url: string;
   /** Resolved font size (also when auto-fit) — shown in the panel as reference. */
   fontSize?: number;
+  /** 本版实际采用的实测墨色（自动取色，且量到了才有的）。调用方把它写回
+   *  region.editorStyle 后，dock 的色块、画笔预览、会话恢复就都跟贴图一致了。 */
+  textColor?: string;
   /** Overflow margin beyond the anchor box, as % of the FULL image size.
    *  The patch canvas extends this far past the crop on every side so text
    *  that overflows the box stays visible (user can then shrink font size). */
@@ -267,6 +274,12 @@ export interface CompositeResult {
  *
  * `contextBubbles` are the image's detected `bubble` boxes; they enlarge the
  * erasure ROI (see `resolveEraseRect`).
+ *
+ * `autoTextColor` (编辑器「自动取色」) lets the ink colour measured by the
+ * eraser drive this layout's text colour instead of the AI's black/white
+ * guess. Skipped when the box's colour was pinned by hand
+ * (`editorStyle.colorSource === 'manual'`), so a hand-picked colour is never
+ * silently replaced. The colour used is reported back on the result.
  */
 export const compositeRegionPatch = async (
   imageEl: HTMLImageElement | HTMLCanvasElement,
@@ -277,6 +290,7 @@ export const compositeRegionPatch = async (
   contextBubbles?: Region[],
   allowMargin = true,
   includeText = true,
+  autoTextColor = false,
   /** Optional stage sink for the editor's recomposite timing instrumentation. */
   onStage?: (stage: string) => void
 ): Promise<CompositeResult | null> => {
@@ -289,9 +303,94 @@ export const compositeRegionPatch = async (
   const cropW = Math.max(1, Math.round((region.width / 100) * imgW));
   const cropH = Math.max(1, Math.round((region.height / 100) * imgH));
 
-  // Layout first: its block bounds decide the overflow margin.
+  // ── 1. Erasure (cached per region+geometry — the expensive step) ──────────
+  // Runs BEFORE the layout: erasing also measures the original ink colour, and
+  // 自动取色 feeds that colour into this very layout (the outline width scales
+  // with the resolved font size, so the colour has to be known first).
   const text = getRegionEditorText(region);
-  const layout = text.trim() ? layoutText(text, cropW, cropH, region.editorStyle, preferVerticalDefault) : null;
+  let erased: {
+    img: HTMLImageElement;
+    sx: number; sy: number; sw: number; sh: number;
+    dx: number; dy: number;
+    /** 本次擦除量到的原文墨色（自动取色用）。 */
+    textColor?: string;
+  } | null = null;
+  if (region.editorErased) {
+    const kind: EraseKind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
+    // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
+    // text box — see resolveEraseRect.
+    const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
+    // The base token keeps erased-ROI caches from crossing bases: a region
+    // erased on the ORIGINAL pixels must not reuse that cache once it is
+    // composited onto an AI-redrawn bubble (aiBubbleBase), and vice versa.
+    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}`;
+    let entry = erasedCache.get(region.id);
+    if (!entry || entry.geomKey !== key) {
+      const eraseCanvas = document.createElement('canvas');
+      eraseCanvas.width = roi.w;
+      eraseCanvas.height = roi.h;
+      const ectx = eraseCanvas.getContext('2d');
+      if (!ectx) throw new Error('Could not get canvas context');
+      ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
+      const outcome = await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
+        kind,
+        dilate: ERASE_DILATE,
+        inpaintRadius: ERASE_INPAINT_RADIUS,
+      });
+      // Keep the erased base LOSSLESS: it is computed once per geometry but
+      // redrawn into every later patch, so a lossy copy would bleed artifacts
+      // into each re-composite.
+      const url = await canvasToObjectURL(eraseCanvas, 'image/png');
+      if (entry) releaseObjectURL(entry.url);
+      entry = {
+        geomKey: key,
+        url,
+        dx: Math.round(cropX - roi.x),
+        dy: Math.round(cropY - roi.y),
+        w: roi.w,
+        h: roi.h,
+        // 取色跟着缓存走：同一个几何只擦一次，之后每一版都要复用同一个墨色。
+        textColor: outcome.stats?.textColor,
+        bgColor: outcome.stats?.bgColor,
+      };
+      erasedCache.set(region.id, entry);
+    }
+    // Decode once per cache entry — every composite redraws this ROI, and a
+    // fresh loadImage() per composite measured ~20 ms.
+    if (!entry.img) entry.img = await loadImage(entry.url);
+    const erasedImg = entry.img;
+    // Paste-back isolation: only the region's own bbox is taken from the
+    // erased ROI (same guard as whiten_regions.py's final `final[y1:y2,x1:x2]
+    // = erased[...]`). Whatever the eraser did outside the box is discarded,
+    // so a leaky flood fill can never damage the outline or a neighbour.
+    const sx = Math.max(0, entry.dx);
+    const sy = Math.max(0, entry.dy);
+    erased = {
+      img: erasedImg,
+      sx,
+      sy,
+      sw: Math.min(cropW, entry.w - sx),
+      sh: Math.min(cropH, entry.h - sy),
+      dx: entry.dx,
+      dy: entry.dy,
+      textColor: entry.textColor,
+    };
+  }
+  onStage?.('erase');
+
+  // 自动取色：开关打开、并且本框字色不是用户手动钉住的（colorSource
+  // 'manual' → dock 黑字/白字、原图吸管）时，用实测墨色取代 AI 猜的「黑/白」。
+  // 量不出来（文字像素太少 / 旧后端 / 离线且本地也没找到字）就什么都不改。
+  const measuredColor =
+    autoTextColor && region.editorStyle?.colorSource !== 'manual'
+      ? erased?.textColor ?? undefined
+      : undefined;
+  const layoutStyle = measuredColor
+    ? { ...region.editorStyle, color: measuredColor, outlineColor: undefined, outlineWidth: undefined }
+    : region.editorStyle;
+
+  // ── 2. Layout: its block bounds decide the overflow margin ────────────────
+  const layout = text.trim() ? layoutText(text, cropW, cropH, layoutStyle, preferVerticalDefault) : null;
 
   let mx = 0;
   let my = 0;
@@ -321,67 +420,15 @@ export const compositeRegionPatch = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
   ctx.drawImage(imageEl, cropX, cropY, cropW, cropH, mx, my, cropW, cropH);
-  onStage?.('base-draw');
-
-  // 1. Erasure (cached per region+geometry — the expensive step)
-  if (region.editorErased) {
-    const kind: EraseKind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
-    // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
-    // text box — see resolveEraseRect.
-    const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
-    // The base token keeps erased-ROI caches from crossing bases: a region
-    // erased on the ORIGINAL pixels must not reuse that cache once it is
-    // composited onto an AI-redrawn bubble (aiBubbleBase), and vice versa.
-    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}`;
-    let entry = erasedCache.get(region.id);
-    if (!entry || entry.geomKey !== key) {
-      const eraseCanvas = document.createElement('canvas');
-      eraseCanvas.width = roi.w;
-      eraseCanvas.height = roi.h;
-      const ectx = eraseCanvas.getContext('2d');
-      if (!ectx) throw new Error('Could not get canvas context');
-      ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
-      await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
-        kind,
-        dilate: ERASE_DILATE,
-        inpaintRadius: ERASE_INPAINT_RADIUS,
-      });
-      // Keep the erased base LOSSLESS: it is computed once per geometry but
-      // redrawn into every later patch, so a lossy copy would bleed artifacts
-      // into each re-composite.
-      const url = await canvasToObjectURL(eraseCanvas, 'image/png');
-      if (entry) releaseObjectURL(entry.url);
-      entry = {
-        geomKey: key,
-        url,
-        dx: Math.round(cropX - roi.x),
-        dy: Math.round(cropY - roi.y),
-        w: roi.w,
-        h: roi.h,
-      };
-      erasedCache.set(region.id, entry);
-    }
-    // Decode once per cache entry — every composite redraws this ROI, and a
-    // fresh loadImage() per composite measured ~20 ms.
-    if (!entry.img) entry.img = await loadImage(entry.url);
-    const erasedImg = entry.img;
-    // Paste-back isolation: only the region's own bbox is taken from the
-    // erased ROI (same guard as whiten_regions.py's final `final[y1:y2,x1:x2]
-    // = erased[...]`). Whatever the eraser did outside the box is discarded,
-    // so a leaky flood fill can never damage the outline or a neighbour.
-    const sx = Math.max(0, entry.dx);
-    const sy = Math.max(0, entry.dy);
-    const sw = Math.min(cropW, entry.w - sx);
-    const sh = Math.min(cropH, entry.h - sy);
-    if (sw > 0 && sh > 0) {
-      ctx.drawImage(
-        erasedImg,
-        sx, sy, sw, sh,
-        mx + Math.max(0, -entry.dx), my + Math.max(0, -entry.dy), sw, sh
-      );
-    }
+  // Paste the erased ROI on top of the base (below whiteout / brush / text).
+  if (erased && erased.sw > 0 && erased.sh > 0) {
+    ctx.drawImage(
+      erased.img,
+      erased.sx, erased.sy, erased.sw, erased.sh,
+      mx + Math.max(0, -erased.dx), my + Math.max(0, -erased.dy), erased.sw, erased.sh
+    );
   }
-  onStage?.('erase');
+  onStage?.('base-draw');
 
   // 1.5 Brute-force whiteout (text_free quick fix: covers the whole crop —
   // complex background included — so typeset text sits on a clean white box)
@@ -420,6 +467,7 @@ export const compositeRegionPatch = async (
   return {
     url,
     fontSize: layout?.style.fontSize,
+    textColor: measuredColor,
     marginXPct: (mx / imgW) * 100,
     marginYPct: (my / imgH) * 100,
   };

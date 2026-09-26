@@ -51,8 +51,14 @@ export const isRegionPaintable = (
 export interface EditorTextStyle {
   fontSize?: number;      // px; undefined = auto-fit to the region box
   isVertical?: boolean;   // undefined = auto heuristic (tall box / global default)
-  color?: string;         // set by the AI colour module / dock 字色 toggle; default '#000000'
-  outlineColor?: string;  // default: opposite of color when color is explicit, else '#ffffff'
+  color?: string;         // set by the AI colour module / dock 字色 toggle / 吸管; default '#000000'
+  /** 字色从哪来：'manual' = 用户手动钉住（dock 黑字/白字、原图吸管），
+   *  'auto' = 机器选的（AI 颜色模块，或擦除时量到的原文墨色）。只在
+   *  editorAutoTextColor 打开时，合成器才会用实测墨色覆盖非 manual 的值，
+   *  所以手动选过的颜色永远不会被悄悄换掉。 */
+  colorSource?: 'manual' | 'auto';
+  /** 描边色。不显式指定时按字色推：白字黑边，其余（黑字/彩字/灰字）白边。 */
+  outlineColor?: string;
   outlineWidth?: number;  // default: auto (fontSize×0.12) when color is explicit, else 0
   isBold?: boolean;       // reserved, default true
   fontFamily?: string;    // this region's font stack; undefined = AppConfig.editorFontFamily (global default)
@@ -279,6 +285,12 @@ export interface AppConfig {
   /** 嵌字默认字体：services/fontService.ts 里的字体 id，'' = 系统默认。
    *  字体文件由 Python 后端首次请求时下载并缓存（server/fonts/），前端按需取用。 */
   editorFontFamily: string;
+
+  /** 自动取色（嵌字）：擦除文字时顺手量出原文墨色（后端 /erase 的响应头，
+   *  后端不可用时用浏览器内置算法的统计值），嵌字直接沿用，不再依赖视觉模型
+   *  猜「黑/白」。量不出来（文字像素太少）时回落到原行为。手动选过的字色
+   *  （dock 黑字/白字、吸管）不受影响 —— 见 EditorTextStyle.colorSource。 */
+  editorAutoTextColor: boolean;
 
   // Logic Switch
   useFullImageMasking: boolean; // Send full image with non-selected areas masked white

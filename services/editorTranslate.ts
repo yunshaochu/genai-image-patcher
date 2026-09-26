@@ -28,7 +28,11 @@ export interface RegionTranslation {
   /** Dominant colour of the ORIGINAL text: near-black → 'black', near-white
    *  → 'white' (coloured text maps to whichever side its luminance is closer
    *  to). The typeset replacement matches it; the outline is auto-derived as
-   *  the opposite colour. */
+   *  the opposite colour.
+   *
+   *  这只是模型看图给的粗判（只有黑白两档）。开着「自动取色」时，擦除阶段量到的
+   *  实测墨色会覆盖它（写回时标记 colorSource 'auto'）；用户手动选过的字色标
+   *  'manual'，两者都不会动。 */
   color?: 'black' | 'white';
   /** Original text direction: true = vertical typesetting, false = horizontal. */
   vertical?: boolean;

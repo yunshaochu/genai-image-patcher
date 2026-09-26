@@ -108,6 +108,7 @@ const DEFAULT_CONFIG: AppConfig = {
   enableManualEditor: true,
   enableVerticalTextDefault: false,
   editorFontFamily: '', // '' = 系统默认字体；其余 id 见 services/fontService.ts
+  editorAutoTextColor: false, // 擦除时量出的原文墨色是否直接用于嵌字
   
   // New Logic Toggle
   useFullImageMasking: false,
@@ -225,6 +226,11 @@ export function useConfig() {
         // Ensure the font auto-detect switch exists (off by default)
         if (typeof migratedConfig.enableFontAutoDetect === 'undefined') {
             migratedConfig.enableFontAutoDetect = false;
+        }
+
+        // Ensure the eraser-measured text colour switch exists (off by default)
+        if (typeof migratedConfig.editorAutoTextColor === 'undefined') {
+            migratedConfig.editorAutoTextColor = false;
         }
 
         // Ensure translation prompt cache slots exist

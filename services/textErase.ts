@@ -34,6 +34,10 @@
  *    the surrounding colours instead of stamping one flat block.
  *    A final residue pass catches faint stroke remnants near the filled area.
  *
+ * 6. 取色（可选，见 EraseStats）：文字掩码本身就是「与底色差异大」的像素，
+ *    也就是墨。量它们的颜色几乎不额外花时间，编辑器「自动取色」用它替代视觉
+ *    模型猜的「黑/白」。后端版走响应头，本文件的兜底版用掩码均值。
+ *
  * Works on a region crop canvas in place. Crops are small (text boxes), so
  * the O(n) pixel loops are fast enough for interactive use.
  */
@@ -57,11 +61,36 @@ const DEFAULT_INPAINT_RADIUS = 7;
 export type EraseKind = 'bubble' | 'free';
 
 /**
+ * 擦除时顺手量到的原文取色结果（「自动取色」用它替代视觉模型猜黑/白）。
+ *
+ * 墨色之所以能量出来，是因为擦除本来就算出了「与底色差异大」的文字掩码 ——
+ * 那些像素就是墨。后端 /erase 把这些值放在响应头里（body 保持 image/png
+ * 二进制）；后端不在线时本地算法用自己分量统计的均值顶上。
+ */
+export interface EraseStats {
+  /** 文字主色 '#rrggbb'。 */
+  textColor?: string;
+  /** 文字所在底色 '#rrggbb'。 */
+  bgColor?: string;
+  /** 文字像素占 ROI 的比例（0~1）：过低说明样本不可靠。 */
+  textRatio?: number;
+}
+
+/** 擦除结果。`ok=false` = 这一路没拿到可用输出（离线/超时/坏响应），调用方
+ *  应换下一路策略；`stats` 只在真的量到文字时才有。 */
+export interface EraseOutcome {
+  ok: boolean;
+  stats?: EraseStats;
+}
+
+/**
  * Erase via the unified Python backend (`POST {base}/erase`, OpenCV
  * flood-fill + TELEA inpaint — the same algorithm this file's local
- * fallback approximates). Returns true when the backend produced a result;
- * on any failure (offline, timeout, bad payload) the caller falls back to
- * the local algorithm.
+ * fallback approximates). `ok=false` on any failure (offline, timeout, bad
+ * payload) and the caller falls back to the local algorithm.
+ *
+ * 后端顺带把实测取色放在响应头（X-Text-Color / X-Bg-Color / X-Text-Ratio）。
+ * 跨域下要读到这些头，后端必须在 CORS 里 expose_headers（见 server/app.py）。
  */
 export const eraseTextInCanvasViaBackend = async (
   canvas: HTMLCanvasElement,
@@ -69,9 +98,9 @@ export const eraseTextInCanvasViaBackend = async (
   kind: EraseKind,
   options: EraseOptions = {},
   timeoutMs = 20000
-): Promise<boolean> => {
+): Promise<EraseOutcome> => {
   const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/png'));
-  if (!blob) return false;
+  if (!blob) return { ok: false };
 
   const form = new FormData();
   form.append('image', blob, 'crop.png');
@@ -88,21 +117,31 @@ export const eraseTextInCanvasViaBackend = async (
       mode: 'cors',
       signal: ctrl.signal,
     });
-    if (!resp.ok) return false;
+    if (!resp.ok) return { ok: false };
     const contentType = resp.headers.get('content-type') || '';
-    if (!contentType.includes('image')) return false;
+    if (!contentType.includes('image')) return { ok: false };
+
+    // 取色元数据（后端在响应头里回带；没有文字 / 旧版后端时为空）
+    const ratio = parseFloat(resp.headers.get('X-Text-Ratio') || '');
+    const rawStats: EraseStats = {
+      textColor: resp.headers.get('X-Text-Color') || undefined,
+      bgColor: resp.headers.get('X-Bg-Color') || undefined,
+      textRatio: Number.isFinite(ratio) ? ratio : undefined,
+    };
+    const stats = rawStats.textColor || rawStats.bgColor ? rawStats : undefined;
+
     const bmp = await createImageBitmap(await resp.blob());
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       bmp.close();
-      return false;
+      return { ok: false, stats };
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
     bmp.close();
-    return true;
+    return { ok: true, stats };
   } catch {
-    return false;
+    return { ok: false };
   } finally {
     clearTimeout(timer);
   }
@@ -110,34 +149,39 @@ export const eraseTextInCanvasViaBackend = async (
 
 /**
  * Smart erase: try the backend first (best quality), fall back to the local
- * pure-frontend algorithm when the backend is unreachable.
+ * pure-frontend algorithm when the backend is unreachable. Either path also
+ * reports the ink colour it measured (see EraseStats).
  */
 export const eraseTextInCanvasAuto = async (
   canvas: HTMLCanvasElement,
   backendBaseUrl: string | undefined,
   kind: EraseKind,
   options: EraseOptions = {}
-): Promise<void> => {
+): Promise<EraseOutcome> => {
   if (backendBaseUrl) {
-    const ok = await eraseTextInCanvasViaBackend(canvas, backendBaseUrl, kind, options);
-    if (ok) return;
+    const res = await eraseTextInCanvasViaBackend(canvas, backendBaseUrl, kind, options);
+    if (res.ok) return res;
     console.warn('Backend erasure unavailable, falling back to local algorithm');
   }
-  eraseTextInCanvas(canvas, { ...options, kind });
+  return { ok: true, stats: eraseTextInCanvas(canvas, { ...options, kind }) ?? undefined };
 };
 
+/**
+ * 本地兜底擦除。返回自己量到的统计值（文字/底色取掩码像素均值）—— 精度不如
+ * 后端的逐通道中位数，但足够撑住「后端不在线时自动取色也不至于完全失效」。
+ */
 export const eraseTextInCanvas = (
   canvas: HTMLCanvasElement,
   options: EraseOptions = {}
-): void => {
+): EraseStats | null => {
   const baseTol = options.tolerance ?? DEFAULT_TOLERANCE;
   const kind = options.kind ?? 'bubble';
   const ctx = canvas.getContext('2d');
-  if (!ctx) return;
+  if (!ctx) return null;
 
   const w = canvas.width;
   const h = canvas.height;
-  if (w < 4 || h < 4) return;
+  if (w < 4 || h < 4) return null;
 
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
@@ -300,7 +344,7 @@ export const eraseTextInCanvas = (
   }
   if (!bg) bg = bestBg!;
   // Practically everything is background → no text to erase.
-  if (bestCount >= n * 0.995) return;
+  if (bestCount >= n * 0.995) return null;
 
   // ---------------------------------------------------------------------
   // Outside pass (Python `ext`): non-background reachable from the border —
@@ -345,7 +389,7 @@ export const eraseTextInCanvas = (
       hasText = true;
     }
   }
-  if (!hasText) return;
+  if (!hasText) return null;
 
   // ---------------------------------------------------------------------
   // Connected components on the text mask → per-component text / adjacent
@@ -506,6 +550,29 @@ export const eraseTextInCanvas = (
     }
   };
 
+  // 统计取色：掩码此时已是最终形态（含边缘膨胀）。均值比后端的中位数糙，
+  // 但边缘膨胀进来的像素本来就"更接近墨色"，均值不会被严重拉偏。
+  const stats: EraseStats = {};
+  {
+    let tr = 0, tg = 0, tb = 0, tn = 0;
+    let br = 0, bg2 = 0, bb = 0, bn = 0;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      if (mask[i] === 1) {
+        tr += data[o]; tg += data[o + 1]; tb += data[o + 2]; tn++;
+      } else if (bg[i] === 1) {
+        br += data[o]; bg2 += data[o + 1]; bb += data[o + 2]; bn++;
+      }
+    }
+    if (tn >= 8) {
+      const hex = (r: number, g: number, b: number) =>
+        '#' + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+      stats.textColor = hex(tr / tn, tg / tn, tb / tn);
+      stats.textRatio = tn / n;
+      if (bn > 0) stats.bgColor = hex(br / bn, bg2 / bn, bb / bn);
+    }
+  }
+
   inpaint(mask);
 
   // Residue pass (Python second-round cleanup): non-background pixels within
@@ -545,4 +612,5 @@ export const eraseTextInCanvas = (
   }
 
   ctx.putImageData(imageData, 0, 0);
+  return stats.textColor ? stats : null;
 };

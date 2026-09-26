@@ -44,7 +44,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+# expose_headers：/erase 把实测取色的结果放在响应头里（body 必须保持
+# image/png 二进制），跨域时浏览器默认读不到非简单响应头，必须在 CORS 里显式
+# 暴露，否则前端 resp.headers.get('X-Text-Color') 永远是 null。
+CORS(app, resources={r"/*": {"origins": "*"}}, expose_headers=[
+    'X-Text-Color', 'X-Bg-Color', 'X-Text-Ratio',
+])
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'}
@@ -344,6 +349,12 @@ def erase():
       - inpaint_radius: inpaint 修复半径，默认 6
 
     返回：image/png 二进制（与原图同尺寸）；失败返回 JSON {success:false,error}
+
+    顺带取色（不额外花时间：文字掩码本来就要算）——擦除时量到的原文墨色 / 底色
+    放在响应头里（没有文字时这些头不出现）：
+      - X-Text-Color: '#rrggbb' 原文墨色（嵌字可直接沿用）
+      - X-Bg-Color:   '#rrggbb' 文字所在底色
+      - X-Text-Ratio: 0~1 文字像素占 ROI 的比例（过低说明样本不可靠）
     """
     try:
         kind = request.form.get('kind', 'bubble')
@@ -357,14 +368,23 @@ def erase():
             return json_error('Image too small')
 
         if kind == 'free':
-            out = erase_free_roi_floodfill(img.copy(), dilate, inpaint_radius)
+            out, stats = erase_free_roi_floodfill(img.copy(), dilate, inpaint_radius)
         else:
-            out = erase_bubble_roi(img.copy(), dilate, inpaint_radius)
+            out, stats = erase_bubble_roi(img.copy(), dilate, inpaint_radius)
 
         ok, buf = cv2.imencode('.png', out)
         if not ok:
             return json_error('Failed to encode result', 500)
-        return send_file(io.BytesIO(buf.tobytes()), mimetype='image/png')
+        resp = send_file(io.BytesIO(buf.tobytes()), mimetype='image/png')
+        # 取色结果走响应头：body 必须保持 image/png 二进制（见 processing.md 的
+        # base64 → Object URL 迁移），塞进 JSON 会让体积 +33%、又要退回那次治理。
+        # 头是 ASCII，没有编码问题；旧客户端不认识这些头会直接忽略。
+        if stats:
+            resp.headers['X-Text-Color'] = stats.get('text_color', '')
+            if stats.get('bg_color'):
+                resp.headers['X-Bg-Color'] = stats['bg_color']
+            resp.headers['X-Text-Ratio'] = str(stats.get('text_ratio', ''))
+        return resp
 
     except Exception as e:
         import traceback

@@ -89,15 +89,56 @@ def _flat_seeds_center(gray, max_seeds=5):
     return seeds
 
 
+def _bgr_to_hex(bgr):
+    """BGR 三元组 → '#rrggbb'（前端 CSS 直接用）。"""
+    b, g, r = (int(v) for v in bgr[:3])
+    clamp = lambda v: max(0, min(255, v))
+    return '#%02x%02x%02x' % (clamp(r), clamp(g), clamp(b))
+
+
+def _measure_text_stats(bgr_roi, text, R, dark_text):
+    """从文字掩码里量出墨色 / 底色（供编辑器「自动取色」）。
+
+    取色之所以准，是因为 `text` 已经是「与底色差 ±50 灰度」硬阈值后的核心笔画，
+    抗锯齿过渡带（墨色与底色的混合）本来就落在阈值之外；样本够多时再往里腐蚀
+    一圈，进一步甩掉边缘像素。逐通道取中位数而不是均值，避免个别残留噪声像素
+    （反锯齿、网点、JPEG 块效应）把墨色拉偏。
+
+    样本太少（<8 px）时认为量不准，返回 None，调用方回落到默认字色。
+    """
+    total = int(text.sum())
+    if total < 8:
+        return None
+    core = text
+    if total >= 64:
+        eroded = cv2.erode(text.astype(np.uint8), np.ones((3, 3), np.uint8))
+        if int(eroded.sum()) >= 8:
+            core = eroded > 0
+
+    stats = {
+        'text_color': _bgr_to_hex(np.median(bgr_roi[core], axis=0)),
+        'text_pixels': total,
+        'text_ratio': round(total / float(text.size), 4),
+        'inverted': bool(dark_text),
+    }
+    if R is not None and R.any():
+        stats['bg_color'] = _bgr_to_hex(np.median(bgr_roi[R], axis=0))
+    return stats
+
+
 def _inpaint_holes(bgr_roi, gray, R, dl, rad):
-    """文字 = R 的洞 ∩ 与底色差异大；inpaint 两轮，掩码不越 ext（描边/外部）"""
+    """文字 = R 的洞 ∩ 与底色差异大；inpaint 两轮，掩码不越 ext（描边/外部）。
+
+    返回 `(擦除后的 ROI, stats)`；stats 是这次的取色量测（没找到文字时为 None），
+    量测必须在 inpaint 之前做 —— inpaint 之后笔画像素就没了。
+    """
     h, w = gray.shape
     if R is None or not R.any():
-        return bgr_roi
+        return bgr_roi, None
     ext = _edge_reachable(~R)
     holes = (~R) & (~ext)
     if not holes.any():
-        return bgr_roi
+        return bgr_roi, None
 
     med = float(np.median(gray[R]))
     dark_text = med >= 128
@@ -106,7 +147,9 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
     else:
         text = holes & (gray > med + 50)
     if not text.any():
-        return bgr_roi
+        return bgr_roi, None
+
+    stats = _measure_text_stats(bgr_roi, text, R, dark_text)
 
     # 掩码膨胀抓抗锯齿边，但被 ext 挡住（不啃描边、不越界到邻气泡）
     m = cv2.dilate(text.astype(np.uint8),
@@ -124,7 +167,7 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
     if residue.any():
         roi = cv2.inpaint(roi, (residue.astype(np.uint8)) * 255,
                           max(3, rad - 3), cv2.INPAINT_TELEA)
-    return roi
+    return roi, stats
 
 
 def erase_bubble_roi(bgr_roi, dl=3, rad=6):
@@ -132,6 +175,8 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
 
     flood fill 面积异常（描边破损泄漏/底色渐变断裂）时逐级收缩容差重试，
     全部失败才用接近全幅的椭圆兜底（保证覆盖，宁可保守）。
+
+    返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
     """
     gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
@@ -159,7 +204,10 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
 
 def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):
     """text_free 擦除：中心+四边中点 5 个种子各自 flood fill，
-    取面积最大者作为背景 R → 洞 = 文字。对渐变背景稳。"""
+    取面积最大者作为背景 R → 洞 = 文字。对渐变背景稳。
+
+    返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
+    """
     gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
     cy, cx = h // 2, w // 2

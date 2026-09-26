@@ -245,9 +245,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         getContextBubbles(img),
         true,
         true,
+        configRef.current.editorAutoTextColor,
         onStage
       );
       const url = result?.url ?? null;
+      // 自动取色量到的墨色写回区域：本版贴图已经用它画过了（合成器先擦除再
+      // 排版），所以这里只是把同一个值落到数据上 —— dock 的色块、画笔预览、
+      // 会话持久化因此都能看到它，而且之后再合成时不必依赖擦除缓存。
+      const measuredColor = result?.textColor;
 
       // Publish the resolved font size so the panel can show the auto-fit
       // value as a reference for manual sizing. Keep the record's identity when
@@ -273,28 +278,44 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         ...current,
         regions: current.regions.map(r => {
           if (r.id !== regionId) return r;
+          // 实测墨色只在「不是用户手动钉住的」且确实变了的时候写回，避免每次
+          // 合成都造一个新 region 对象（dock / 画笔预览会跟着白重建一遍）。
+          const base = measuredColor
+            && r.editorStyle?.colorSource !== 'manual'
+            && r.editorStyle?.color !== measuredColor
+            ? {
+                ...r,
+                editorStyle: {
+                  ...r.editorStyle,
+                  color: measuredColor,
+                  outlineColor: undefined,
+                  outlineWidth: undefined,
+                  colorSource: 'auto' as const,
+                },
+              }
+            : r;
           if (url && result) {
-            if (r.processedImageUrl && r.processedImageUrl !== url) {
-              releaseObjectURL(r.processedImageUrl);
+            if (base.processedImageUrl && base.processedImageUrl !== url) {
+              releaseObjectURL(base.processedImageUrl);
             }
             return {
-              ...r,
+              ...base,
               processedImageUrl: url,
               status: hasWrittenText ? ('completed' as const) : ('pending' as const),
               editorComposited: true,
               patchMarginX: result.marginXPct,
               patchMarginY: result.marginYPct,
-              anchorX: r.x,
-              anchorY: r.y,
-              anchorWidth: r.width,
-              anchorHeight: r.height,
+              anchorX: base.x,
+              anchorY: base.y,
+              anchorWidth: base.width,
+              anchorHeight: base.height,
             };
           }
           // Nothing left to composite: revert only patches WE produced.
-          if (r.editorComposited) {
-            if (r.processedImageUrl) releaseObjectURL(r.processedImageUrl);
+          if (base.editorComposited) {
+            if (base.processedImageUrl) releaseObjectURL(base.processedImageUrl);
             return {
-              ...r,
+              ...base,
               processedImageUrl: undefined,
               status: 'pending' as const,
               editorComposited: false,
@@ -682,8 +703,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         const style: Region['editorStyle'] = {
           ...r.editorStyle,
           ...(res.vertical === undefined ? {} : { isVertical: res.vertical }),
+          // colorSource 'auto'：这是模型看图猜的粗判（黑/白）。开着自动取色时
+          // 擦除量到的实测墨色会覆盖它；用户手动选过的（'manual'）不会被覆盖。
           ...(textColor
-            ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000' }
+            ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000', colorSource: 'auto' as const }
             : {}),
           ...(aiFontStack ? { fontFamily: aiFontStack } : {}),
         };
