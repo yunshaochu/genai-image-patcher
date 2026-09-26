@@ -1326,7 +1326,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               <span className="text-[10px] font-bold text-violet-600">{t(lang, 'editorFrozenBadge')}</span>
               <button
                 onClick={() => onUnfreeze(region.id)}
-                disabled={busy || aiLocked}
+                disabled={regionEditLocked}
                 className="ml-auto px-2 py-0.5 text-[10px] font-bold rounded border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 transition-colors"
                 title={t(lang, 'editorUnfreezeTip')}
               >
@@ -1339,7 +1339,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
         ) : (
           <button
             onClick={() => onFreeze(region.id)}
-            disabled={busy || aiLocked || !region.editorText?.trim()}
+            disabled={regionEditLocked || !region.editorText?.trim()}
             className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20 disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
             title={t(lang, 'editorFreezeTip')}
           >

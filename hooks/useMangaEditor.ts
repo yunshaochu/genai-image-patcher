@@ -206,6 +206,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const configRef = useRef(config);
   configRef.current = config;
 
+  /**
+   * Per-image flavour of the global `busy` lock, mirroring the dock's
+   * `regionEditLocked`: during a translate run only the page actually being
+   * translated is frozen (its regions are about to be overwritten by the AI),
+   * while erase / OCR still lock every page. Used by the region operations the
+   * user may run mid-batch (freeze / unfreeze) so a completed page stays
+   * editable while the next one renders.
+   */
+  const isImageLocked = useCallback(
+    (imageId: string) => busy && (!translating || translatingImageId === imageId),
+    [busy, translating, translatingImageId],
+  );
+
   // regionId → { geomKey, url } — cache of the erased base crop.
   const erasedCacheRef = useRef<Map<string, ErasedCacheEntry>>(new Map());
   const debounceRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -911,7 +924,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const unfreezeTranslation = useCallback(async (imageId: string, regionId: string) => {
     const img = getImage(imageId);
     const region = img?.regions.find(r => r.id === regionId);
-    if (!img || !region || busy) return;
+    if (!img || !region || isImageLocked(imageId)) return;
     if (isAiOwned(region) || !region.editorFrozenText?.trim()) return;
     const next: Region = {
       ...region,
@@ -924,7 +937,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       regions: current.regions.map(r => r.id === regionId ? next : r),
     }));
     await recompositeRegion(imageId, regionId, next);
-  }, [busy, getImage, recompositeRegion, updateImage]);
+  }, [isImageLocked, getImage, recompositeRegion, updateImage]);
 
   /**
    * Manual freeze (the reverse of unfreeze): pull the typeset translation
@@ -942,7 +955,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const freezeTranslation = useCallback(async (imageId: string, regionId: string) => {
     const img = getImage(imageId);
     const region = img?.regions.find(r => r.id === regionId);
-    if (!img || !region || busy) return;
+    if (!img || !region || isImageLocked(imageId)) return;
     if (isAiOwned(region) || !region.editorText?.trim()) return;
     // Hand the erasure back: the next erase must re-run the backend instead of
     // reusing the cached (pre-freeze) erased base.
@@ -962,7 +975,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }));
     // Recomposite with nothing left to render → tears the patch down.
     await recompositeRegion(imageId, regionId, next);
-  }, [busy, getImage, recompositeRegion, updateImage, dropErasedCache]);
+  }, [isImageLocked, getImage, recompositeRegion, updateImage, dropErasedCache]);
 
   /**
    * 重置 one region (the canvas' Reset / Redo button).
