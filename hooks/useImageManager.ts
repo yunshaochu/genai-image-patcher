@@ -1,6 +1,6 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, ImageHistoryState, PerformanceMode } from '../types';
+import { UploadedImage, Region, ImageHistoryState, PerformanceMode, RedrawIntent } from '../types';
 import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES, PREVIEW_MAX_PX } from '../services/imageUtils';
 import { saveSession, loadSession, clearSession } from '../services/sessionStore';
 
@@ -16,6 +16,15 @@ type ImageStore = {
 };
 
 const EMPTY_STORE: ImageStore = { byId: {}, order: [] };
+
+/** 提示词模块的三个 tab 对应的字段（见 prompts 模块 / RedrawIntent）。 */
+export type PromptField = 'translate' | 'erase' | 'free';
+
+/** 该 tab 的选区/图片提示词 patch（显式写法，避免动态 key 破坏类型）。 */
+const promptPatch = (field: PromptField, value: string): Partial<Region & UploadedImage> =>
+  field === 'erase' ? { customPromptErase: value }
+    : field === 'free' ? { customPromptFree: value }
+      : { customPrompt: value };
 
 export function useImageManager(performanceMode: PerformanceMode, enableSessionPersistence: boolean = false) {
   const [store, setStore] = useState<ImageStore>(EMPTY_STORE);
@@ -319,9 +328,10 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     });
   }, [updateImage]);
 
-  const handleUpdateRegionPrompt = useCallback((imageId: string, regionId: string, prompt: string) => {
+  const handleUpdateRegionPrompt = useCallback((imageId: string, regionId: string, prompt: string, field: PromptField = 'translate') => {
+    const patch = promptPatch(field, prompt);
     updateImage(imageId, (img) => {
-      const newRegions = img.regions.map((r) => (r.id === regionId ? { ...r, customPrompt: prompt } : r));
+      const newRegions = img.regions.map((r) => (r.id === regionId ? { ...r, ...patch } : r));
       const currentHistory = [...img.history];
       if (currentHistory[img.historyIndex]) {
         currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: newRegions };
@@ -330,8 +340,39 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     });
   }, [updateImage]);
 
-  const handleUpdateImagePrompt = useCallback((imageId: string, prompt: string) => {
-    updateImage(imageId, (img) => ({ ...img, customPrompt: prompt }));
+  const handleUpdateImagePrompt = useCallback((imageId: string, prompt: string, field: PromptField = 'translate') => {
+    const patch = promptPatch(field, prompt);
+    updateImage(imageId, (img) => ({ ...img, ...patch }));
+  }, [updateImage]);
+
+  /** 记录某格的重绘场景覆盖（undefined = 清除覆盖，跟随全局默认场景）。 */
+  const handleUpdateRegionIntent = useCallback((imageId: string, regionId: string, intent: RedrawIntent | undefined) => {
+    updateImage(imageId, (img) => {
+      const newRegions = img.regions.map((r) => (r.id === regionId ? { ...r, redrawIntent: intent } : r));
+      const currentHistory = [...img.history];
+      if (currentHistory[img.historyIndex]) {
+        currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: newRegions };
+      }
+      return { ...img, regions: newRegions, history: currentHistory };
+    });
+  }, [updateImage]);
+
+  /** 全图遮罩模式下的图片级场景覆盖（undefined = 清除覆盖）。 */
+  const handleUpdateImageIntent = useCallback((imageId: string, intent: RedrawIntent | undefined) => {
+    updateImage(imageId, (img) => ({ ...img, redrawIntent: intent }));
+  }, [updateImage]);
+
+  /** 手动修正某格译文（脱离提示词字段后的独立槽）。 */
+  const handleUpdateRegionTranslation = useCallback((imageId: string, regionId: string, translation: string) => {
+    updateImage(imageId, (img) => ({
+      ...img,
+      regions: img.regions.map((r) => (r.id === regionId ? { ...r, customTranslation: translation } : r)),
+    }));
+  }, [updateImage]);
+
+  /** 手动修正图片级译文（全图遮罩模式）。 */
+  const handleUpdateImageTranslation = useCallback((imageId: string, translation: string) => {
+    updateImage(imageId, (img) => ({ ...img, customTranslation: translation }));
   }, [updateImage]);
 
   const handleToggleSkip = useCallback((imageId: string) => {
@@ -496,6 +537,10 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     handleUpdateRegions,
     handleUpdateRegionPrompt,
     handleUpdateImagePrompt,
+    handleUpdateRegionIntent,
+    handleUpdateImageIntent,
+    handleUpdateRegionTranslation,
+    handleUpdateImageTranslation,
     handleToggleSkip,
     handleDeleteImage,
     handleClearAllImages,

@@ -65,6 +65,15 @@ export interface EditorTextStyle {
   rotation?: number;      // reserved, default 0
 }
 
+/**
+ * 这一格 AI 重绘的意图（提示词模块的 tab）。它决定：
+ *  - 选区提示词用哪个槽（见 Region.customPrompt / customPromptErase / customPromptFree）；
+ *  - 译文是否作为上下文拼进重绘 payload（只有 'translate' 拼）；
+ *  - AI 结果在编辑器里怎么显示（翻译→已冻结 / 擦除→已擦除 / 自定义→AI 独占只读）。
+ * `undefined` = 用户还没表态，运行时沿用提示词模块记忆的 tab。
+ */
+export type RedrawIntent = 'translate' | 'erase' | 'custom';
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -84,7 +93,18 @@ export interface Region {
    *  context-only markers (reserved for later use); text_bubble / text_free
    *  are the editable text areas in editor mode. */
   detectedClass?: DetectedClass;
+  /** 「翻译」tab 的选区提示词（历史上也承载过译文缓存块，已迁出到
+   *  customTranslation）。仅当 redrawIntent='translate' 时作为该框的提示词生效。 */
   customPrompt?: string; // Image-specific prompt overrides global prompt
+  /** 「擦除」tab 的选区提示词。与 customPrompt 并存、互不覆盖；永不携带译文块。 */
+  customPromptErase?: string;
+  /** 「自定义」tab 的选区提示词（无默认值）。 */
+  customPromptFree?: string;
+  /** 这一格的 AI 重绘意图。undefined = 未表态，运行时沿用记忆的 tab。 */
+  redrawIntent?: RedrawIntent;
+  /** 译文（独立字段，不再塞进提示词里的 marker 块）。翻译阶段写入；
+   *  仅当 redrawIntent='translate' 时作为上下文拼进重绘 payload。 */
+  customTranslation?: string;
   contextOnly?: boolean; // If true, region is visible context only — not translated or painted
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
@@ -117,6 +137,12 @@ export interface Region {
    *  - batch erase skips it; batch translation still runs but holds the
    *    result frozen (editorFrozenText) until the user reveals it. */
   aiBubbleBase?: boolean;
+  /** Set when an AI-redraw completed this box under the 「擦除」intent: the box's
+   *  own patch is already a text-free base. Effects:
+   *  - the editor composites text ON TOP of this AI patch and never erases
+   *    (the base is clean);
+   *  - the box stays editable (NOT AI-owned) so the user can typeset into it. */
+  aiErasedBase?: boolean;
   /** Editor patch overflow margin beyond the anchor box, as % of the full image
    *  width/height (patch extends this far past the crop on each side so
    *  overflowing text stays visible). 0/undefined = crop-sized patch. */
@@ -163,6 +189,11 @@ export interface UploadedImage {
   fullAiResultUrl?: string; // The raw full-size output from the AI (before any cropping)
   isSkipped?: boolean; // If true, excluded from batch processing (still exportable, as its result view)
   customPrompt?: string; // Full image specific prompt
+  /** 全图遮罩模式下的「图片级意图 / 三套 tab 提示词 / 图片级译文」。语义同 Region。 */
+  redrawIntent?: RedrawIntent;
+  customPromptErase?: string;
+  customPromptFree?: string;
+  customTranslation?: string;
   
   // History for Undo/Redo of "Apply as Original"
   history: ImageHistoryState[];
@@ -209,6 +240,9 @@ export interface ApiProfile {
 
 export interface AppConfig {
   prompt: string;
+  /** 默认重绘场景：所有**没有单独改过**的切片（region / 全图模式下的图片）
+   *  都走它；单独改过的切片走自己的 redrawIntent。见 RedrawIntent。 */
+  defaultRedrawIntent: RedrawIntent;
   // Execution Mode is now effectively handled by concurrencyLimit
   // 1 = Serial, >1 = Concurrent
   executionMode: 'concurrent' | 'serial'; 

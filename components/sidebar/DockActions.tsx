@@ -1,7 +1,6 @@
 
 import React from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, isRegionPaintable } from '../../types';
-import { hasCachedTranslation } from '../../services/translationCache';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
 
@@ -56,15 +55,21 @@ export const useRunGating = ({
     : (currentImage ? [currentImage] : []);
   const isGenPaintable = (r: UploadedImage['regions'][number]) =>
     isRegionPaintable(r, config.generationRegionSource ?? 'text');
+  // 译文只对「翻译」意图有意义：擦除 / 自定义不需要译文（也会跳过翻译阶段）。
+  // 兜底 = 全局「默认场景」，与重绘管线用的是同一个来源。
+  const intentOf = (v: { redrawIntent?: RedrawIntent }): RedrawIntent =>
+    v.redrawIntent ?? config.defaultRedrawIntent ?? 'translate';
+  const regionNeedsTranslation = (r: UploadedImage['regions'][number]) =>
+    isGenPaintable(r) && intentOf(r) === 'translate';
   const translationReady = scopedImages.some(img =>
     config.useFullImageMasking
-      ? img.regions.some(isGenPaintable) && hasCachedTranslation(img.customPrompt)
-      : img.regions.some(r => isGenPaintable(r) && hasCachedTranslation(r.customPrompt))
+      ? img.regions.some(isGenPaintable) && intentOf(img) === 'translate' && !!img.customTranslation?.trim()
+      : img.regions.some(r => regionNeedsTranslation(r) && !!r.customTranslation?.trim())
   );
   const translationWorkLeft = scopedImages.some(img =>
     config.useFullImageMasking
-      ? img.regions.some(isGenPaintable) && !hasCachedTranslation(img.customPrompt)
-      : img.regions.some(r => isGenPaintable(r) && !hasCachedTranslation(r.customPrompt))
+      ? img.regions.some(isGenPaintable) && intentOf(img) === 'translate' && !img.customTranslation?.trim()
+      : img.regions.some(r => regionNeedsTranslation(r) && !r.customTranslation?.trim())
   );
 
   const generateReason = resultOnly ? '' : (() => {

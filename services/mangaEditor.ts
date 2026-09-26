@@ -277,6 +277,28 @@ export const syncBubbleStatuses = (regions: readonly Region[]): Region[] | null 
 export const regionNeedsComposite = (region: Region): boolean =>
   !!region.editorErased || !!region.editorWhitedOut || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;
 
+/** 编辑器侧对外的显示态：徽标 / dock 面板据此渲染，避免各处自行拼接规则。 */
+export type EditorRegionDisplay = 'completed' | 'erased' | 'frozen' | 'pending';
+
+/**
+ * 由数据推导「这一格在编辑器里显示成什么」。规则（按优先级）：
+ *  - 编辑器自己嵌字完成（editorComposited）→ 已完成；
+ *  - AI「翻译」意图完成（译文已画进图）→ 已冻结；
+ *  - AI「擦除」意图完成（本框底图已干净）→ 已擦除；
+ *  - 有 held-back 译文 → 已冻结；
+ *  - 已擦除（本地泛洪 / AI 擦除底图）→ 已擦除；
+ *  - 其余 completed（手工回填 / 旧版 AI 贴图）→ 已完成。
+ */
+export const editorRegionDisplay = (region: Region): EditorRegionDisplay => {
+  if (region.status === 'completed' && region.editorComposited) return 'completed';
+  if (region.redrawIntent === 'translate' && region.status === 'completed' && !region.editorComposited) return 'frozen';
+  if (region.redrawIntent === 'erase' && region.aiErasedBase && !region.editorComposited) return 'erased';
+  if (region.editorFrozenText?.trim()) return 'frozen';
+  if (region.editorErased || region.aiErasedBase) return 'erased';
+  if (region.status === 'completed') return 'completed';
+  return 'pending';
+};
+
 /**
  * The font size the region typesets at when no explicit size is set — the same
  * auto-fit search the compositor runs (layoutText's binary search), computed

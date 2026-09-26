@@ -54,6 +54,10 @@ interface WorkStateImageEntry {
   originalHeight: number;
   isSkipped?: boolean;
   customPrompt?: string;
+  redrawIntent?: ImageRecord['redrawIntent'];
+  customPromptErase?: string;
+  customPromptFree?: string;
+  customTranslation?: string;
   appliedAsOriginal?: boolean;
   original: ManifestRef;
   preview?: ManifestRef;
@@ -166,6 +170,10 @@ export async function downloadWorkStateZip(
       originalHeight: rec.originalHeight,
       isSkipped: rec.isSkipped,
       customPrompt: rec.customPrompt,
+      redrawIntent: rec.redrawIntent,
+      customPromptErase: rec.customPromptErase,
+      customPromptFree: rec.customPromptFree,
+      customTranslation: rec.customTranslation,
       appliedAsOriginal: rec.appliedAsOriginal,
       original: originalRef!,
       preview: await writePersistable(zip, rec.preview, `${dir}/preview.png`),
@@ -292,6 +300,10 @@ export async function readWorkStateZip(
       originalHeight: typeof entry.originalHeight === 'number' ? entry.originalHeight : 0,
       isSkipped: !!entry.isSkipped,
       customPrompt: typeof entry.customPrompt === 'string' ? entry.customPrompt : undefined,
+      redrawIntent: entry.redrawIntent,
+      customPromptErase: typeof entry.customPromptErase === 'string' ? entry.customPromptErase : undefined,
+      customPromptFree: typeof entry.customPromptFree === 'string' ? entry.customPromptFree : undefined,
+      customTranslation: typeof entry.customTranslation === 'string' ? entry.customTranslation : undefined,
       appliedAsOriginal: !!entry.appliedAsOriginal,
       regions,
     };

@@ -1,6 +1,7 @@
 
 import { useState, useRef, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, isRegionPaintable, baseImageUrl } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl } from '../types';
+import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 // `generateTranslation` is used by the translate stage (handleTranslate) and,
@@ -11,7 +12,7 @@ import { generateRegionEdit, generateTranslation } from '../services/aiService';
 import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils';
 import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
-import { TRANSLATION_CACHE_MARKER, splitTranslationCache, writeTranslationCache, hasCachedTranslation } from '../services/translationCache';
+import { TRANSLATION_CACHE_MARKER } from '../services/translationCache';
 import { mergeGlossary } from '../services/glossary';
 import { findContainedTextRegions } from '../services/mangaEditor';
 import { recordPayload, PayloadTransform } from '../services/payloadLog';
@@ -125,6 +126,30 @@ const mergeProcessedRegions = (
     });
 };
 
+/**
+ * 有效重绘意图：region/image 自己表态了就用它；否则用本次运行的兜底意图
+ * （= 提示词模块当前 tab），再退回家底 'translate'。
+ *
+ * 兜底这一层很关键：批量「全部图片」时，绝大多数框从没被单独点选过，
+ * 它们的 redrawIntent 是 undefined —— 没有兜底就全按 translate 跑了，
+ * 用户的 tab 选择形同虚设。
+ */
+const effectiveIntent = (
+    v: { redrawIntent?: RedrawIntent },
+    fallback: RedrawIntent = 'translate'
+): RedrawIntent => v.redrawIntent ?? fallback ?? 'translate';
+
+/** 意图对应的选区提示词槽（可能是空串）。 */
+const intentPromptSlot = (v: Region | UploadedImage, intent: RedrawIntent): string =>
+    (intent === 'erase' ? v.customPromptErase
+        : intent === 'custom' ? v.customPromptFree
+            : v.customPrompt) ?? '';
+
+/** 发送时实际使用的选区提示词：槽为空则回落到该意图的默认值
+ *  （UI 会把默认值物化进槽，这里只是兜底，保证直接跑 API 时不会漏掉意图指令）。 */
+const intentPromptText = (v: Region | UploadedImage, intent: RedrawIntent): string =>
+    intentPromptSlot(v, intent).trim() || defaultRegionPrompt(intent);
+
 export function useImageProcessor(
     images: UploadedImage[],
     updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
@@ -225,6 +250,8 @@ export function useImageProcessor(
     ): Promise<boolean> => {
         if (signal.aborted) return false;
         if (imageSnapshot.isSkipped) return false;
+        // 默认场景：所有没被单独改过意图的框都走它（用户可在提示词模块设置）。
+        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
 
         // Build regionsMap from imageSnapshot, but PATCH each entry with the latest
         // status/retryCount from localRegionState. This is the fix for the retry-loop
@@ -354,11 +381,15 @@ export function useImageProcessor(
         // stage has been run) re-checks them and generates as soon as the
         // translation shows up. In full-image-masking mode the translation
         // cache is image-level (one payload per image), so the whole image waits.
+        // 「必须翻译」只对「翻译」意图有意义：擦除 / 自定义不需要译文，
+        // 不该被它拦在门外（它们会一直 pending 却永远等不到译文）。
         if (requireTranslation() && !isSyntheticFullImage) {
             if (config.useFullImageMasking) {
-                if (!hasCachedTranslation(imageSnapshot.customPrompt)) return false;
+                if (effectiveIntent(imageSnapshot, defaultIntent) === 'translate' && !imageSnapshot.customTranslation?.trim()) return false;
             } else {
-                regionsToProcess = regionsToProcess.filter(r => hasCachedTranslation(r.customPrompt));
+                regionsToProcess = regionsToProcess.filter(r =>
+                    effectiveIntent(r, defaultIntent) !== 'translate' || !!r.customTranslation?.trim()
+                );
             }
         }
         if (regionsToProcess.length === 0) return false;
@@ -444,19 +475,14 @@ export function useImageProcessor(
                     return redrawBase64;
                 };
 
+                const imageIntent = effectiveIntent(imageSnapshot, defaultIntent);
+                const imagePromptText = intentPromptText(imageSnapshot, imageIntent);
                 let translationText = '';
-                // Split image-level customPrompt the same way region.customPrompt is split:
-                // userPart = user-written instructions (overrides global prompt in this mode),
-                // cached = the translation block written by the translate stage.
-                // Decoupled by default: generation only CONSUMES that cache — a
-                // missing translation is not an error, the image is simply redrawn
-                // without that context (use 必须翻译 to make it wait instead).
-                // With 重绘前翻译 on, a missing translation is filled inline first
-                // and persisted back into image.customPrompt for reuse next run.
-                const { userPart: imageUserPart, cached: imageCachedTranslation } = splitTranslationCache(imageSnapshot.customPrompt);
-                if (config.enableTranslationMode) {
-                    if (imageCachedTranslation) {
-                        translationText = imageCachedTranslation;
+                // 译文只在「翻译」意图下使用，而且只读独立字段 customTranslation；
+                // 擦除 / 自定义意图绝不拼译文块（否则模型会去嵌字而不是擦除）。
+                if (config.enableTranslationMode && imageIntent === 'translate') {
+                    if (imageSnapshot.customTranslation?.trim()) {
+                        translationText = imageSnapshot.customTranslation.trim();
                     } else if (inlineTranslate) {
                         setProcessingState(ProcessingStep.API_CALLING);
                         const translation = await generateTranslation(
@@ -466,19 +492,19 @@ export function useImageProcessor(
                         absorbTerms(translation.terms);
 
                         if (translationText) {
-                            const newImagePrompt = writeTranslationCache(imageUserPart, translationText);
-                            updateImage(imageSnapshot.id, img => ({ ...img, customPrompt: newImagePrompt }));
+                            updateImage(imageSnapshot.id, img => ({ ...img, customTranslation: translationText }));
                         }
                     }
                 }
 
                 setProcessingState(ProcessingStep.API_CALLING);
-                // Global prompt is ALWAYS the base — image/region customPrompts append to it,
-                // never replace it. Keeps the global prompt's contract (size/resolution rules,
-                // style guides etc.) effective regardless of per-image overrides.
+                // Global prompt is ALWAYS the base — the intent-specific image prompt
+                // appends to it, never replaces it. Keeps the global prompt's contract
+                // (size/resolution rules, style guides etc.) effective regardless of
+                // per-image overrides.
                 let effectivePrompt = config.prompt.trim();
-                if (imageUserPart) {
-                   effectivePrompt += ` ${imageUserPart}`;
+                if (imagePromptText) {
+                   effectivePrompt += ` ${imagePromptText}`;
                 }
                 if (translationText) {
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
@@ -534,7 +560,18 @@ export function useImageProcessor(
                         // AI takes ownership: drop any editor-intermediate patch
                         // (erasure is only a typesetting intermediate state).
                         if (r.processedImageUrl) releaseObjectURL(r.processedImageUrl);
-                        setRegion({ ...r, status: 'completed' as const, processedImageUrl: undefined, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined });
+                        setRegion({
+                            ...r,
+                            status: 'completed' as const,
+                            processedImageUrl: undefined,
+                            editorComposited: false,
+                            patchMarginX: undefined,
+                            patchMarginY: undefined,
+                            // 记录意图：编辑器据此显示 已冻结（翻译）/ 已擦除（擦除）。
+                            redrawIntent: imageIntent,
+                            ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
+                            ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
+                        });
                     });
 
                     updateImage(imageSnapshot.id, img => {
@@ -573,7 +610,22 @@ export function useImageProcessor(
                         );
                         // AI takes ownership: drop any editor-intermediate patch.
                         if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
-                        const completedRegion = { ...region, processedImageUrl: finalRegionImageUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                        const completedRegion: Region = {
+                            ...region,
+                            processedImageUrl: finalRegionImageUrl,
+                            status: 'completed' as const,
+                            editorComposited: false,
+                            patchMarginX: undefined,
+                            patchMarginY: undefined,
+                            anchorX: region.x,
+                            anchorY: region.y,
+                            anchorWidth: region.width,
+                            anchorHeight: region.height,
+                            // 记录意图：编辑器据此显示 已冻结（翻译）/ 已擦除（擦除）。
+                            redrawIntent: imageIntent,
+                            ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
+                            ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
+                        };
                         setRegion(completedRegion);
                         markBubbleContainedTexts(completedRegion);
                     }
@@ -689,16 +741,17 @@ export function useImageProcessor(
                     return redrawBase64;
                 };
 
+                const regionIntentValue = effectiveIntent(region, defaultIntent);
+                const regionPromptText = intentPromptText(region, regionIntentValue);
                 let translationText = '';
-                // Pre-split customPrompt up front: userPart = user instructions,
-                // cached = the translation block written by the translate stage.
-                // 解耦：重绘阶段只消费译文缓存，绝不调用翻译接口；没有译文就按
-                // 原样重绘（想强制等待译文请用「必须翻译」）。开启「重绘前翻译」
-                // 后则回到旧版行为：缺译文时内联调用翻译接口补齐并缓存。
-                const { userPart: userCustomPrompt, cached: cachedTranslation } = splitTranslationCache(region.customPrompt);
-                if (config.enableTranslationMode) {
-                    if (cachedTranslation) {
-                        translationText = cachedTranslation;
+                // 译文只在「翻译」意图下使用，而且只读独立字段 customTranslation。
+                // 解耦：重绘阶段只消费已有译文，绝不调用翻译接口；没有就按原样重绘
+                // （想强制等待译文请用「必须翻译」）。开启「重绘前翻译」后缺译文时
+                // 内联调用翻译接口补齐并写回 customTranslation。
+                if (config.enableTranslationMode && regionIntentValue === 'translate') {
+                    const cached = regionsMap.get(region.id)?.customTranslation ?? region.customTranslation;
+                    if (cached?.trim()) {
+                        translationText = cached.trim();
                     } else if (inlineTranslate) {
                         setProcessingState(ProcessingStep.API_CALLING);
                         const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
@@ -708,34 +761,31 @@ export function useImageProcessor(
                         translationText = translation.text;
                         absorbTerms(translation.terms);
 
-                        // Persist the translation back into region.customPrompt so the
-                        // textarea reflects the cached value and next run reuses it.
+                        // Persist the translation into customTranslation so the dock
+                        // reflects it and the next run reuses it.
                         if (translationText) {
-                            const newCustomPrompt = writeTranslationCache(userCustomPrompt, translationText);
                             const current = regionsMap.get(region.id);
-                            if (current) regionsMap.set(region.id, { ...current, customPrompt: newCustomPrompt });
+                            if (current) regionsMap.set(region.id, { ...current, customTranslation: translationText });
                             updateImage(imageSnapshot.id, img => ({
                                 ...img,
                                 regions: img.regions.map(r =>
-                                    r.id === region.id ? { ...r, customPrompt: newCustomPrompt } : r
+                                    r.id === region.id ? { ...r, customTranslation: translationText } : r
                                 )
                             }));
                         }
                     }
                 }
                 setProcessingState(ProcessingStep.API_CALLING);
-                // Global prompt is ALWAYS the base. image.customPrompt (when present in the
-                // "no-regions auto-full-image" path) appends to it instead of replacing.
+                // Global prompt is ALWAYS the base. The image-level prompt (present only
+                // in the "no-regions auto-full-image" path) appends to it.
                 let basePrompt = config.prompt.trim();
-                if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions && imageSnapshot.customPrompt) {
-                   const { userPart: imgUserPart } = splitTranslationCache(imageSnapshot.customPrompt);
-                   if (imgUserPart) basePrompt += ` ${imgUserPart}`;
+                if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions) {
+                   const imgPrompt = intentPromptText(imageSnapshot, effectiveIntent(imageSnapshot, defaultIntent));
+                   if (imgPrompt) basePrompt += ` ${imgPrompt}`;
                 }
-                // Use ONLY the user-written portion here; the cached translation is
-                // appended separately.
                 let effectivePrompt = basePrompt;
-                if (userCustomPrompt) {
-                    effectivePrompt += ` ${userCustomPrompt}`;
+                if (regionPromptText) {
+                    effectivePrompt += ` ${regionPromptText}`;
                 }
                 if (translationText) {
                     effectivePrompt += `\n\n${TRANSLATION_CACHE_MARKER}\n${translationText}`;
@@ -802,9 +852,26 @@ export function useImageProcessor(
                 // earlier in this task). Spreading the original `region` snapshot here
                 // would silently overwrite that update.
                 const baseRegion = regionsMap.get(region.id) ?? region;
-                // AI takes ownership: clear editor-composite markers so the
-                // editor treats this region as read-only (AI result wins).
-                const completedRegion = { ...baseRegion, processedImageUrl: apiResultUrl, status: 'completed' as const, editorComposited: false, patchMarginX: undefined, patchMarginY: undefined, anchorX: region.x, anchorY: region.y, anchorWidth: region.width, anchorHeight: region.height };
+                // 落点按意图决定（见 types.ts RedrawIntent）：
+                //  - translate → AI 已把中文画进图：编辑器显示「已冻结」，译文 hold back；
+                //  - erase     → 本框贴图就是干净底图（aiErasedBase）：编辑器显示「已擦除」，
+                //                若本框已有译文，useMangaEditor 会把它排到这张底图上（已完成）；
+                //  - custom    → 结果不透明，AI 独占只读。
+                const completedRegion: Region = {
+                    ...baseRegion,
+                    processedImageUrl: apiResultUrl,
+                    status: 'completed' as const,
+                    editorComposited: false,
+                    patchMarginX: undefined,
+                    patchMarginY: undefined,
+                    anchorX: region.x,
+                    anchorY: region.y,
+                    anchorWidth: region.width,
+                    anchorHeight: region.height,
+                    redrawIntent: regionIntentValue,
+                    ...(regionIntentValue === 'erase' ? { aiErasedBase: true } : {}),
+                    ...(regionIntentValue === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
+                };
                 setRegion(completedRegion);
                 markBubbleContainedTexts(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
@@ -836,6 +903,8 @@ export function useImageProcessor(
 
     const handleProcess = async (processAll: boolean) => {
         if (abortControllerRef.current) abortControllerRef.current.abort();
+        // 默认场景（未单独设置意图的框走它）——与 processSingleImage 用同一个来源。
+        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
         const controller = new AbortController();
         abortControllerRef.current = controller;
         setProcessingState(ProcessingStep.CROPPING);
@@ -917,9 +986,12 @@ export function useImageProcessor(
                     const local = localRegionState.get(r.id);
                     const status = local?.status ?? r.status;
                     if (status !== 'pending' && status !== 'failed') continue;
+                    // 只统计「翻译」意图里还缺译文的框：擦除 / 自定义不需要译文。
+                    const intent = config.useFullImageMasking ? effectiveIntent(img, defaultIntent) : effectiveIntent(r, defaultIntent);
+                    if (intent !== 'translate') continue;
                     const missing = config.useFullImageMasking
-                        ? !hasCachedTranslation(img.customPrompt)
-                        : !hasCachedTranslation(r.customPrompt);
+                        ? !img.customTranslation?.trim()
+                        : !r.customTranslation?.trim();
                     if (missing) waiting++;
                 }
             }
@@ -1042,6 +1114,8 @@ export function useImageProcessor(
         abortControllerRef.current = controller;
         setProcessingState(ProcessingStep.CROPPING);
         setErrorMsg(null);
+        // 翻译阶段也只处理「翻译场景」的框；未单独设置的框按全局默认场景判定。
+        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
 
         const selectedId = selectedImage?.id;
         const pickTargets = (): UploadedImage[] => {
@@ -1059,22 +1133,21 @@ export function useImageProcessor(
         const semaphore = new AsyncSemaphore(Math.max(1, limit));
         let failures = 0;
 
-        /** Stamp the translation into the region's cache. `status` is the
-         *  status the box had before this stage started: translating must never
-         *  complete/invalidate a box, so a 'completed' patch stays completed. */
+        /** Stamp the translation into the region's dedicated field. `status` is
+         *  the status the box had before this stage started: translating must
+         *  never complete/invalidate a box, so a 'completed' patch stays
+         *  completed. */
         const commitRegionTranslation = (
             imageId: string,
             regionId: string,
             translation: string,
-            userPart: string,
             status: Region['status']
         ) => {
-            const newCustomPrompt = writeTranslationCache(userPart, translation);
             updateImage(imageId, img => ({
                 ...img,
                 regions: img.regions.map(r =>
                     r.id === regionId
-                        ? { ...r, customPrompt: newCustomPrompt, status }
+                        ? { ...r, customTranslation: translation, status }
                         : r
                 ),
             }));
@@ -1104,7 +1177,7 @@ export function useImageProcessor(
             // cache entry, so either the whole page is already translated or
             // every region waits for the same call.
             if (config.useFullImageMasking) {
-                if (paintableRegions.length === 0 || hasCachedTranslation(img.customPrompt)) return;
+                if (paintableRegions.length === 0 || effectiveIntent(img, defaultIntent) !== 'translate' || img.customTranslation?.trim()) return;
                 await semaphore.acquire();
                 let payloadUrl: string | undefined;
                 try {
@@ -1138,9 +1211,7 @@ export function useImageProcessor(
                         await urlToBase64(payloadUrl), config, controller.signal, undefined, glossaryRef.current
                     );
                     if (result.text) {
-                        const { userPart } = splitTranslationCache(img.customPrompt);
-                        const newImagePrompt = writeTranslationCache(userPart, result.text);
-                        updateImage(img.id, cur => ({ ...cur, customPrompt: newImagePrompt }));
+                        updateImage(img.id, cur => ({ ...cur, customTranslation: result.text }));
                     } else {
                         failures++; // empty answer — kept untranslated for a retry
                     }
@@ -1157,9 +1228,12 @@ export function useImageProcessor(
                 return;
             }
 
-            // Standard mode: one vision call per region, each cached on its own
-            // customPrompt (this is the cache 必须翻译 tests during generation).
-            const regionsToTranslate = paintableRegions.filter(r => !hasCachedTranslation(r.customPrompt));
+            // Standard mode: one vision call per region, each cached in its own
+            // customTranslation (this is the field 必须翻译 tests during generation).
+            // 只有「翻译」意图需要译文；擦除 / 自定义跳过（省额度）。
+            const regionsToTranslate = paintableRegions.filter(r =>
+                effectiveIntent(r, defaultIntent) === 'translate' && !r.customTranslation?.trim()
+            );
             if (regionsToTranslate.length === 0) return;
 
             let imgElement: HTMLImageElement;
@@ -1247,8 +1321,7 @@ export function useImageProcessor(
                         await urlToBase64(payloadUrl), config, controller.signal, contextBase64, glossaryRef.current
                     );
                     if (result.text) {
-                        const { userPart } = splitTranslationCache(region.customPrompt);
-                        commitRegionTranslation(img.id, region.id, result.text, userPart, restoreStatus(region.id));
+                        commitRegionTranslation(img.id, region.id, result.text, restoreStatus(region.id));
                     } else {
                         // The model answered with nothing usable — count it so
                         // the user gets a summary instead of a silent no-op.

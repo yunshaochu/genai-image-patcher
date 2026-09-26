@@ -23,7 +23,8 @@ export type RestoreScope = 'all' | 'textFree' | 'selected';
  * regions (editorComposited=true) are excluded from AI processing because the
  * AI only picks up pending/failed regions.
  */
-export const isAiOwned = (r: Region): boolean => r.status === 'completed' && !r.editorComposited;
+export const isAiOwned = (r: Region): boolean =>
+  r.status === 'completed' && !r.editorComposited && !r.aiErasedBase;
 
 /**
  * Detected `bubble` boxes of an image (kept as context-only regions). They are
@@ -45,6 +46,29 @@ const buildEditorBase = async (
   region: Region
 ): Promise<HTMLImageElement | HTMLCanvasElement> => {
   const imageEl = await loadImage(img.previewUrl);
+  // AI「擦除」意图：本框自己的贴图就是干净底图 —— 先把它按锚点（含溢出边距）
+  // 铺回整图，后续排版直接落在它上面，而且不再做泛洪擦除（原文早被 AI 抹掉）。
+  if (region.aiErasedBase && region.processedImageUrl) {
+    const base = document.createElement('canvas');
+    base.width = imageEl.naturalWidth;
+    base.height = imageEl.naturalHeight;
+    const bctx = base.getContext('2d');
+    if (!bctx) return imageEl;
+    bctx.drawImage(imageEl, 0, 0);
+    try {
+      const patchImg = await loadImage(region.processedImageUrl);
+      const mx = region.patchMarginX ?? 0;
+      const my = region.patchMarginY ?? 0;
+      const ax = (((region.anchorX ?? region.x) - mx) / 100) * base.width;
+      const ay = (((region.anchorY ?? region.y) - my) / 100) * base.height;
+      const aw = (((region.anchorWidth ?? region.width) + mx * 2) / 100) * base.width;
+      const ah = (((region.anchorHeight ?? region.height) + my * 2) / 100) * base.height;
+      bctx.drawImage(patchImg, ax, ay, aw, ah);
+    } catch (e) {
+      console.warn('Failed to overlay AI erased base for region', region.id, e);
+    }
+    return base;
+  }
   if (!region.aiBubbleBase) return imageEl;
   const bubble = findCoveringCompletedBubble(img.regions, region);
   if (!bubble?.processedImageUrl) return imageEl;
@@ -447,6 +471,22 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [images, recompositeRegion]);
 
+  // AI「擦除」意图完成后，若该框本来就有译文（editorText），要把它排到 AI 抹干净
+  // 的底图上（合成器用 aiErasedBase 作底图并跳过擦除）。每次 (region, patch URL)
+  // 只跑一次，避免 update → effect → recomposite 的自激。
+  const erasedBaseCompositedRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    for (const img of images) {
+      for (const r of img.regions) {
+        if (!r.aiErasedBase || r.editorComposited) continue;
+        if (!r.editorText?.trim() || !r.processedImageUrl) continue;
+        if (erasedBaseCompositedRef.current.get(r.id) === r.processedImageUrl) continue;
+        erasedBaseCompositedRef.current.set(r.id, r.processedImageUrl);
+        void recompositeRegion(img.id, r.id);
+      }
+    }
+  }, [images, recompositeRegion]);
+
   // 气泡框 ⇄ 文字框共享完成状态：气泡内的 text_bubble 全部完成 → 气泡完成；
   // 有一个被重置 → 气泡回到 pending（见 syncBubbleStatuses 的升降级规则）。
   // 两个工作流因此看到同一个"已完成"：编辑器嵌字完成后，AI 重绘里那颗泡泡不
@@ -548,11 +588,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
     return img.regions.filter(r => {
       if (r.contextOnly || r.editorErased || isAiOwned(r)) return false;
-      // aiBubbleBase regions sit on an AI-redrawn (already text-free) bubble —
-      // batch erasure would burn the expensive flood fill for nothing. The
-      // single-region 'selected' scope above stays available as a manual
+      // aiBubbleBase / aiErasedBase regions already sit on an AI-redrawn
+      // (text-free) base — batch erasure would burn the flood fill for nothing.
+      // The single-region 'selected' scope above stays available as a manual
       // override when the AI redraw left residue.
-      if (r.aiBubbleBase) return false;
+      if (r.aiBubbleBase || r.aiErasedBase) return false;
       if (scope === 'bubbleOnly') return r.detectedClass === 'text_bubble';
       return true; // 'all' — manual boxes + text_bubble + text_free
     });
@@ -696,8 +736,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    */
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
     img.regions.filter(r => {
-      if (r.contextOnly || isAiOwned(r)) return false;
-      if (r.editorText?.trim() || r.editorFrozenText?.trim()) return false;
+      if (r.contextOnly) return false;
+      // AI「翻译」意图的完成框也要翻译：译文会 held back（冻结）在编辑器里，不会
+      // 和图上 AI 已经画好的中文重叠。其它 AI 独占框（自定义 / 旧版）跳过 ——
+      // 它们的内容已经是最终形态。
+      if (isAiOwned(r) && r.redrawIntent !== 'translate') return false;
+      if (r.editorText?.trim() || r.editorFrozenText?.trim() || r.customTranslation?.trim()) return false;
       return true;
     }), []);
 
@@ -773,7 +817,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             : {}),
           ...(aiFontStack ? { fontFamily: aiFontStack } : {}),
         };
-        if (res.freeze || r.aiBubbleBase) {
+        // AI「翻译」意图已经把这格的中文画进图了：译文一律 held back（冻结），
+        // 绝不重新排版 —— 否则会和图上的 AI 文字重叠。
+        const isAiTranslated = r.redrawIntent === 'translate' && r.status === 'completed' && !r.editorComposited;
+        if (res.freeze || r.aiBubbleBase || isAiTranslated) {
           // aiBubbleBase forces the frozen landing even when the AI would
           // typeset: the translation is held back (editorFrozenText) so the
           // AI-redrawn bubble stays untouched until the user reveals the
@@ -783,6 +830,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             ...r,
             ocrText: res.source ?? r.ocrText,
             editorFrozenText: res.zh,
+            customTranslation: res.zh,
             // Freeze = pull the translation OUT of the image: drop any
             // previously typeset text / erasure / whiteout so the original
             // artwork is restored untouched.
@@ -796,6 +844,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             ...r,
             ocrText: res.source ?? r.ocrText,
             editorText: res.zh,
+            customTranslation: res.zh,
             editorFrozenText: undefined,
             editorErased: true,
             editorStyle: style,
@@ -1372,6 +1421,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     compositingRef.current.clear();
     compositedAtRef.current.clear();
     aiBaseRebasedRef.current.clear();
+    erasedBaseCompositedRef.current.clear();
     freezeUndoStackRef.current = [];
     setFreezeUndoDepth(0);
     setComputedFontSizes(prev => (Object.keys(prev).length === 0 ? prev : {}));

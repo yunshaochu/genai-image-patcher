@@ -57,6 +57,20 @@ const textCopyLabel = (lang: Language, outcome: CopyOutcome | 'idle'): string =>
 const copyButtonClass =
     'flex-1 min-w-0 text-[9px] px-1 py-1 bg-skin-surface border border-skin-border rounded hover:bg-skin-fill transition-colors text-center truncate disabled:opacity-40 disabled:cursor-not-allowed';
 
+/**
+ * The intent-specific prompt slot of a region / image. The workbench copies the
+ * SAME text the app would send for the box's current redraw intent, so what the
+ * user pastes into an external AI matches the in-app run.
+ */
+const intentSlotText = (
+    v: { customPrompt?: string; customPromptErase?: string; customPromptFree?: string; redrawIntent?: 'translate' | 'erase' | 'custom' }
+): string => {
+    const intent = v.redrawIntent ?? 'translate';
+    return (intent === 'erase' ? v.customPromptErase
+        : intent === 'custom' ? v.customPromptFree
+            : v.customPrompt) ?? '';
+};
+
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
   config: AppConfig;
@@ -68,8 +82,8 @@ export const FullImageMaskRow: React.FC<{
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
   // The whole-image row has no region: the prompt it exports is the global one
-  // plus this image's own prompt (cached translation block included).
-  const promptText = buildWorkbenchPrompt(config, { imagePrompt: image.customPrompt });
+  // plus this image's intent-specific prompt.
+  const promptText = buildWorkbenchPrompt(config, { imagePrompt: intentSlotText(image) });
 
   useEffect(() => {
     let active = true;
@@ -228,8 +242,8 @@ export const ManualPatchRow: React.FC<{
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
   // Exactly what the app would send for this box: global prompt + this box's
-  // prompt (its cached translation block included).
-  const promptText = buildWorkbenchPrompt(config, { regionPrompt: region.customPrompt });
+  // intent-specific prompt.
+  const promptText = buildWorkbenchPrompt(config, { regionPrompt: intentSlotText(region) });
 
   useEffect(() => {
     let active = true;

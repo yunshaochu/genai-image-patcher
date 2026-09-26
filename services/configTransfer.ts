@@ -105,6 +105,7 @@ const ENUM_FIELDS: Record<string, readonly string[]> = {
   performanceMode: ['unlimited', 'balanced'],
   executionMode: ['concurrent', 'serial'],
   generationRegionSource: ['text', 'bubble'],
+  defaultRedrawIntent: ['translate', 'erase', 'custom'],
 };
 
 /** Loose structural check: same kind of value as the one already in config.

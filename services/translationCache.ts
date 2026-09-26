@@ -45,3 +45,18 @@ export const writeTranslationCache = (userPart: string, translation: string): st
 /** True when a prompt field already carries a cached translation block. */
 export const hasCachedTranslation = (prompt?: string): boolean =>
     !!splitTranslationCache(prompt).cached;
+
+/**
+ * 一次性迁移：把旧版塞在提示词字段里的 marker 译文块拆到独立的译文槽。
+ *
+ * 译文现在是 `region.customTranslation` / `image.customTranslation`，不再混在
+ * 提示词里 —— 提示词框因此永远只放提示词（用户也不会误删 marker 导致缓存失效）。
+ * 载入旧会话 / 导入工作状态时调用：有 marker 就拆，没有就原样返回。
+ */
+export const migratePromptToTranslation = (
+    prompt?: string
+): { prompt?: string; translation?: string } => {
+    const { userPart, cached } = splitTranslationCache(prompt);
+    if (!cached) return { prompt };
+    return { prompt: userPart || undefined, translation: cached };
+};

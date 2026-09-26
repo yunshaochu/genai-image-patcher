@@ -4,6 +4,7 @@ import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, is
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
+import { editorRegionDisplay } from '../services/mangaEditor';
 
 // Helper: convert a canvas to a Blob-backed Object URL (memory-efficient,
 // avoids the giant base64 string that toDataURL produces).
@@ -909,11 +910,21 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                 } else if (region.status === 'failed') {
                     styleClasses = 'border-2 border-rose-500 bg-rose-500/10 z-10';
                 } else if (region.status === 'completed') {
-                     if (isSelected) {
-                         styleClasses = 'border-2 border-emerald-500 bg-emerald-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#10b981] z-30 cursor-move';
-                     } else {
-                         styleClasses = 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer';
-                     }
+                     // Editor mode: colour the box by its derived display, so an
+                     // AI「擦除」box reads blue (已擦除) and an AI「翻译」box reads
+                     // violet (已冻结) instead of the generic green "completed".
+                     const display = isEditMode ? editorRegionDisplay(region) : 'completed';
+                     styleClasses = display === 'frozen'
+                       ? (isSelected
+                           ? 'border-2 border-violet-500 bg-violet-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#8b5cf6] z-30 cursor-move'
+                           : 'border-2 border-violet-500 bg-violet-500/10 z-10 cursor-pointer')
+                       : display === 'erased'
+                         ? (isSelected
+                             ? 'border-2 border-sky-500 bg-sky-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#0ea5e9] z-30 cursor-move'
+                             : 'border-2 border-sky-500 bg-sky-500/10 z-10 cursor-pointer')
+                         : (isSelected
+                             ? 'border-2 border-emerald-500 bg-emerald-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#10b981] z-30 cursor-move'
+                             : 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer');
                 } else {
                     if (isSelected) {
                         styleClasses = 'border-2 border-skin-primary bg-skin-primary/10 shadow-[0_0_0_1px_rgba(255,255,255,0.5)] z-20 cursor-move';
@@ -1128,59 +1139,60 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                    </div>
                 )}
 
-                {/* ORIGINAL/EDIT MODE: Status Badge */}
-                {boxesInteractive && region.status !== 'pending' && !isManipulating && (
-                  <div
-                    className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
-                      region.status === 'completed' ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200' :
-                      region.status === 'processing' ? 'bg-amber-100/90 text-amber-700 border-amber-200' :
-                      'bg-rose-100/90 text-rose-700 border-rose-200'
-                    }`}
-                    style={{
-                      top: 2 * invZoom,
-                      left: 2 * invZoom,
-                      transform: `scale(${invZoom})`,
-                      transformOrigin: 'top left',
-                    }}
-                  >
-                    {t(language, `status_${region.status}` as any)}
-                    {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (
-                      <span className="ml-1 opacity-90">↻{region.retryCount}</span>
-                    )}
-                  </div>
-                )}
-
-                {/* EDIT MODE: erased-intermediate badge (pending but erased —
-                    the box stays blue because erasure is not a final result) */}
-                {isEditMode && region.status === 'pending' && region.editorErased && !isManipulating && (
-                  <div
-                    className="absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 bg-sky-100/90 text-sky-700 border-sky-200"
-                    style={{
-                      top: 2 * invZoom,
-                      left: 2 * invZoom,
-                      transform: `scale(${invZoom})`,
-                      transformOrigin: 'top left',
-                    }}
-                  >
-                    {t(language, 'editorErasedBadge')}
-                  </div>
-                )}
-
-                {/* EDIT MODE: frozen-translation badge (translation kept in
-                    data but deliberately not typeset — left for AI redraw) */}
-                {isEditMode && region.status === 'pending' && region.editorFrozenText?.trim() && !isManipulating && (
-                  <div
-                    className="absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 bg-violet-100/90 text-violet-700 border-violet-200"
-                    style={{
-                      top: 2 * invZoom,
-                      left: 2 * invZoom,
-                      transform: `scale(${invZoom})`,
-                      transformOrigin: 'top left',
-                    }}
-                  >
-                    {t(language, 'editorFrozenBadge')}
-                  </div>
-                )}
+                {/* Status badge. Editor mode derives it from the data
+                    (已完成 / 已擦除 / 已冻结 — see editorRegionDisplay), so the
+                    three AI-result shapes (翻译/擦除/自定义) each read correctly;
+                    in-flight / failed still show their own status. Generation
+                    mode keeps the plain status badge. */}
+                {boxesInteractive && !isManipulating && (() => {
+                  if (region.status === 'processing' || region.status === 'failed') {
+                    return (
+                      <div
+                        className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${
+                          region.status === 'processing'
+                            ? 'bg-amber-100/90 text-amber-700 border-amber-200'
+                            : 'bg-rose-100/90 text-rose-700 border-rose-200'
+                        }`}
+                        style={{
+                          top: 2 * invZoom,
+                          left: 2 * invZoom,
+                          transform: `scale(${invZoom})`,
+                          transformOrigin: 'top left',
+                        }}
+                      >
+                        {t(language, `status_${region.status}` as any)}
+                        {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (
+                          <span className="ml-1 opacity-90">↻{region.retryCount}</span>
+                        )}
+                      </div>
+                    );
+                  }
+                  const display = isEditMode
+                    ? editorRegionDisplay(region)
+                    : (region.status === 'completed' ? 'completed' as const : 'pending' as const);
+                  if (display === 'pending') return null;
+                  const cls = display === 'completed'
+                    ? 'bg-emerald-100/90 text-emerald-700 border-emerald-200'
+                    : display === 'frozen'
+                      ? 'bg-violet-100/90 text-violet-700 border-violet-200'
+                      : 'bg-sky-100/90 text-sky-700 border-sky-200';
+                  const labelKey = display === 'completed'
+                    ? 'status_completed'
+                    : display === 'frozen' ? 'editorFrozenBadge' : 'editorErasedBadge';
+                  return (
+                    <div
+                      className={`absolute text-[8px] font-bold px-1 py-0.5 rounded backdrop-blur-md shadow-sm border pointer-events-none select-none z-10 ${cls}`}
+                      style={{
+                        top: 2 * invZoom,
+                        left: 2 * invZoom,
+                        transform: `scale(${invZoom})`,
+                        transformOrigin: 'top left',
+                      }}
+                    >
+                      {t(language, labelKey as any)}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}

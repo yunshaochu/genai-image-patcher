@@ -3,7 +3,7 @@ import { AppConfig, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
-import { getRegionEditorText, resolveAutoFontSize } from '../services/mangaEditor';
+import { getRegionEditorText, resolveAutoFontSize, editorRegionDisplay } from '../services/mangaEditor';
 import { EDITOR_FONTS, SYSTEM_FONT_STACK, editorFontStack, ensureEditorFontLoaded } from '../services/fontService';
 import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 import { DockActions, useRunGating } from './sidebar/DockActions';
@@ -1002,7 +1002,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
   }
 
   // AI-owned: completed by the image-generation pipeline — read-only here.
-  const aiLocked = region.status === 'completed' && !region.editorComposited;
+  // aiErasedBase boxes are deliberately NOT locked: they are AI-cleaned bases
+  // the user still typesets into (see isAiOwned).
+  const aiLocked = isAiOwned(region);
   /**
    * Lock for THIS region's edit controls.
    *
@@ -1070,16 +1072,21 @@ const EditorDock: React.FC<EditorDockProps> = ({
             {t(lang, 'editorAiBaseBadge')}
           </span>
         )}
-        {region.editorErased && (
-          <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">
-            {t(lang, 'editorErasedBadge')}
-          </span>
-        )}
-        {region.editorFrozenText?.trim() && (
-          <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-violet-100 text-violet-700">
-            {t(lang, 'editorFrozenBadge')}
-          </span>
-        )}
+        {(() => {
+          // 显示态由数据推导（AI 意图 + 编辑器字段）：翻译→已冻结 / 擦除→已擦除 /
+          // 嵌字完成→已完成。和画布上的徽标共用同一条规则。
+          const display = editorRegionDisplay(region);
+          if (display === 'completed') {
+            return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">{t(lang, 'status_completed')}</span>;
+          }
+          if (display === 'erased') {
+            return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">{t(lang, 'editorErasedBadge')}</span>;
+          }
+          if (display === 'frozen') {
+            return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-violet-100 text-violet-700">{t(lang, 'editorFrozenBadge')}</span>;
+          }
+          return null;
+        })()}
         <div className="ml-auto flex items-center gap-0.5">
           <button
             onClick={() => gotoRegion(-1)}

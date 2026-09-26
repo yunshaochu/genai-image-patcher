@@ -1,13 +1,14 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, isRegionPaintable } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable } from '../types';
 import { t } from '../services/translations';
 import { fetchOpenAIModels } from '../services/aiService';
 import { Section } from './sidebar/Section';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { DockActions, useRunGating } from './sidebar/DockActions';
-import { DEFAULT_PROMPT } from '../hooks/useConfig';
+import { DEFAULT_PROMPT, defaultRegionPrompt } from '../hooks/useConfig';
+import type { PromptField } from '../hooks/useImageManager';
 
 /**
  * Right-side dock for the two API-driven workflows, mirroring EditorDock's
@@ -28,14 +29,28 @@ import { DEFAULT_PROMPT } from '../hooks/useConfig';
 
 const SECTIONS_STORAGE_KEY = 'genai_patcher_workflow_dock_sections_v1';
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_workflow_dock_collapsed_v1';
+/** 场景对应的选区/图片提示词槽内容（三套槽并存，切场景不丢数据）。 */
+const intentSlot = (
+  v: { customPrompt?: string; customPromptErase?: string; customPromptFree?: string } | undefined,
+  tab: RedrawIntent
+): string =>
+  !v ? '' : (tab === 'erase' ? v.customPromptErase
+    : tab === 'custom' ? v.customPromptFree
+      : v.customPrompt) ?? '';
 
 interface WorkflowDockProps {
   config: AppConfig;
   onConfigChange: (key: keyof AppConfig, value: any) => void;
   currentImage?: UploadedImage;
   selectedRegionId: string | null;
-  onUpdateRegionPrompt: (imageId: string, regionId: string, prompt: string) => void;
-  onUpdateImagePrompt?: (imageId: string, prompt: string) => void;
+  onUpdateRegionPrompt: (imageId: string, regionId: string, prompt: string, field: PromptField) => void;
+  onUpdateImagePrompt?: (imageId: string, prompt: string, field: PromptField) => void;
+  /** 记录某格 / 某图的重绘场景覆盖（undefined = 清除覆盖，跟随全局默认场景）。 */
+  onUpdateRegionIntent: (imageId: string, regionId: string, intent: RedrawIntent | undefined) => void;
+  onUpdateImageIntent: (imageId: string, intent: RedrawIntent | undefined) => void;
+  /** 独立译文槽（翻译 tab 的「本框译文」框）。 */
+  onUpdateRegionTranslation: (imageId: string, regionId: string, translation: string) => void;
+  onUpdateImageTranslation: (imageId: string, translation: string) => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
   onOcrRegion: (imageId: string, regionId: string) => void;
   // Run / result actions are pinned to the dock's bottom edge (see DockActions).
@@ -57,6 +72,10 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   selectedRegionId,
   onUpdateRegionPrompt,
   onUpdateImagePrompt,
+  onUpdateRegionIntent,
+  onUpdateImageIntent,
+  onUpdateRegionTranslation,
+  onUpdateImageTranslation,
   onManualPatchUpdate,
   onOcrRegion,
   images,
@@ -121,6 +140,61 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   const showFullImagePrompt = !!config.processFullImageIfNoRegions
     && !!currentImage
     && currentImage.regions.length === 0;
+
+  // ── 提示词模块：全局默认场景 + 单选框覆盖 ────────────────────────────
+  // 默认场景持久化在 config：所有**没被单独改过**的切片都走它。
+  // 选中框的 tab 显示它的**有效场景**（自己的覆盖 ?? 默认场景）；改 tab = 只给
+  // 这一个框加覆盖，其他框不受影响。
+  const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
+  // 有没有"正在编辑的目标"：选中了框，或全图模式下的当前图片。没有 → 只给用户
+  // 设置「默认场景」；有 → 给这个目标设置覆盖。
+  const hasTarget = !!currentImage && (showFullImagePrompt || !!selectedRegion);
+  const targetIntent: RedrawIntent | undefined = showFullImagePrompt
+    ? currentImage?.redrawIntent
+    : selectedRegion?.redrawIntent;
+  const activeIntent: RedrawIntent = targetIntent ?? defaultIntent;
+  const hasOverride = targetIntent !== undefined;
+  const sceneLabel = (v: RedrawIntent) =>
+    t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
+
+  /** 给当前目标单独设置场景覆盖。 */
+  const handleTargetIntentChange = (tab: RedrawIntent) => {
+    if (!currentImage) return;
+    if (showFullImagePrompt) onUpdateImageIntent(currentImage.id, tab);
+    else if (selectedRegion) onUpdateRegionIntent(currentImage.id, selectedRegion.id, tab);
+  };
+  /** 清除当前目标的覆盖 → 重新跟随默认场景。 */
+  const clearTargetIntent = () => {
+    if (!currentImage) return;
+    if (showFullImagePrompt) onUpdateImageIntent(currentImage.id, undefined);
+    else if (selectedRegion) onUpdateRegionIntent(currentImage.id, selectedRegion.id, undefined);
+  };
+
+  // 当前场景对应的槽位内容 / 默认值 / 占位符（默认值不落库，作占位符展示；
+  // 「重置为默认」按钮才会把它物化进槽）。
+  const slotValue = showFullImagePrompt
+    ? intentSlot(currentImage, activeIntent)
+    : (selectedRegion ? intentSlot(selectedRegion, activeIntent) : '');
+  const slotDefault = defaultRegionPrompt(activeIntent);
+  const slotPlaceholder = activeIntent === 'translate'
+    ? (slotDefault || t(lang, 'promptSpecificPlaceholder'))
+    : activeIntent === 'erase'
+      ? (slotDefault || t(lang, 'promptErasePlaceholder'))
+      : t(lang, 'promptCustomPlaceholder');
+  const translationValue = showFullImagePrompt
+    ? (currentImage?.customTranslation ?? '')
+    : (selectedRegion?.customTranslation ?? '');
+
+  const handleSlotChange = (value: string) => {
+    if (!currentImage) return;
+    if (showFullImagePrompt) onUpdateImagePrompt?.(currentImage.id, value, activeIntent);
+    else if (selectedRegion) onUpdateRegionPrompt(currentImage.id, selectedRegion.id, value, activeIntent);
+  };
+  const handleTranslationChange = (value: string) => {
+    if (!currentImage) return;
+    if (showFullImagePrompt) onUpdateImageTranslation(currentImage.id, value);
+    else if (selectedRegion) onUpdateRegionTranslation(currentImage.id, selectedRegion.id, value);
+  };
 
   const gating = useRunGating({ config, images, currentImage, processingState, processAll });
 
@@ -268,6 +342,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
           <>
             <Section title={t(lang, 'promptTitle')} isOpen={open.prompt} onToggle={() => toggle('prompt')}>
               <div className="space-y-3">
+                {/* 全局：所有意图共用的不变量（比例 / 禁止续画…） */}
                 <div>
                   <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center justify-between">
                     <span>{t(lang, 'promptGlobalLabel')}</span>
@@ -286,59 +361,116 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                     className="w-full h-20 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
                     placeholder={t(lang, 'promptPlaceholder')}
                   />
+                  <p className="text-[9px] text-skin-muted leading-tight mt-1">{t(lang, 'promptGlobalHint')}</p>
                 </div>
 
-                {currentImage && (
-                  <div className="pt-2 border-t border-skin-border border-dashed transition-all">
-                    {showFullImagePrompt ? (
-                      <>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
-                          {t(lang, 'promptFullImageLabel')}
-                          <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
-                            Full Image
+                {/* 场景选择器**二选一**，避免两个分段控件堆在一起：
+                    - 没选中任何框 → 「默认场景」（写 config，所有未覆盖的切片都走它）；
+                    - 选中了框 / 全图模式 → 「此框场景 / 此图场景」（写该切片的覆盖）。
+                    三套提示词槽并存，切场景不丢数据。 */}
+                <div className="pt-2 border-t border-skin-border border-dashed transition-all space-y-2">
+                  {!hasTarget ? (
+                    <div>
+                      <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">
+                        {t(lang, 'promptDefaultScene')}
+                      </label>
+                      <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+                        {(['translate', 'erase', 'custom'] as const).map(v => (
+                          <button
+                            key={v}
+                            onClick={() => onConfigChange('defaultRedrawIntent', v)}
+                            className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${defaultIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                          >
+                            {sceneLabel(v)}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[9px] text-skin-muted leading-tight mt-1">{t(lang, 'promptDefaultSceneHint')}</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center justify-between">
+                          <span className="flex items-center gap-2">
+                            {t(lang, showFullImagePrompt ? 'promptFullImageScene' : 'promptRegionScene')}
+                            {showFullImagePrompt ? (
+                              <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
+                                Full Image
+                              </span>
+                            ) : selectedRegion && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
+                                ID: {selectedRegion.id.slice(0, 4)}
+                              </span>
+                            )}
                           </span>
-                        </label>
-                        <textarea
-                          key={`full-${currentImage.id}`}
-                          value={currentImage.customPrompt || ''}
-                          onChange={(e) => onUpdateImagePrompt && onUpdateImagePrompt(currentImage.id, e.target.value)}
-                          className="w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in"
-                          placeholder={t(lang, 'promptFullImagePlaceholder')}
-                        />
-                      </>
-                    ) : (
-                      <>
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block flex items-center gap-2">
-                          {t(lang, 'promptSpecificLabel')}
-                          {selectedRegion && (
-                            <span className="px-1.5 py-0.5 rounded-full bg-skin-fill text-skin-primary font-mono normal-case truncate max-w-[100px] border border-skin-border">
-                              ID: {selectedRegion.id.slice(0, 4)}
-                            </span>
+                          {hasOverride ? (
+                            <button
+                              onClick={clearTargetIntent}
+                              className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer normal-case font-normal"
+                              title={t(lang, 'promptFollowDefaultTip')}
+                            >
+                              {t(lang, 'promptFollowDefault')}
+                            </button>
+                          ) : (
+                            <span className="text-[9px] text-skin-muted normal-case font-normal">{t(lang, 'promptFollowingDefault')}</span>
                           )}
                         </label>
+                        <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+                          {(['translate', 'erase', 'custom'] as const).map(v => (
+                            <button
+                              key={v}
+                              onClick={() => handleTargetIntentChange(v)}
+                              className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${activeIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                            >
+                              {sceneLabel(v)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
 
-                        {selectedRegion ? (
-                          <textarea
-                            key={selectedRegion.id}
-                            value={selectedRegion.customPrompt || ''}
-                            onChange={(e) => onUpdateRegionPrompt(currentImage.id, selectedRegion.id, e.target.value)}
-                            // Lock the textarea while THIS region is being processed
-                            // (its prompt is already in flight to the API; mid-flight
-                            // edits would be silently ignored). Other regions remain
-                            // editable even during batch processing.
-                            readOnly={selectedRegion.status === 'processing'}
-                            className={`w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in ${selectedRegion.status === 'processing' ? 'opacity-60 cursor-not-allowed' : ''}`}
-                            placeholder={t(lang, 'promptSpecificPlaceholder')}
-                          />
-                        ) : (
-                          <div className="w-full h-16 p-2 text-xs border border-dashed border-skin-border rounded-lg bg-skin-fill/20 flex items-center justify-center text-skin-muted text-center italic">
-                            Select a region to customize its prompt
-                          </div>
+                      <label className="text-[10px] uppercase font-bold text-skin-muted flex items-center justify-between">
+                        <span className="flex items-center gap-2">
+                          {t(lang, showFullImagePrompt ? 'promptFullImageLabel' : 'promptSpecificLabel')}
+                        </span>
+                        {slotDefault && (
+                          <button
+                            onClick={() => handleSlotChange(slotDefault)}
+                            className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer normal-case font-normal"
+                          >
+                            {t(lang, 'promptResetDefault')}
+                          </button>
                         )}
-                      </>
-                    )}
-                  </div>
-                )}
+                      </label>
+
+                      <textarea
+                        key={`${activeIntent}-${showFullImagePrompt ? currentImage!.id : selectedRegion!.id}`}
+                        value={slotValue}
+                        onChange={(e) => handleSlotChange(e.target.value)}
+                        // Lock the textarea while THIS region is being processed.
+                        readOnly={!showFullImagePrompt && selectedRegion!.status === 'processing'}
+                        className={`w-full h-16 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm animate-in fade-in ${!showFullImagePrompt && selectedRegion!.status === 'processing' ? 'opacity-60 cursor-not-allowed' : ''}`}
+                        placeholder={slotPlaceholder}
+                      />
+
+                      {/* 译文是独立字段（不再混进提示词）：只在「翻译」场景出现。
+                          手动可改；只有翻译场景会把它作为上下文发给重绘模型。 */}
+                      {activeIntent === 'translate' && (
+                        <div className="pt-1">
+                          <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">
+                            {t(lang, 'promptTranslationLabel')}
+                          </label>
+                          <textarea
+                            key={`tr-${showFullImagePrompt ? currentImage!.id : selectedRegion!.id}`}
+                            value={translationValue}
+                            onChange={(e) => handleTranslationChange(e.target.value)}
+                            className="w-full h-14 p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm"
+                            placeholder={t(lang, 'promptTranslationPlaceholder')}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </Section>
 

@@ -1,16 +1,45 @@
 
 import { useState, useEffect } from 'react';
-import { AppConfig } from '../types';
+import { AppConfig, RedrawIntent } from '../types';
 import { EDITOR_FONTS } from '../services/fontService';
 
 const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
 /** Records that the user's config has already been migrated to the opt-in
  *  session-persistence default (see useConfig). */
 const SESSION_PERSISTENCE_OPTIN_KEY = 'genai_patcher_session_persistence_optin_v1';
-export const DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。
+
+/**
+ * 全局默认提示词 —— 只放**所有意图共用**的不变量（比例 / 禁止续画 / 只改指定处）。
+ *
+ * 翻译替换、擦除文字、任意自定义这些**意图相关**的指令不属于全局：它们放在
+ * 选区提示词（见 DEFAULT_TRANSLATE_REGION_PROMPT / DEFAULT_ERASE_REGION_PROMPT），
+ * 否则切到「擦除」tab 时，全局里那句「替换为中文」会和擦除意图打架。
+ */
+export const DEFAULT_PROMPT = `1. 严格维持我发给你的图片大小和比例，包括高斯模糊的分界线也不能变。这种严格的比例控制对我的项目来说是必要的。
+2. 强调：不是让你续写、续画，而是严格按我的指令修改这张图的指定内容。
+3. 只改我指定要改的地方，其余部分保持原样。`;
+
+/**
+ * 迁移用：旧版全局默认提示词（内含「翻译替换」意图）。仅当老用户的
+ * config.prompt 与它一字不差（即从未自己改过）时，才替换为新的不变量版——
+ * 用户自己写过的内容一律保留，避免覆盖他们的手工调校。
+ */
+const LEGACY_DEFAULT_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。
 2. 生成一张只有中文的图
 3. 强调：不是让你续写、续画，而是对这张图的文字进行更换，换为中文
 4. 图片大小和比例不许变，必须严格维持我发给你的比例，包括高斯模糊的地方的分界线也不能变。这种严格的比例控制对我的项目来说是必要的。`;
+
+/** 「翻译」tab 的选区默认提示词（物化进 customPrompt）。 */
+export const DEFAULT_TRANSLATE_REGION_PROMPT = `请用中文翻译替换掉图里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。`;
+
+/** 「擦除」tab 的选区默认提示词（物化进 customPromptErase）。 */
+export const DEFAULT_ERASE_REGION_PROMPT = `把图中文字完整擦除，恢复成干净的背景/气泡底色，不要添加任何新文字（尤其不要写中文），气泡边框与画面内容保持原样。`;
+
+/** 意图对应的选区默认提示词。'custom' 没有默认值（空 = 只带全局不变量）。 */
+export const defaultRegionPrompt = (intent: RedrawIntent): string =>
+  intent === 'translate' ? DEFAULT_TRANSLATE_REGION_PROMPT
+    : intent === 'erase' ? DEFAULT_ERASE_REGION_PROMPT
+      : '';
 
 export const TRANSLATION_MODE_IMAGE_PROMPT = `1. 请用中文翻译替换掉图片里的日文。如果原图是艺术字，那么要和原图一样，用富有艺术性的字体来画出中文，不能用打印体，要富有艺术性。
 2. 生成一张只有中文的图
@@ -65,6 +94,7 @@ export const TRANSLATION_CONTEXT_SYSTEM_PROMPT = `> **角色设定**：
 
 const DEFAULT_CONFIG: AppConfig = {
   prompt: DEFAULT_PROMPT,
+  defaultRedrawIntent: 'translate',
   executionMode: 'concurrent',
   concurrencyLimit: 3,
   processFullImageIfNoRegions: false, 
@@ -289,6 +319,18 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // 提示词模块拆分「翻译 / 擦除 / 自定义」后，全局提示词只保留不变量。
+        // 未改过默认值的老用户把旧默认（含「翻译替换」）换成新的不变量版；
+        // 自己写过内容的一律保留。
+        if (migratedConfig.prompt === LEGACY_DEFAULT_PROMPT) {
+            migratedConfig.prompt = DEFAULT_PROMPT;
+        }
+
+        // 默认重绘场景：老配置没有 → 翻译（与历史默认一致）。
+        if (migratedConfig.defaultRedrawIntent !== 'erase' && migratedConfig.defaultRedrawIntent !== 'custom') {
+            migratedConfig.defaultRedrawIntent = 'translate';
         }
 
         // 编辑器字体：'' = 系统默认；字体库里已删除的 id 一律回落到系统默认，

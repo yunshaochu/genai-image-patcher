@@ -50,6 +50,10 @@ export default function App() {
     handleUpdateRegions,
     handleUpdateRegionPrompt,
     handleUpdateImagePrompt,
+    handleUpdateRegionIntent,
+    handleUpdateImageIntent,
+    handleUpdateRegionTranslation,
+    handleUpdateImageTranslation,
     handleToggleSkip,
     handleDeleteImage,
     handleClearAllImages,
@@ -1030,6 +1034,10 @@ export default function App() {
             selectedRegionId={selectedRegionId}
             onUpdateRegionPrompt={handleUpdateRegionPrompt}
             onUpdateImagePrompt={handleUpdateImagePrompt}
+            onUpdateRegionIntent={handleUpdateRegionIntent}
+            onUpdateImageIntent={handleUpdateImageIntent}
+            onUpdateRegionTranslation={handleUpdateRegionTranslation}
+            onUpdateImageTranslation={handleUpdateImageTranslation}
             onManualPatchUpdate={handleManualPatchUpdate}
             onOcrRegion={handleOcrRegion}
             images={images}

@@ -1,4 +1,5 @@
-import { Region, UploadedImage, ImageHistoryState } from '../types';
+import { Region, UploadedImage, ImageHistoryState, RedrawIntent } from '../types';
+import { migratePromptToTranslation } from './translationCache';
 
 /**
  * Session persistence (IndexedDB).
@@ -45,6 +46,11 @@ export interface ImageRecord {
   originalHeight: number;
   isSkipped?: boolean;
   customPrompt?: string;
+  /** 全图遮罩模式下的图片级意图 / 各 tab 提示词 / 译文（见 UploadedImage）。 */
+  redrawIntent?: RedrawIntent;
+  customPromptErase?: string;
+  customPromptFree?: string;
+  customTranslation?: string;
   /** previewUrl is a committed 应用为原图 result (see UploadedImage). */
   appliedAsOriginal?: boolean;
   regions: RegionRecord[];
@@ -147,6 +153,10 @@ export async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
     originalHeight: img.originalHeight,
     isSkipped: img.isSkipped,
     customPrompt: img.customPrompt,
+    redrawIntent: img.redrawIntent,
+    customPromptErase: img.customPromptErase,
+    customPromptFree: img.customPromptFree,
+    customTranslation: img.customTranslation,
     appliedAsOriginal: img.appliedAsOriginal,
     regions,
   };
@@ -160,8 +170,12 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
   const fullAiResultUrl = persistableToUrl(rec.fullAi);
   const regions: Region[] = rec.regions.map((r) => {
     const { processed, restoreMask, editorBrush, ...scalars } = r;
+    // 迁移：把旧版塞在 customPrompt 里的 marker 译文块拆到 customTranslation。
+    const trans = migratePromptToTranslation(scalars.customPrompt);
     return {
       ...scalars,
+      customPrompt: trans.prompt,
+      customTranslation: scalars.customTranslation ?? trans.translation,
       // No API call is in flight after a reload — never restore 'processing'.
       status: scalars.status === 'processing' ? 'pending' : scalars.status,
       isOcrLoading: false,
@@ -179,6 +193,8 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
     fullAiResultUrl,
     appliedAsOriginal: rec.appliedAsOriginal,
   };
+  // 迁移：图片级 customPrompt 里的 marker 译文块同样拆到 customTranslation。
+  const imgTrans = migratePromptToTranslation(rec.customPrompt);
   return {
     id: rec.id,
     file: rec.file,
@@ -191,7 +207,11 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
     finalResultUrl,
     fullAiResultUrl,
     isSkipped: rec.isSkipped,
-    customPrompt: rec.customPrompt,
+    customPrompt: imgTrans.prompt,
+    redrawIntent: rec.redrawIntent,
+    customPromptErase: rec.customPromptErase,
+    customPromptFree: rec.customPromptFree,
+    customTranslation: rec.customTranslation ?? imgTrans.translation,
     appliedAsOriginal: rec.appliedAsOriginal,
     history: [initialState],
     historyIndex: 0,
