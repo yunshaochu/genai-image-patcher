@@ -8,6 +8,8 @@ BananaChange 统一后端服务
   GET  /health   健康检查（检测模型状态）
   POST /detect   RT-DETR 文本/气泡检测（与 comic-detector 服务契约一致）
   POST /erase    区域文字擦除（flood fill 洞检测 + OpenCV inpaint）
+  GET  /fonts    编辑器可用字体列表（含是否已缓存到本地）
+  GET  /fonts/<id>  字体文件：首次请求时从上游下载并缓存到 server/fonts/
 
 后续扩展：自动翻译、嵌字排版也加在本服务内。
 
@@ -16,7 +18,9 @@ BananaChange 统一后端服务
 import base64
 import io
 import json
+import os
 import threading
+import urllib.request
 
 import cv2
 import numpy as np
@@ -116,6 +120,98 @@ def json_error(msg, status=400):
                     status=status, mimetype='application/json')
 
 
+# ── 编辑器字体（下载 → 本地缓存 → 前端按需取用） ──────────────
+#
+# 前端每换一次字体就自己去国外 CDN 下载很麻烦（慢且容易失败），所以这里做一层
+# “字体代理”：第一次请求时从上游下载并落盘到 server/fonts/，之后所有请求直接
+# 由本服务返回；前端浏览器还会再缓存一层（Cache-Control），所以正常使用下来只
+# 有第一次会真的产生网络下载。
+
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+
+# 每个字体给出多个上游镜像，按顺序尝试（jsDelivr 走 Cloudflare，国内外基本可达；
+# GitHub raw 作为备份）。
+FONT_LIBRARY = {
+    'zcool-kuaile': {
+        'name': '站酷快乐体',
+        'name_en': 'ZCOOL KuaiLe',
+        'family': 'ZCOOL KuaiLe',
+        'filename': 'ZCOOLKuaiLe-Regular.ttf',
+        'urls': [
+            'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf',
+            'https://fastly.jsdelivr.net/gh/google/fonts@main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf',
+            'https://raw.githubusercontent.com/google/fonts/main/ofl/zcoolkuaile/ZCOOLKuaiLe-Regular.ttf',
+        ],
+    },
+    'mashanzheng': {
+        'name': '马善政毛笔楷书',
+        'name_en': 'Ma Shan Zheng',
+        'family': 'Ma Shan Zheng',
+        'filename': 'MaShanZheng-Regular.ttf',
+        'urls': [
+            'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/mashanzheng/MaShanZheng-Regular.ttf',
+            'https://fastly.jsdelivr.net/gh/google/fonts@main/ofl/mashanzheng/MaShanZheng-Regular.ttf',
+            'https://raw.githubusercontent.com/google/fonts/main/ofl/mashanzheng/MaShanZheng-Regular.ttf',
+        ],
+    },
+}
+
+# TTF / OTF / TTC / WOFF 的文件头，用来识别下载到的是不是真字体（镜像偶尔会回
+# 一个 HTML 错误页，长度检查挡不住）。
+_FONT_MAGIC = (b'\x00\x01\x00\x00', b'OTTO', b'true', b'ttcf', b'wOFF')
+
+_font_locks = {}
+_font_locks_guard = threading.Lock()
+
+
+def _font_lock(font_id):
+    with _font_locks_guard:
+        if font_id not in _font_locks:
+            _font_locks[font_id] = threading.Lock()
+        return _font_locks[font_id]
+
+
+def _font_path(font_id):
+    return os.path.join(FONT_DIR, FONT_LIBRARY[font_id]['filename'])
+
+
+def ensure_font_file(font_id):
+    """
+    保证字体已缓存到本地，返回文件路径；失败抛异常。
+
+    双重检查 + 每字体一把锁：并发请求不会重复下载同一个字体。
+    """
+    path = _font_path(font_id)
+    if os.path.exists(path) and os.path.getsize(path) > 4096:
+        return path
+
+    with _font_lock(font_id):
+        if os.path.exists(path) and os.path.getsize(path) > 4096:
+            return path
+
+        os.makedirs(FONT_DIR, exist_ok=True)
+        last_err = None
+        for url in FONT_LIBRARY[font_id]['urls']:
+            try:
+                print(f"[font] downloading {font_id} <- {url}")
+                req = urllib.request.Request(
+                    url, headers={'User-Agent': 'BananaChange/1.0 (+font cache)'})
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = resp.read()
+                if len(data) < 4096 or data[:4] not in _FONT_MAGIC:
+                    raise ValueError(f'not a font file ({len(data)} bytes)')
+                tmp = path + '.part'
+                with open(tmp, 'wb') as f:
+                    f.write(data)
+                os.replace(tmp, path)
+                print(f"[font] cached {font_id} -> {path} ({len(data)} bytes)")
+                return path
+            except Exception as e:
+                last_err = e
+                print(f"[font] mirror failed ({type(e).__name__}: {e}): {url}")
+        raise RuntimeError(f'font download failed for {font_id}: {last_err}')
+
+
 # ── /health ─────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
@@ -125,8 +221,56 @@ def health():
         'device': model_config['device'],
         'model': model_config['model_name'],
         'model_loaded': detector is not None,
-        'endpoints': ['/detect', '/erase'],
+        'endpoints': ['/detect', '/erase', '/fonts', '/fonts/<id>'],
     })
+
+
+# ── /fonts ──────────────────────────────────────────────────
+
+@app.route('/fonts', methods=['GET'])
+def list_fonts():
+    """
+    编辑器可用字体列表。
+
+    返回：{success, fonts:[{id, name, name_en, family, cached, size, url}]}
+    `cached=false` 表示该字体还没下过，前端第一次取用时后端会去下载。
+    """
+    fonts = []
+    for font_id, meta in FONT_LIBRARY.items():
+        path = _font_path(font_id)
+        cached = os.path.exists(path) and os.path.getsize(path) > 4096
+        fonts.append({
+            'id': font_id,
+            'name': meta['name'],
+            'name_en': meta['name_en'],
+            'family': meta['family'],
+            'cached': cached,
+            'size': os.path.getsize(path) if cached else None,
+            'url': f'/fonts/{font_id}',
+        })
+    return jsonify({'success': True, 'fonts': fonts})
+
+
+@app.route('/fonts/<font_id>', methods=['GET'])
+def get_font(font_id):
+    """
+    返回字体文件本体（ttf）。首次请求时从上游下载并缓存，之后直接读本地文件。
+
+    响应带 Cache-Control: public, max-age=604800，浏览器端也会缓存一份，
+    所以正常情况下只有第一次会真正等待下载。
+    """
+    if font_id not in FONT_LIBRARY:
+        return json_error(f'unknown font: {font_id}', 404)
+    try:
+        path = ensure_font_file(font_id)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return json_error(f'{type(e).__name__}: {e}', 502)
+
+    resp = send_file(path, mimetype='font/ttf', conditional=True)
+    resp.headers['Cache-Control'] = 'public, max-age=604800'
+    return resp
 
 
 # ── /detect ─────────────────────────────────────────────────
@@ -239,6 +383,8 @@ if __name__ == '__main__':
     print("  GET  /health  - 健康检查")
     print("  POST /detect  - 文本/气泡检测 (RT-DETR)")
     print("  POST /erase   - 区域文字擦除 (flood fill + inpaint)")
+    print("  GET  /fonts   - 编辑器字体列表")
+    print("  GET  /fonts/<id> - 字体文件（首次自动下载并缓存）")
     print("=" * 60)
 
     # 启动时预加载模型：避免首个 /detect 请求等待过久、并发导入竞争

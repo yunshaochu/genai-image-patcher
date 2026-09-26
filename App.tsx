@@ -14,6 +14,8 @@ import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
 import { resolveAutoFontSize } from './services/mangaEditor';
+import { setDefaultFontFamily } from './services/textLayout';
+import { editorFontStack, getEditorFont, ensureEditorFontLoaded } from './services/fontService';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
@@ -96,6 +98,7 @@ export default function App() {
       refreezeWhitedTextFree,
       unfreezeAiBubbleRegions,
       resyncEditedRegions,
+      refreshEditorPatches,
       buildBrushBase,
   } = useMangaEditor({ images, updateImage, config, setErrorMsg });
 
@@ -119,6 +122,40 @@ export default function App() {
   const [transModels, setTransModels] = useState<string[]>([]);
 
   const isEditorMode = config.processingMode === 'editor';
+
+  // ── 编辑器字体（嵌字） ────────────────────────────────────────
+  // 三步：
+  //  1. 同步把字体栈写进排版模块 —— 即使文件还没下载完，排版也已经用正确的
+  //     family 名（栈里带兜底字体），不会退化成浏览器默认的怪字体。
+  //  2. 交给后端取字体：后端首次会从上游下载并缓存到 server/fonts/，之后前端
+  //     直接读后端（浏览器再缓存一层），所以只有第一次真的产生网络下载。
+  //  3. 重建已嵌字区域的贴图 —— 旧贴图是用旧字体栅格化好的位图，只改配置不会
+  //     自动重画，必须显式重建。
+  useEffect(() => {
+    setDefaultFontFamily(editorFontStack(config.editorFontFamily));
+    const meta = getEditorFont(config.editorFontFamily);
+    // 没选字体（系统默认）、或编辑器没被启用时不用做任何事。
+    if (!meta || !isEditorMode || !config.enableManualEditor) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        await ensureEditorFontLoaded(meta.id, config.pythonBackendUrl);
+      } catch (e) {
+        if (cancelled) return;
+        console.error('Editor font load failed', e);
+        setErrorMsg(t(config.language, 'editorFontLoadFailed', { name: meta.label[config.language] }));
+        return;
+      }
+      if (cancelled) return;
+      await refreshEditorPatches();
+    })();
+    return () => { cancelled = true; };
+  }, [
+    config.editorFontFamily, config.pythonBackendUrl, config.language,
+    config.enableManualEditor, isEditorMode,
+    setErrorMsg, refreshEditorPatches,
+  ]);
 
   // Whether the selected image has anything to show in the result view. The
   // result tab is always rendered (consistent tab set across images); this flag

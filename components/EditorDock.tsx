@@ -4,6 +4,7 @@ import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
 import { getRegionEditorText, resolveAutoFontSize } from '../services/mangaEditor';
+import { EDITOR_FONTS, SYSTEM_FONT_STACK, editorFontStack, ensureEditorFontLoaded } from '../services/fontService';
 import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 import { DockActions, useRunGating } from './sidebar/DockActions';
 
@@ -386,6 +387,98 @@ const BrushPainter: React.FC<{
         )}
       </div>
       <p className="text-[9px] text-skin-muted italic">{t(lang, 'editorBrushHint')}</p>
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Font picker (per-region override of the global 「编辑器字体」)
+// ---------------------------------------------------------------------------
+
+/** 下拉项：显式指定系统字体 —— 覆盖全局字体，即使全局选了某个艺术字体。 */
+const EXPLICIT_SYSTEM = '__system__';
+
+/**
+ * 字体选择：默认跟随全局设置，也可以单独指定——漫画里同一个页面经常需要给拟声
+ * 词换一套字体，也需要把某个框单独打回系统字体。
+ *
+ * 选中某个字体时先把文件从后端取回来（后端首次会下载并缓存），再写入配置：
+ * 字体没就位时 canvas 量不出正确字宽，自动字号会算错，贴图也会先用兜底字体
+ * 画一遍。取字体的过程是异步的，所以用一个 loading 状态挡住重复点击。
+ */
+const RegionFontPicker: React.FC<{
+  region: Region;
+  lang: 'zh' | 'en';
+  backendBaseUrl: string;
+  disabled?: boolean;
+  onUpdateRegion: EditorDockProps['onUpdateRegion'];
+}> = ({ region, lang, backendBaseUrl, disabled, onUpdateRegion }) => {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = region.editorStyle?.fontFamily ?? '';
+  // 上一版「系统默认」写进去的是泛型族 'sans-serif'，一并认作系统字体，否则
+  // 会被当成一个 unknown 的自定义项显示。
+  const isSystemStack = current === SYSTEM_FONT_STACK || current === 'sans-serif';
+  const matched = EDITOR_FONTS.find(f => editorFontStack(f.id) === current);
+  const selectValue =
+    current === '' ? ''
+      : isSystemStack ? EXPLICIT_SYSTEM
+        : (matched?.id ?? 'custom');
+
+  const apply = (fontFamily: string | undefined) => {
+    onUpdateRegion(
+      region.id,
+      { editorStyle: { fontFamily } },
+      { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+    );
+  };
+
+  const handleChange = async (value: string) => {
+    setError(null);
+    if (value === '') {
+      apply(undefined);
+      return;
+    }
+    if (value === EXPLICIT_SYSTEM) {
+      apply(SYSTEM_FONT_STACK);
+      return;
+    }
+    const meta = EDITOR_FONTS.find(f => f.id === value);
+    if (!meta) return;
+    setLoading(true);
+    try {
+      await ensureEditorFontLoaded(meta.id, backendBaseUrl);
+    } catch (e) {
+      console.error('Editor font load failed', e);
+      setError(t(lang, 'editorFontLoadFailed', { name: meta.label[lang] }));
+      setLoading(false);
+      return;
+    }
+    setLoading(false);
+    apply(editorFontStack(meta.id));
+  };
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorFont')}</span>
+        <select
+          value={selectValue}
+          disabled={disabled || loading}
+          onChange={(e) => handleChange(e.target.value)}
+          title={t(lang, 'editorFontTip')}
+          className="flex-1 min-w-0 px-1 py-1 text-[10px] border border-skin-border rounded bg-skin-surface text-skin-text disabled:opacity-50"
+        >
+          <option value="">{t(lang, 'editorFontDefault')}</option>
+          <option value={EXPLICIT_SYSTEM}>{t(lang, 'editorFontSystem')}</option>
+          {EDITOR_FONTS.map(f => (
+            <option key={f.id} value={f.id}>{f.label[lang]}</option>
+          ))}
+          {selectValue === 'custom' && <option value="custom">{current}</option>}
+        </select>
+        {loading && <span className="text-[9px] text-skin-primary whitespace-nowrap">{t(lang, 'editorFontDownloading')}</span>}
+      </div>
+      {error && <p className="text-[9px] text-rose-500 leading-tight">{error}</p>}
     </div>
   );
 };
@@ -878,6 +971,15 @@ const EditorDock: React.FC<EditorDockProps> = ({
             ))}
           </div>
         </div>
+
+        {/* Font: follow the global editor font, or override it for this box. */}
+        <RegionFontPicker
+          region={region}
+          lang={lang}
+          backendBaseUrl={config.pythonBackendUrl}
+          disabled={busy || aiLocked}
+          onUpdateRegion={onUpdateRegion}
+        />
 
         {/* Erase toggle + per-region OCR */}
         <div className="grid grid-cols-2 gap-1.5">

@@ -8,6 +8,7 @@ import { ApiProfileSwitcher } from './sidebar/ApiProfileSwitcher';
 import { SecretInput } from './sidebar/SecretInput';
 import { SettingsCard } from './sidebar/SettingsCard';
 import { FloatingPanel } from './sidebar/FloatingPanel';
+import { EDITOR_FONTS, SYSTEM_FONT_ID } from '../services/fontService';
 import {
     TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
@@ -372,6 +373,24 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                                 control={<Toggle size="sm" checked={config.enableVerticalTextDefault} onChange={(v) => updateConfig('enableVerticalTextDefault', v)} />}
                                             />
                                         )}
+                                        {config.enableManualEditor && (
+                                            <SubRow
+                                                title={t(lang, 'editorFontGlobal')}
+                                                help={t(lang, 'editorFontGlobalDesc')}
+                                                control={
+                                                    <select
+                                                        value={config.editorFontFamily}
+                                                        onChange={(e) => updateConfig('editorFontFamily', e.target.value)}
+                                                        className="px-2 py-1 text-[10px] border border-skin-border rounded bg-skin-surface text-skin-text max-w-[170px]"
+                                                    >
+                                                        <option value={SYSTEM_FONT_ID}>{t(lang, 'editorFontSystem')}</option>
+                                                        {EDITOR_FONTS.map(f => (
+                                                            <option key={f.id} value={f.id}>{f.label[lang]}</option>
+                                                        ))}
+                                                    </select>
+                                                }
+                                            />
+                                        )}
                                     </OffDim>
                                 </SettingsCard>
 
@@ -649,6 +668,20 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             }
                                         />
                                     </div>
+
+                                    {/* Editor typesetting: ask the same vision call to also
+                                        classify each region's original typeface. */}
+                                    <SubRow
+                                        title={t(lang, 'enableFontAutoDetect')}
+                                        help={t(lang, 'enableFontAutoDetectDesc')}
+                                        control={
+                                            <Toggle
+                                                size="sm"
+                                                checked={config.enableFontAutoDetect}
+                                                onChange={(v) => updateConfig('enableFontAutoDetect', v)}
+                                            />
+                                        }
+                                    />
                                 </SettingsCard>
 
                                 {/* Own card rather than a nested block: the glossary is

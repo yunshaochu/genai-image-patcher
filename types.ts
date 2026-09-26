@@ -45,7 +45,8 @@ export const isRegionPaintable = (
 /**
  * Per-region text style used by the in-place manga text editor.
  * color/outline are written by the AI colour module (translation) and the
- * dock 字色 toggle; fontFamily / rotation remain reserved for a future UI.
+ * dock 字色 toggle; fontFamily is the dock 字体 override (see
+ * services/fontService.ts); rotation remains reserved for a future UI.
  */
 export interface EditorTextStyle {
   fontSize?: number;      // px; undefined = auto-fit to the region box
@@ -54,7 +55,7 @@ export interface EditorTextStyle {
   outlineColor?: string;  // default: opposite of color when color is explicit, else '#ffffff'
   outlineWidth?: number;  // default: auto (fontSize×0.12) when color is explicit, else 0
   isBold?: boolean;       // reserved, default true
-  fontFamily?: string;    // reserved, default sans-serif
+  fontFamily?: string;    // this region's font stack; undefined = AppConfig.editorFontFamily (global default)
   rotation?: number;      // reserved, default 0
 }
 
@@ -275,6 +276,9 @@ export interface AppConfig {
   enableOCR: boolean;              // Sub switch: Text recognition
   enableManualEditor: boolean;     // Sub switch: Brush/Text editor
   enableVerticalTextDefault: boolean; // Sub switch: Default text orientation
+  /** 嵌字默认字体：services/fontService.ts 里的字体 id，'' = 系统默认。
+   *  字体文件由 Python 后端首次请求时下载并缓存（server/fonts/），前端按需取用。 */
+  editorFontFamily: string;
 
   // Logic Switch
   useFullImageMasking: boolean; // Send full image with non-selected areas masked white
@@ -284,6 +288,11 @@ export interface AppConfig {
   // Translation Mode Settings
   enableTranslationMode: boolean;
   sendMaskedContextForTranslation: boolean;
+  /** 字体自动识别（嵌字）：翻译时让视觉模型一并判断每个区域原文的字体风格，
+   *  并从 services/fontService 的内置字体库里挑一个，嵌字时按区域套用。
+   *  关闭 = 所有区域统一用全局 editorFontFamily。只影响编辑器嵌字，
+   *  AI 重绘模式由模型自己画字，不受此开关影响。 */
+  enableFontAutoDetect: boolean;
   translationBaseUrl: string;
   translationApiKey: string;
   translationModel: string;

@@ -2,6 +2,7 @@ import { AppConfig, Region } from '../types';
 import { compressImageToTargetSize, releaseObjectURL, urlToBase64 } from './imageUtils';
 import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLimitGate';
 import { recordPayload, PayloadTransform } from './payloadLog';
+import { buildFontChoicePrompt, resolveFontIdFromAi } from './fontService';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -31,9 +32,30 @@ export interface RegionTranslation {
   color?: 'black' | 'white';
   /** Original text direction: true = vertical typesetting, false = horizontal. */
   vertical?: boolean;
+  /**
+   * 字体自动识别：区域原文的字体风格最接近内置字体库里的哪一个。
+   * 返回字体 id；SYSTEM_FONT_ID（空串）=「常规印刷体」，调用方不覆盖该区域的
+   * 字体（继续跟随全局「编辑器字体」）。字段缺失 = 没识别 / 开关关闭。
+   */
+  font?: string;
 }
 
-const buildPrompt = (skeleton: string): string => `你是一名漫画翻译。图片中已用红框标出编号区域，每个编号对应一段需要翻译的漫画文字（对白/旁白/音效字等）。
+/**
+ * `fontAutoDetect` 打开时才给模型加 `font` 字段和要求——关着的时候不多花
+ * token，也不让模型有机会干扰嵌字字体。
+ */
+const buildPrompt = (skeleton: string, fontAutoDetect: boolean): string => {
+  // 字体那条规则插在 freeze 之后，后面两条的编号要跟着顺延，所以统一算出来。
+  const fontRule = fontAutoDetect
+    ? `
+7. font 填字符串：看【原文】的字形风格，从下面选一个最接近的（译文会用它来嵌字）。只填引号里的字符串，不要写别的：
+${buildFontChoicePrompt()}
+注意：普通对话文字基本都是常规印刷体；拿不准、看不清、或者风格没有明显特征时，一律填 "default"。`
+    : '';
+  const nJson = fontAutoDetect ? 8 : 7;
+  const nEvery = fontAutoDetect ? 9 : 8;
+
+  return `你是一名漫画翻译。图片中已用红框标出编号区域，每个编号对应一段需要翻译的漫画文字（对白/旁白/音效字等）。
 
 区域清单（编号: [x, y, 宽, 高] (类别)，像素坐标；类别 text_bubble=气泡内文字，text_free=气泡外自由文字，manual=手动框选）：
 ${skeleton}
@@ -50,12 +72,13 @@ ${skeleton}
    - 艺术字/装饰性文字（特效字体、手写花字、与画面融为一体的标题字），普通排版字体无法还原；
    - text_free 且文字直接压在复杂背景上（渐变、网点、图案、人物、景物），抹掉原文会破坏画面。
    普通气泡内文字、干净纯色背景上的文字填 false。
-6. 若框内完全没有文字（误检），source 和 zh 填空字符串，freeze 填 false，color 填 "black"。
-7. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
-8. 清单中的每个编号都必须出现且只出现一次。
+6. 若框内完全没有文字（误检），source 和 zh 填空字符串，freeze 填 false，color 填 "black"。${fontRule}
+${nJson}. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
+${nEvery}. 清单中的每个编号都必须出现且只出现一次。
 
 输出格式：
-{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false}]}`;
+{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}]}`;
+};
 
 /** Draw the image with numbered boxes for each region; returns a data URL. */
 const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskOutside: boolean): string => {
@@ -191,6 +214,8 @@ export const translateEditorRegions = async (
     const skeleton = regions
       .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * iw)}, ${Math.round((r.y / 100) * ih)}, ${Math.round((r.width / 100) * iw)}, ${Math.round((r.height / 100) * ih)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
+    const fontAutoDetect = !!config.enableFontAutoDetect;
+    const prompt = buildPrompt(skeleton, fontAutoDetect);
 
     // Record the annotated page — in this flow the payload IS a drawing of the
     // image (numbered boxes, optionally masked outside), which the canvas never
@@ -203,7 +228,7 @@ export const translateEditorRegions = async (
       phase: 'editorTranslate',
       regionIds: regions.map(r => r.id),
       transforms: payloadTransforms,
-      prompt: buildPrompt(skeleton),
+      prompt,
       sentUrl: payloadUrl,
     });
 
@@ -237,7 +262,7 @@ export const translateEditorRegions = async (
             messages: [{
               role: 'user',
               content: [
-                { type: 'text', text: buildPrompt(skeleton) },
+                { type: 'text', text: prompt },
                 { type: 'image_url', image_url: { url: imageBase64 } },
               ],
             }],
@@ -289,6 +314,8 @@ export const translateEditorRegions = async (
         freeze: item.freeze === true,
         color: item.color === 'white' ? 'white' : item.color === 'black' ? 'black' : undefined,
         vertical: typeof item.vertical === 'boolean' ? item.vertical : undefined,
+        // 只在开关打开时采信：关掉后即使模型自己回了一个 font 也不生效。
+        font: fontAutoDetect ? resolveFontIdFromAi(item.font) : undefined,
       });
     }
     return results;

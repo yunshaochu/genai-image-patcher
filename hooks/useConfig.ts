@@ -1,6 +1,7 @@
 
 import { useState, useEffect } from 'react';
 import { AppConfig } from '../types';
+import { EDITOR_FONTS } from '../services/fontService';
 
 const CONFIG_STORAGE_KEY = 'genai_patcher_config_v3';
 /** Records that the user's config has already been migrated to the opt-in
@@ -106,6 +107,7 @@ const DEFAULT_CONFIG: AppConfig = {
   enableOCR: true,
   enableManualEditor: true,
   enableVerticalTextDefault: false,
+  editorFontFamily: '', // '' = 系统默认字体；其余 id 见 services/fontService.ts
   
   // New Logic Toggle
   useFullImageMasking: false,
@@ -115,6 +117,7 @@ const DEFAULT_CONFIG: AppConfig = {
   // Translation Defaults
   enableTranslationMode: false,
   sendMaskedContextForTranslation: false,
+  enableFontAutoDetect: false,
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
   translationModel: 'gemini-3-flash-preview',
@@ -219,6 +222,11 @@ export function useConfig() {
             migratedConfig.sendMaskedContextForTranslation = false;
         }
 
+        // Ensure the font auto-detect switch exists (off by default)
+        if (typeof migratedConfig.enableFontAutoDetect === 'undefined') {
+            migratedConfig.enableFontAutoDetect = false;
+        }
+
         // Ensure translation prompt cache slots exist
         if (typeof migratedConfig.translationPromptNoContext === 'undefined') {
             migratedConfig.translationPromptNoContext = '';
@@ -275,6 +283,16 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // 编辑器字体：'' = 系统默认；字体库里已删除的 id 一律回落到系统默认，
+        // 否则设置面板的下拉框会显示成空白。
+        if (
+            typeof migratedConfig.editorFontFamily !== 'string' ||
+            (migratedConfig.editorFontFamily !== '' &&
+                !EDITOR_FONTS.some(f => f.id === migratedConfig.editorFontFamily))
+        ) {
+            migratedConfig.editorFontFamily = '';
         }
 
         // Ensure the saved API-preset lists exist (multi-endpoint quick switch)

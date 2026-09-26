@@ -40,6 +40,21 @@ const NO_LINE_END = new Set(
 
 const LINE_HEIGHT_RATIO = 1.18;
 
+/**
+ * 嵌字的全局默认字体栈：区域自身没有 `editorStyle.fontFamily` 时用它。
+ *
+ * 做成模块级状态（而不是多加一个函数参数）是因为调用链太多——合成器、画笔
+ * 预览、自动字号探测、面板里的字号参考都各自调 layoutText，全部改签名既啰嗦
+ * 又容易漏。App 在「编辑器字体」配置变化时调一次 setDefaultFontFamily 即可。
+ */
+let defaultFontFamily = 'sans-serif';
+
+export const setDefaultFontFamily = (stack: string): void => {
+  defaultFontFamily = stack && stack.trim() ? stack : 'sans-serif';
+};
+
+export const getDefaultFontFamily = (): string => defaultFontFamily;
+
 // ── Vertical punctuation handling (竖排标点) ─────────────────────────────
 // Canvas can't trigger OpenType 'vert'/'vrt2' features, so vertical forms are
 // emulated per character:
@@ -172,7 +187,8 @@ const resolveStyle = (
       (style?.color ? (isLightHex(color) ? '#000000' : '#ffffff') : '#ffffff'),
     outlineWidth: style?.outlineWidth ?? 0,
     isBold: style?.isBold ?? true,
-    fontFamily: style?.fontFamily ?? 'sans-serif',
+    // 区域显式指定优先，否则跟随「编辑器字体」全局设置。
+    fontFamily: style?.fontFamily ?? defaultFontFamily,
     padding,
   };
 };

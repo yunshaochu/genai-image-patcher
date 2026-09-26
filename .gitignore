@@ -14,6 +14,7 @@ dist-ssr
 
 # Python backend
 server/model/
+server/fonts/
 server/__pycache__/
 *.pyc
 

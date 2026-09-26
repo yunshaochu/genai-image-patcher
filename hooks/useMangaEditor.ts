@@ -9,6 +9,7 @@ import {
   findCoveringCompletedBubble,
   ErasedCacheEntry,
 } from '../services/mangaEditor';
+import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
 
 export type EraseScope = 'all' | 'bubbleOnly' | 'selected';
 export type RestoreScope = 'all' | 'textFree' | 'selected';
@@ -206,6 +207,15 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     const region = regionOverride ?? img?.regions.find(r => r.id === regionId);
     if (!img || !region) return;
     if (isAiOwned(region)) return;
+
+    // 该区域指定了特殊字体（dock 手选 / AI 自动识别 / 会话恢复）时先确保字体
+    // 已加载：字体没就位时 canvas 量的是兜底字体的字宽，自动字号会算错、贴图也会
+    // 画错。已加载时这里只是一次 Map 查询 + 已 resolve 的 await。
+    const regionFontId = fontIdFromStack(region.editorStyle?.fontFamily);
+    if (regionFontId) {
+      await ensureEditorFontLoaded(regionFontId, configRef.current.pythonBackendUrl)
+        .catch(() => { /* 下载失败就用字体栈里的兜底字体，不阻塞编辑 */ });
+    }
 
     // --- timing: last input → debounce → stages → commit → painted frame ----
     const perfKey = `${imageId}|${regionId}`;
@@ -653,6 +663,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       // engine auto-fits the new text.
       const translated: Region[] = [];
       const frozen: Region[] = [];
+      /** 自动识别选中的字体 id：合成前要先从后端取回来。 */
+      const neededFontIds = new Set<string>();
       for (const r of targets) {
         const res = results.get(r.id);
         if (!res || !res.zh?.trim()) continue; // empty box / misdetection
@@ -663,12 +675,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         // and outlineWidth stays unset so the layout engine auto-sizes it
         // from the resolved font size.
         const textColor = res.color === 'white' ? '#ffffff' : res.color === 'black' ? '#000000' : undefined;
+        // 字体自动识别：res.font 为具体字体 id 时覆盖本框字体；空串是「常规
+        // 印刷体」——不覆盖，让该框继续跟随全局「编辑器字体」。
+        const aiFontStack = res.font ? editorFontStack(res.font) : undefined;
+        if (res.font) neededFontIds.add(res.font);
         const style: Region['editorStyle'] = {
           ...r.editorStyle,
           ...(res.vertical === undefined ? {} : { isVertical: res.vertical }),
           ...(textColor
             ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000' }
             : {}),
+          ...(aiFontStack ? { fontFamily: aiFontStack } : {}),
         };
         if (res.freeze || r.aiBubbleBase) {
           // aiBubbleBase forces the frozen landing even when the AI would
@@ -712,6 +729,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         ...current,
         regions: current.regions.map(r => byId.get(r.id) ?? r),
       }));
+      // 自动识别选中的字体先取回来再合成：字体没就位时 canvas 量不到正确字宽
+      // （自动字号会算错），贴图也会先用兜底字体画一遍。个别字体下载失败不阻塞
+      // 整批翻译——那几框会落到字体栈里的兜底字体上。
+      if (neededFontIds.size > 0) {
+        await Promise.all([...neededFontIds].map(id =>
+          ensureEditorFontLoaded(id, configRef.current.pythonBackendUrl).catch(e => {
+            console.warn(`字体 ${id} 加载失败，相关区域将回退到兜底字体`, e);
+          })
+        ));
+      }
+
       // Typeset composite per translated region (erasure included), sequential.
       // Note: once the API call has returned, composites always run to
       // completion — the translations are already paid for, and stopping
@@ -1009,6 +1037,22 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [getImage, scheduleRecomposite]);
 
   /**
+   * 重建所有已嵌字区域的贴图（全部图片）。
+   *
+   * 典型场景：切换「编辑器字体」——已生成的贴图是用旧字体栅格化好的位图，只改
+   * 配置不会让它们自动重画，必须显式重建。擦除底色是按几何缓存的，所以这里只
+   * 会重跑排版 + 编码，不会重新做耗时的擦除。
+   */
+  const refreshEditorPatches = useCallback(async () => {
+    for (const img of imagesRef.current) {
+      for (const r of img.regions) {
+        if (isAiOwned(r) || !regionNeedsComposite(r)) continue;
+        await recompositeRegion(img.id, r.id);
+      }
+    }
+  }, [recompositeRegion]);
+
+  /**
    * Build the region's background patch — WITHOUT the brush layer and WITHOUT
    * the typeset text — used as the base image under the brush painter. The
    * painter draws its strokes on top of this base and the text above those, so
@@ -1061,6 +1105,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     refreezeWhitedTextFree,
     unfreezeAiBubbleRegions,
     resyncEditedRegions,
+    refreshEditorPatches,
     buildBrushBase,
   };
 }
