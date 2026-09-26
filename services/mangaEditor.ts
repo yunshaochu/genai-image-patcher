@@ -201,6 +201,78 @@ export const findCoveringCompletedBubble = (
   return best;
 };
 
+/**
+ * The `text_bubble` regions that sit inside `bubble`'s box (centre containment,
+ * measurements taken from the bubble's anchor box when it has one — the anchor
+ * is the geometry its patch was generated from). This is the reverse direction
+ * of the AI pipeline's markBubbleContainedTexts (hooks/useImageProcessor.ts),
+ * which walks bubble → children; both must agree on what "inside" means, so the
+ * rule lives here once.
+ */
+export const findContainedTextRegions = (
+  regions: readonly Region[],
+  bubble: Region
+): Region[] => {
+  if (bubble.detectedClass !== 'bubble') return [];
+  const bx = bubble.anchorX ?? bubble.x;
+  const by = bubble.anchorY ?? bubble.y;
+  const bw = bubble.anchorWidth ?? bubble.width;
+  const bh = bubble.anchorHeight ?? bubble.height;
+  const out: Region[] = [];
+  for (const r of regions) {
+    if (r.id === bubble.id || r.source !== 'auto' || r.detectedClass !== 'text_bubble') continue;
+    const cx = r.x + r.width / 2;
+    const cy = r.y + r.height / 2;
+    if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) out.push(r);
+  }
+  return out;
+};
+
+/**
+ * 气泡框 ⇄ 文字框共享完成状态 —— the two workflows edit DIFFERENT regions for
+ * the same artwork (the editor typesets `text_bubble`, the AI-redraw pipeline
+ * paints whole `bubble` outlines, see isRegionPaintable), so their `status`
+ * fields used to disagree: a bubble read 未完成 while the text box inside it was
+ * already typeset. The bubble therefore now DERIVES its completion from its
+ * children: 'completed' only when EVERY contained `text_bubble` is completed
+ * ("全部完成才算完成"), back to 'pending' when one is reset. Because this is the
+ * real field, the AI-redraw pipeline skips a bubble whose text is done instead
+ * of repainting it.
+ *
+ * Deliberately conservative in three places:
+ *  - a bubble holding NO detected text box is left untouched (nothing to share
+ *    a state with — an empty bubble stays an ordinary AI-redraw target);
+ *  - a 'processing' bubble belongs to an in-flight run and is never touched;
+ *  - a revert only applies to a DERIVED completion (no processedImageUrl of its
+ *    own). A bubble carrying its real AI patch is never downgraded by a later
+ *    text edit — that patch is what the result view renders.
+ * A 'failed' bubble whose children all complete is promoted to 'completed'
+ * (its retryCount / errorHistory survive for the diagnostics badge).
+ *
+ * Returns a NEW array only when at least one status actually changed, else null
+ * — callers use that to keep the image object identity and avoid a re-render.
+ */
+export const syncBubbleStatuses = (regions: readonly Region[]): Region[] | null => {
+  let next: Region[] | null = null;
+  for (let i = 0; i < regions.length; i++) {
+    const bubble = regions[i];
+    if (bubble.detectedClass !== 'bubble' || bubble.status === 'processing') continue;
+    const children = findContainedTextRegions(regions, bubble);
+    if (children.length === 0) continue;
+    const allDone = children.every(c => c.status === 'completed');
+    let desired: Region['status'] | null = null;
+    if (allDone) {
+      if (bubble.status !== 'completed') desired = 'completed';
+    } else if (bubble.status === 'completed' && !bubble.processedImageUrl) {
+      desired = 'pending';
+    }
+    if (!desired) continue;
+    if (!next) next = [...regions];
+    next[i] = { ...bubble, status: desired };
+  }
+  return next;
+};
+
 /** True when the region has anything for the compositor to render. */
 export const regionNeedsComposite = (region: Region): boolean =>
   !!region.editorErased || !!region.editorWhitedOut || !!getRegionEditorText(region).trim() || !!region.editorBrushUrl;

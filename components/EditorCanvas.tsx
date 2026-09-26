@@ -55,6 +55,14 @@ interface EditorCanvasProps {
    * AI 重绘 / 手动修补工坊 clip the patch back to its box.
    */
   allowPatchOverflow?: boolean;
+  /**
+   * Replacement for the Reset / Redo button's action. App routes it through the
+   * editor engine so resetting a `bubble` ALSO resets the text boxes inside it
+   * (freezing their typeset text instead of wiping it) — without that the
+   * bubble ⇄ text status sync would immediately re-derive the completion the
+   * user just cleared. Undefined = the canvas' own plain reset.
+   */
+  onResetRegion?: (regionId: string) => void;
 }
 
 /**
@@ -98,6 +106,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     generationRegionSource = 'text',
     onStepSelectedFontSize,
     allowPatchOverflow = false,
+    onResetRegion,
 }: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -1093,7 +1102,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              resetRegion(region.id);
+                              // The engine's reset also clears a bubble's
+                              // contained text boxes — see onResetRegion.
+                              if (onResetRegion) onResetRegion(region.id);
+                              else resetRegion(region.id);
                             }}
                              className="w-6 h-6 bg-skin-surface text-skin-text border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-skin-fill transition-all"
                              title="Reset / Redo"

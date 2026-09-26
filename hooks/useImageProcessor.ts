@@ -13,6 +13,7 @@ import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 import { TRANSLATION_CACHE_MARKER, splitTranslationCache, writeTranslationCache, hasCachedTranslation } from '../services/translationCache';
 import { mergeGlossary } from '../services/glossary';
+import { findContainedTextRegions } from '../services/mangaEditor';
 import { recordPayload, PayloadTransform } from '../services/payloadLog';
 
 /**
@@ -299,18 +300,13 @@ export function useImageProcessor(
         // only call this on paths that actually replace the region's pixels.
         const markBubbleContainedTexts = (bubble: Region) => {
             if (bubble.detectedClass !== 'bubble') return;
-            const bx = bubble.anchorX ?? bubble.x;
-            const by = bubble.anchorY ?? bubble.y;
-            const bw = bubble.anchorWidth ?? bubble.width;
-            const bh = bubble.anchorHeight ?? bubble.height;
-            for (const r of regionsMap.values()) {
-                if (r.id === bubble.id || r.aiBubbleBase) continue;
-                if (r.source !== 'auto' || r.detectedClass !== 'text_bubble') continue;
-                const cx = r.x + r.width / 2;
-                const cy = r.y + r.height / 2;
-                if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
-                    setRegion({ ...r, aiBubbleBase: true });
-                }
+            // Containment is defined once, in the editor's bubble ⇄ text status
+            // sync (services/mangaEditor.findContainedTextRegions) — the two
+            // directions must agree on which text boxes belong to a bubble.
+            const all = Array.from(regionsMap.values());
+            for (const r of findContainedTextRegions(all, bubble)) {
+                if (r.aiBubbleBase) continue;
+                setRegion({ ...r, aiBubbleBase: true });
             }
         };
 

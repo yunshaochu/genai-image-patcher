@@ -95,6 +95,7 @@ export default function App() {
       stopTranslation,
       unfreezeTranslation,
       freezeTranslation,
+      resetRegion,
       whitenFrozenTextFree,
       refreezeWhitedTextFree,
       unfreezeAiBubbleRegions,
@@ -628,6 +629,11 @@ export default function App() {
   const editorOnAdjustRegionSize = useCallback((regionId: string, isExpand: boolean) => {
       if (selectedImageId_safe) handleAdjustRegion(selectedImageId_safe, regionId, isExpand);
   }, [selectedImageId_safe, handleAdjustRegion]);
+  // Reset / Redo goes through the editor engine so a `bubble` takes its
+  // contained text boxes with it (freezing text that would otherwise be lost).
+  const editorOnResetRegion = useCallback((regionId: string) => {
+      if (selectedImageId_safe) resetRegion(selectedImageId_safe, regionId);
+  }, [selectedImageId_safe, resetRegion]);
 
   // Ctrl+wheel over the SELECTED box in the editor workflow steps its font
   // size by ±5 — the same step the dock's ± buttons use (EditorDock
@@ -849,6 +855,7 @@ export default function App() {
                     onOcrRegion={editorOnOcrRegion}
                     showOcrButton={config.enableMangaMode && config.enableOCR}
                     onAdjustRegionSize={editorOnAdjustRegionSize}
+                    onResetRegion={editorOnResetRegion}
                     onInteractionStart={handleInteractionStart}
                     viewMode={viewMode}
                     restoreMode={restoreMode}

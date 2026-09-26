@@ -7,6 +7,8 @@ import {
   compositeRegionPatch,
   regionNeedsComposite,
   findCoveringCompletedBubble,
+  findContainedTextRegions,
+  syncBubbleStatuses,
   ErasedCacheEntry,
 } from '../services/mangaEditor';
 import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
@@ -427,6 +429,24 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       }
     }
   }, [images, recompositeRegion]);
+
+  // 气泡框 ⇄ 文字框共享完成状态：气泡内的 text_bubble 全部完成 → 气泡完成；
+  // 有一个被重置 → 气泡回到 pending（见 syncBubbleStatuses 的升降级规则）。
+  // 两个工作流因此看到同一个"已完成"：编辑器嵌字完成后，AI 重绘里那颗泡泡不
+  // 再是待处理目标（管线只挑 pending / failed），也就不会被重画覆盖。
+  // 只在状态确实变了时才写回（无变化返回 null），images → effect →
+  // updateImage → images 因此不会自激。
+  useEffect(() => {
+    for (const img of images) {
+      if (!syncBubbleStatuses(img.regions)) continue;
+      updateImage(img.id, current => {
+        // Recompute on the live state: updateImage may run against a newer
+        // commit than the one this effect rendered from.
+        const synced = syncBubbleStatuses(current.regions);
+        return synced ? { ...current, regions: synced } : current;
+      });
+    }
+  }, [images, updateImage]);
 
   /**
    * Drop a region's cached erased base (the blob URL + the decoded copy).
@@ -875,6 +895,79 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [busy, getImage, recompositeRegion, updateImage]);
 
   /**
+   * 重置 one region (the canvas' Reset / Redo button).
+   *
+   * A plain region keeps the historical hard reset: back to 'pending' with its
+   * patch dropped (typed text deliberately survives in editorText — that is how
+   * the button always behaved). A `bubble` ALSO resets the text_bubble regions
+   * it contains: the bubble derives its own completion from them (see
+   * syncBubbleStatuses), so resetting only the bubble would be undone by the
+   * very next sync pass and the bubble could never be handed back to the AI.
+   *
+   * Contained text that already carries WORK is frozen rather than wiped — the
+   * same landing as 冻结翻译 / freezeTranslation: the typeset text moves into
+   * editorFrozenText, the original artwork comes back and the box drops to
+   * 'pending' for the AI redraw, so a reset can never silently throw the user's
+   * translation away. The freeze is flagged manual, so the page-wide quick
+   * fixes (涂白并解冻 / 再次冻结) leave that decision alone.
+   */
+  const resetRegion = useCallback((imageId: string, regionId: string) => {
+    const img = getImage(imageId);
+    const region = img?.regions.find(r => r.id === regionId);
+    if (!img || !region || region.status === 'processing') return;
+    // Same containment rule the AI pipeline uses to mark aiBubbleBase children.
+    const children = region.detectedClass === 'bubble'
+      ? findContainedTextRegions(img.regions, region)
+      : [];
+
+    /**
+     * Back to "nothing generated here yet". The patch is dropped (nothing reads
+     * it any more: the result overlay and the stitcher both require status
+     * 'completed'), and the editor markers are cleared. The brush layer is
+     * deliberately kept — it is background touch-up the user painted, not a
+     * generated result.
+     */
+    const teardown = (r: Region): Region => ({
+      ...r,
+      status: 'pending',
+      processedImageUrl: undefined,
+      editorComposited: false,
+      patchMarginX: undefined,
+      patchMarginY: undefined,
+      restoreBoxes: undefined,
+    });
+
+    // The clicked box itself: only its generated content goes away. Typed text
+    // deliberately survives in editorText, exactly as this button always
+    // behaved for a single region.
+    const nextById = new Map<string, Region>([[regionId, teardown(region)]]);
+    for (const child of children) {
+      // A run owns a 'processing' box — never pull it out from under the API.
+      if (child.status === 'processing') continue;
+      nextById.set(child.id, {
+        ...teardown(child),
+        // The bubble's patch is going away, so the box no longer sits on a
+        // clean AI base: it must be erasable / re-picked by the redraw again.
+        editorErased: false,
+        editorWhitedOut: false,
+        aiBubbleBase: undefined,
+        // 冻结 instead of wiping: the typeset text is held back and the box
+        // goes back to 'pending' for the AI redraw — the same landing as the
+        // dock's 冻结翻译, so a bubble reset can never throw a translation
+        // away. Flagged manual, so the page-wide quick fixes (涂白并解冻 /
+        // 再次冻结) leave the user's decision alone.
+        ...(child.editorText?.trim()
+          ? { editorFrozenText: child.editorText, editorText: undefined, freezeManual: true }
+          : {}),
+      });
+    }
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => nextById.get(r.id) ?? r),
+    }));
+  }, [getImage, updateImage]);
+
+  /**
    * No-redraw-model fallback for frozen text_free: brute-force whiten the
    * whole box (editorWhitedOut — flood-fill erasure can't handle complex
    * backgrounds) and fill in the frozen translation, all in one click.
@@ -1153,6 +1246,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     stopTranslation,
     unfreezeTranslation,
     freezeTranslation,
+    resetRegion,
     whitenFrozenTextFree,
     refreezeWhitedTextFree,
     unfreezeAiBubbleRegions,
