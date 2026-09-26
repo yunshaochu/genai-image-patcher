@@ -247,8 +247,14 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
 
 
 def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):
-    """text_free 擦除：中心+四边中点 5 个种子各自 flood fill，
-    取面积最大者作为背景 R → 洞 = 文字。对渐变背景稳。
+    """text_free 擦除：中心+四边中点 5 个种子各自 flood fill 取并集作为背景 R
+    → 洞 = 文字。对渐变背景稳。
+
+    并集而不是"面积最大者"：印在画面上的字，背景常由几块色调不同的区域拼成
+    （天空/地面/网点/描线），只留最大的那一块，其余区域就成了"边界可达"的
+    外部 —— 文字一旦和它们相连（比如字压在某块底色差异大的画面元素上），整块
+    文字会被划进 ext，一个像素都擦不掉。种子落在文字上时那一次 fill 很小，
+    并集不会被带偏。
 
     返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
     """
@@ -256,11 +262,4 @@ def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):
     h, w = gray.shape
     cy, cx = h // 2, w // 2
     cand = [(cx, cy), (cx, 3), (cx, h - 4), (3, cy), (w - 4, cy)]
-    best = None
-    for s in cand:
-        if not (0 <= s[1] < h and 0 <= s[0] < w):
-            continue
-        r = _flood_fill_region(gray, [s], 35)
-        if best is None or r.sum() > best.sum():
-            best = r
-    return _inpaint_holes(bgr_roi, gray, best, dl, rad)
+    return _inpaint_holes(bgr_roi, gray, _flood_fill_region(gray, cand, 35), dl, rad)
