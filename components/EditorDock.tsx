@@ -51,6 +51,10 @@ interface EditorDockProps {
   onTranslateAll: () => void;
   /** True while an auto-translate run is in flight — shows the stop button. */
   translating: boolean;
+  /** Image whose translation is currently in flight (null when idle). Batch
+   *  runs set it per page, so per-region editing can stay unlocked for the
+   *  pages that are NOT being translated right now. */
+  translatingImageId?: string | null;
   onStopTranslate: () => void;
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
@@ -664,7 +668,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onOcrAll, onTranslate, onTranslateAll,
-  translating, onStopTranslate,
+  translating, translatingImageId, onStopTranslate,
   onUnfreeze, onFreeze, onWhitenFrozenTextFree, onRefreezeWhitedTextFree, onRevealAiBase,
   onDownload, onApplyAsOriginal,
 }) => {
@@ -938,6 +942,18 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
   // AI-owned: completed by the image-generation pipeline — read-only here.
   const aiLocked = region.status === 'completed' && !region.editorComposited;
+  /**
+   * Lock for THIS region's edit controls.
+   *
+   * `busy` is global, but translation is not: during a batch run only the page
+   * actually being translated must be frozen (the AI is about to overwrite its
+   * regions), while the pages already finished — or not started yet — stay
+   * editable, so the user can keep polishing a completed box (字色 / 字体 / 字号
+   * …) while the next page renders. Non-translation work (erase / OCR) still
+   * locks globally through `busy`.
+   */
+  const regionEditLocked =
+    aiLocked || translatingImageId === image.id || (busy && !translating);
   const text = region.editorText ?? region.ocrText ?? '';
   const vertical = region.editorStyle?.isVertical;
 
@@ -1048,7 +1064,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             perfProbe('按键', probeStart);
           }}
           rows={4}
-          disabled={aiLocked}
+          disabled={regionEditLocked}
           placeholder={t(lang, 'editorTextPlaceholder')}
           className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
         />
@@ -1060,7 +1076,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               <button
                 key={i}
                 onClick={() => onUpdateRegion(region.id, { editorStyle: { isVertical: v } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
-                disabled={aiLocked}
+                disabled={regionEditLocked}
                 className={`px-1.5 py-0.5 text-[9px] rounded transition-all disabled:opacity-40 ${vertical === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
               >
                 {v === undefined ? t(lang, 'editorDirAuto') : v ? t(lang, 'editorDirVertical') : t(lang, 'editorDirHorizontal')}
@@ -1078,7 +1094,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   ? `${t(lang, 'editorFontSizeAuto')} ${referenceFontSize}px`
                   : t(lang, 'editorFontSizeAuto')
               }
-              disabled={aiLocked}
+              disabled={regionEditLocked}
               onChange={(e) => {
                 // No clamping here: this is a controlled input, so clamping
                 // mid-typing would rewrite the first digit (typing "4" of
@@ -1101,7 +1117,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             <div className="flex flex-col border border-l-0 border-skin-border rounded-r overflow-hidden bg-skin-fill">
               <button
                 onClick={() => stepFontSize(5)}
-                disabled={aiLocked}
+                disabled={regionEditLocked}
                 title="+5"
                 className="flex-1 px-1.5 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface disabled:opacity-40 transition-all"
               >
@@ -1109,7 +1125,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
               </button>
               <button
                 onClick={() => stepFontSize(-5)}
-                disabled={aiLocked}
+                disabled={regionEditLocked}
                 title="-5"
                 className="flex-1 px-1.5 flex items-center justify-center text-skin-muted hover:text-skin-primary hover:bg-skin-surface disabled:opacity-40 transition-all border-t border-skin-border"
               >
@@ -1138,7 +1154,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                         ? { color: '#000000', outlineColor: '#ffffff', outlineWidth: undefined, colorSource: 'manual' }
                         : { color: '#ffffff', outlineColor: '#000000', outlineWidth: undefined, colorSource: 'manual' },
                   })}
-                  disabled={busy || aiLocked}
+                  disabled={regionEditLocked}
                   className={`px-2 py-1 text-[9px] font-bold transition-colors ${
                     (region.editorStyle?.color === '#000000' ? 'black'
                       : region.editorStyle?.color === '#ffffff' ? 'white'
@@ -1153,7 +1169,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             </div>
             <button
               onClick={() => setPickColorOpen(o => !o)}
-              disabled={busy || aiLocked}
+              disabled={regionEditLocked}
               title={t(lang, 'editorPickColorTip')}
               className={`ml-auto px-1.5 py-1 rounded border text-[9px] font-bold transition-colors disabled:opacity-50 ${
                 pickColorOpen
@@ -1199,7 +1215,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
           region={region}
           lang={lang}
           backendBaseUrl={config.pythonBackendUrl}
-          disabled={busy || aiLocked}
+          disabled={regionEditLocked}
           onUpdateRegion={onUpdateRegion}
         />
 
@@ -1207,7 +1223,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
-            disabled={busy || aiLocked}
+            disabled={regionEditLocked}
             className={`px-2 py-1.5 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
               region.editorErased
                 ? 'border-sky-300 text-sky-600 bg-sky-500/10 hover:bg-sky-500/20'

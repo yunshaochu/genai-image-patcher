@@ -172,6 +172,94 @@ const extractJson = (text: string): any => {
 };
 
 /**
+ * Inline retry budgets for one editor-translate call.
+ *
+ * - 429 / rate-limit signals use their own, larger budget and back off through
+ *   the shared global gate (coordinated across all in-flight calls so parallel
+ *   requests don't thundering-herd the endpoint).
+ * - Every other transient failure — timeout, 5xx, network drop, or an
+ *   unparseable / truncated model response — gets a small budget with a
+ *   simple exponential back-off: a single hiccup must not lose a whole page.
+ *
+ * Deterministic 4xx client errors (bad key, malformed request) are NOT
+ * retried — waiting cannot fix them, only delay the error the user needs.
+ */
+const MAX_429_RETRIES = 5;
+const MAX_ERROR_RETRIES = 3;
+const ERROR_BACKOFF_BASE_MS = 1_500;
+const ERROR_BACKOFF_MAX_MS = 15_000;
+
+/** Exponential back-off for the Nth general retry (N starts at 1). */
+const errorBackoffMs = (retry: number): number =>
+  Math.min(ERROR_BACKOFF_MAX_MS, ERROR_BACKOFF_BASE_MS * 2 ** (retry - 1));
+
+/** True when a failed attempt is worth repeating. Abort is handled before this
+ *  is consulted; 4xx (except 408 timeout / 429 rate-limit) never retry. */
+const isRetryableTranslateError = (err: any): boolean => {
+  const status = err?.status ?? err?.code;
+  if (typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+    return false;
+  }
+  return true;
+};
+
+/** Abortable sleep — the caller's stop button must interrupt a back-off wait. */
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const done = () => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+
+/**
+ * Parse a model response into per-region results. Throws on an empty /
+ * unparseable body so the caller can retry the call — a truncated or
+ * malformed JSON response is exactly the transient model failure this
+ * budget exists for, not a reason to fail the whole page.
+ */
+const parseTranslationResponse = (
+  content: string,
+  regions: Region[],
+  fontAutoDetect: boolean
+): Map<string, RegionTranslation> => {
+  if (!content.trim()) throw new Error('AI 返回了空响应');
+  const parsed = extractJson(content);
+  const list: any[] = Array.isArray(parsed?.regions) ? parsed.regions : [];
+  const results = new Map<string, RegionTranslation>();
+  for (const item of list) {
+    const idx = Number(item?.id);
+    if (!Number.isInteger(idx) || idx < 1 || idx > regions.length) continue;
+    results.set(regions[idx - 1].id, {
+      source: typeof item.source === 'string' ? item.source : undefined,
+      zh: typeof item.zh === 'string' ? item.zh : undefined,
+      freeze: item.freeze === true,
+      color: item.color === 'white' ? 'white' : item.color === 'black' ? 'black' : undefined,
+      vertical: typeof item.vertical === 'boolean' ? item.vertical : undefined,
+      // 只在开关打开时采信：关掉后即使模型自己回了一个 font 也不生效。
+      font: fontAutoDetect ? resolveFontIdFromAi(item.font) : undefined,
+    });
+  }
+  // We always send ≥1 region and the prompt demands every id back, so a valid
+  // JSON body with no usable entries is a bad response (wrong key, truncated
+  // list) — treat it like a parse failure so the caller retries.
+  if (results.size === 0) throw new Error('AI 响应中没有可用的区域数据');
+  return results;
+};
+
+/**
  * Translate all given regions of one image with a single vision-AI call.
  * Returns a Map keyed by Region.id. Regions the model found empty
  * (misdetections) come back with blank source/zh and are ignored by the
@@ -179,10 +267,11 @@ const extractJson = (text: string): any => {
  *
  * `signal` lets the caller abort the request (editor stop button).
  *
- * Retry policy mirrors aiService.executeWithRetry: only 429 / rate-limit
- * signals retry inline (back off coordinated through the global gate so
- * parallel calls don't thundering-herd the endpoint); timeouts, 5xx and
- * network errors throw immediately.
+ * Retry policy: 429 / rate-limit signals retry inline through the global gate
+ * (see the constants above); other transient failures (timeout, 5xx, network
+ * error, unparseable / empty model response) retry inline a few times with
+ * exponential back-off. Only deterministic client errors (4xx) abort
+ * immediately.
  */
 export const translateEditorRegions = async (
   imageEl: HTMLImageElement,
@@ -239,21 +328,25 @@ export const translateEditorRegions = async (
     let cleanBaseUrl = translationBaseUrl.replace(/\/+$/, '');
     if (!cleanBaseUrl.endsWith('/v1')) cleanBaseUrl += '/v1';
 
-    // 429 inline retries are capped — the gate handles the wait, so we just
-    // loop and let `await wait()` block before each attempt.
-    const MAX_429_RETRIES = 5;
-    let content = '';
-    for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+    const timeoutMs = config.apiTimeout || 60000;
+
+    /**
+     * One HTTP attempt: honour the global gate, run under the per-request
+     * timeout AND the caller's stop signal (both cancel the underlying fetch,
+     * not just the wrapper promise), and return the raw assistant message.
+     * Throws on any failure — the retry loop below decides what to do.
+     */
+    const requestOnce = async (): Promise<string> => {
       if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      // Honour the global cool-down gate (no-op when not tripped).
+      // Honour the global cool-down gate (no-op when not tripped). A 429 from
+      // a previous attempt blocks here, so no local sleep is needed for it.
       await globalRateLimitGate.wait(signal);
 
-      // Per-attempt controller: the timeout and the caller's stop signal
-      // both cancel the underlying fetch, not just the wrapper promise.
       const ctrl = new AbortController();
+      let timedOut = false;
       const onOuterAbort = () => ctrl.abort();
       if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
-      const timer = setTimeout(() => ctrl.abort(), config.apiTimeout || 60000);
+      const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
       try {
         const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
           method: 'POST',
@@ -284,45 +377,75 @@ export const translateEditorRegions = async (
           throw e;
         }
         const data = await response.json();
-        content = data.choices?.[0]?.message?.content || '';
-        break;
+        return data.choices?.[0]?.message?.content || '';
       } catch (e: any) {
         // Caller-cancel: never retry, propagate the abort.
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-        // 429: trip the global gate and retry inline.
-        if (isRateLimitError(e) && attempt < MAX_429_RETRIES) {
-          const waitMs = globalRateLimitGate.trip(parseRetryAfter(e.retryAfter));
-          console.warn(
-            `翻译 API 被限流 (429)，退避 ${Math.round(waitMs)}ms 后重试 ` +
-            `(第 ${attempt + 2}/${MAX_429_RETRIES + 1} 次尝试)。`
-          );
-          continue;
-        }
-        // Non-429 (or retries exhausted): bail.
+        // Normalise our own timeout so it is retried as a transient failure
+        // instead of surfacing as a bare AbortError.
+        if (timedOut) throw new Error(`翻译请求超时（${timeoutMs}ms）`);
         throw e;
       } finally {
         clearTimeout(timer);
         if (signal) signal.removeEventListener('abort', onOuterAbort);
       }
-    }
+    };
 
-    const parsed = extractJson(content);
-    const list: any[] = Array.isArray(parsed?.regions) ? parsed.regions : [];
-    const results = new Map<string, RegionTranslation>();
-    for (const item of list) {
-      const idx = Number(item?.id);
-      if (!Number.isInteger(idx) || idx < 1 || idx > regions.length) continue;
-      results.set(regions[idx - 1].id, {
-        source: typeof item.source === 'string' ? item.source : undefined,
-        zh: typeof item.zh === 'string' ? item.zh : undefined,
-        freeze: item.freeze === true,
-        color: item.color === 'white' ? 'white' : item.color === 'black' ? 'black' : undefined,
-        vertical: typeof item.vertical === 'boolean' ? item.vertical : undefined,
-        // 只在开关打开时采信：关掉后即使模型自己回了一个 font 也不生效。
-        font: fontAutoDetect ? resolveFontIdFromAi(item.font) : undefined,
-      });
+    let rateLimitRetries = 0;
+    let errorRetries = 0;
+    for (;;) {
+      let content: string;
+      try {
+        content = await requestOnce();
+      } catch (e: any) {
+        if (signal?.aborted || e?.name === 'AbortError') {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        // 429 / rate-limit: trip the global gate and retry inline (the next
+        // attempt's `await wait()` honours the cool-down).
+        if (isRateLimitError(e)) {
+          if (rateLimitRetries >= MAX_429_RETRIES) throw e;
+          rateLimitRetries++;
+          const waitMs = globalRateLimitGate.trip(parseRetryAfter(e.retryAfter));
+          console.warn(
+            `翻译 API 被限流 (429)，退避 ${Math.round(waitMs)}ms 后重试 ` +
+            `(第 ${rateLimitRetries}/${MAX_429_RETRIES} 次重试)。`
+          );
+          continue;
+        }
+        // Other transient failures (timeout / 5xx / network): retry a few
+        // times before giving up.
+        if (isRetryableTranslateError(e) && errorRetries < MAX_ERROR_RETRIES) {
+          errorRetries++;
+          const waitMs = errorBackoffMs(errorRetries);
+          console.warn(
+            `翻译 API 请求失败（${e?.message || e}），${Math.round(waitMs)}ms 后重试 ` +
+            `(第 ${errorRetries}/${MAX_ERROR_RETRIES} 次重试)。`
+          );
+          await sleep(waitMs, signal);
+          continue;
+        }
+        throw e;
+      }
+
+      // Request succeeded — parse it. An empty / truncated / malformed body is
+      // retried too: it is a transient model failure, not a reason to fail the
+      // whole page.
+      try {
+        return parseTranslationResponse(content, regions, fontAutoDetect);
+      } catch (e: any) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (errorRetries >= MAX_ERROR_RETRIES) throw e;
+        errorRetries++;
+        const waitMs = errorBackoffMs(errorRetries);
+        console.warn(
+          `翻译响应无法解析（${e?.message || e}），${Math.round(waitMs)}ms 后重试 ` +
+          `(第 ${errorRetries}/${MAX_ERROR_RETRIES} 次重试)。`
+        );
+        await sleep(waitMs, signal);
+        continue;
+      }
     }
-    return results;
   } finally {
     if (compressedUrl) releaseObjectURL(compressedUrl);
   }

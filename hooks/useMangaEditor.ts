@@ -151,6 +151,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   // AbortController of the in-flight translation (single-page runs own it;
   // batch runs share one controller across images).
   const translateAbortRef = useRef<AbortController | null>(null);
+  // Image whose translation is currently in flight. The dock keys per-region
+  // editing off this: during a BATCH run the pages already finished (and the
+  // ones not started yet) stay editable — only the page being translated is
+  // locked, because its regions are about to be overwritten by the AI.
+  const [translatingImageId, setTranslatingImageId] = useState<string | null>(null);
   // regionId → last resolved font size (auto-fit or manual), for panel display.
   const [computedFontSizes, setComputedFontSizes] = useState<Record<string, number>>({});
   const imagesRef = useRef(images);
@@ -674,6 +679,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
     setBusy(true);
     setTranslating(true);
+    setTranslatingImageId(imageId);
     try {
       const imageEl = await loadImage(img.previewUrl);
       const results = await translateEditorRegions(imageEl, targets, configRef.current, signal);
@@ -786,6 +792,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     } finally {
       setBusy(false);
       setTranslating(false);
+      setTranslatingImageId(prev => (prev === imageId ? null : prev));
       if (ownCtrl && translateAbortRef.current === ownCtrl) {
         translateAbortRef.current = null;
       }
@@ -988,6 +995,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       }
     } finally {
       setTranslating(false);
+      setTranslatingImageId(null);
       if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
     }
   }, [busy, translateImageRegions, pickTranslateTargets]);
@@ -1110,6 +1118,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   return {
     busy,
     translating,
+    translatingImageId,
     computedFontSizes,
     updateEditorRegion,
     setBrushLayer,
