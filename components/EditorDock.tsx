@@ -78,6 +78,37 @@ interface EditorDockProps {
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
 
+// 画笔（画笔修补）手感跨会话记忆：尺寸与颜色都存在浏览器里，收起面板 / 换框 /
+// 重开页面后不必再调一遍 —— 这是常用参数，不该每次都回到默认值。
+const BRUSH_SIZE_STORAGE_KEY = 'genai_patcher_editor_brush_size_v1';
+const BRUSH_COLOR_STORAGE_KEY = 'genai_patcher_editor_brush_color_v1';
+const BRUSH_SIZE_MIN = 2;
+const BRUSH_SIZE_MAX = 60;
+const BRUSH_SIZE_DEFAULT = 14;
+const BRUSH_COLOR_DEFAULT = '#ffffff';
+
+/** 读取记忆的画笔大小：缺失 / 越界 / 损坏一律回落到默认值。 */
+const loadBrushSize = (): number => {
+  try {
+    const raw = localStorage.getItem(BRUSH_SIZE_STORAGE_KEY);
+    const n = raw === null ? NaN : Number(raw);
+    if (!Number.isFinite(n)) return BRUSH_SIZE_DEFAULT;
+    return Math.min(BRUSH_SIZE_MAX, Math.max(BRUSH_SIZE_MIN, Math.round(n)));
+  } catch {
+    return BRUSH_SIZE_DEFAULT;
+  }
+};
+
+/** 读取记忆的画笔颜色；不是 #rrggbb 一律回落到默认白色。 */
+const loadBrushColor = (): string => {
+  try {
+    const v = localStorage.getItem(BRUSH_COLOR_STORAGE_KEY);
+    return v && /^#[0-9a-f]{6}$/i.test(v) ? v : BRUSH_COLOR_DEFAULT;
+  } catch {
+    return BRUSH_COLOR_DEFAULT;
+  }
+};
+
 const classBadge = (region: Region, lang: 'zh' | 'en'): string => {
   if (region.detectedClass === 'text_bubble') return t(lang, 'editorClassBubble');
   if (region.detectedClass === 'text_free') return t(lang, 'editorClassFree');
@@ -172,7 +203,12 @@ const BrushPainter: React.FC<{
   preferVerticalDefault: boolean;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
-}> = ({ region, image, lang, preferVerticalDefault, buildBrushBase, onBrushChange }) => {
+  /** 笔触尺寸 / 颜色由父级持有：一是要记忆在浏览器里，二是吸管取色在面板一级，
+   *  画笔预览还没展开时也要能改。 */
+  size: number;
+  color: string;
+  onSizeChange: (size: number) => void;
+}> = ({ region, image, lang, preferVerticalDefault, buildBrushBase, onBrushChange, size, color, onSizeChange }) => {
   const displayRef = useRef<HTMLCanvasElement>(null);
   const brushCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseImgRef = useRef<HTMLImageElement | null>(null);
@@ -187,8 +223,6 @@ const BrushPainter: React.FC<{
   const selfExportedRef = useRef<string | null>(null);
 
   const [ready, setReady] = useState(false);
-  const [brushSize, setBrushSize] = useState(14);
-  const [brushColor, setBrushColor] = useState('#ffffff');
 
   const geomKey = `${region.x},${region.y},${region.width},${region.height}`;
   // Rebuild the base whenever editor content/geometry changes — but NOT on
@@ -308,8 +342,8 @@ const BrushPainter: React.FC<{
     ctx.globalCompositeOperation = 'source-over';
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.strokeStyle = brushColor;
-    ctx.lineWidth = brushSize;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = size;
     ctx.beginPath();
     const last = lastPointRef.current ?? p;
     ctx.moveTo(last.x, last.y);
@@ -341,29 +375,16 @@ const BrushPainter: React.FC<{
 
   return (
     <div className="flex flex-col gap-2">
+      {/* 笔色（含吸管）已提到面板一级：收起时也能取色 / 换色。这里只留笔触大小
+          滑块 + 预览画布 —— 大小记在浏览器里，下次打开还是它。 */}
       <div className="flex items-center gap-2">
         <span className="text-[10px] text-skin-muted whitespace-nowrap">{t(lang, 'editor_brush_size')}</span>
         <input
-          type="range" min="2" max="60" value={brushSize}
-          onChange={(e) => setBrushSize(Number(e.target.value))}
+          type="range" min={BRUSH_SIZE_MIN} max={BRUSH_SIZE_MAX} value={size}
+          onChange={(e) => onSizeChange(Number(e.target.value))}
           className="flex-1 h-1 accent-skin-primary"
         />
-        <span className="text-[10px] font-mono w-6 text-right">{brushSize}</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        {['#ffffff', '#000000', '#f8fafc', '#1e293b'].map(c => (
-          <button
-            key={c}
-            onClick={() => setBrushColor(c)}
-            className={`w-6 h-6 rounded-full border border-skin-border shadow-sm ${brushColor === c ? 'ring-2 ring-skin-primary ring-offset-1' : ''}`}
-            style={{ backgroundColor: c }}
-          />
-        ))}
-        <input
-          type="color" value={brushColor}
-          onChange={(e) => setBrushColor(e.target.value)}
-          className="w-6 h-6 p-0 border-0 rounded-full overflow-hidden"
-        />
+        <span className="text-[10px] font-mono w-6 text-right">{size}</span>
       </div>
 
       <div className="border border-skin-border rounded overflow-hidden bg-checkerboard flex justify-center">
@@ -428,7 +449,10 @@ const OriginalColorPicker: React.FC<{
   image: UploadedImage;
   lang: 'zh' | 'en';
   onPick: (hex: string) => void;
-}> = ({ region, image, lang, onPick }) => {
+  /** 标题 / 说明覆盖项：画笔吸管吸的是「画笔颜色」，文案与字色吸管不同。 */
+  label?: string;
+  labelTip?: string;
+}> = ({ region, image, lang, onPick, label, labelTip }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loupeRef = useRef<HTMLCanvasElement>(null);
   /** 原图裁剪（离屏 canvas，1:1 像素）。取色只读它，与显示尺寸/DPR 无关。 */
@@ -532,9 +556,9 @@ const OriginalColorPicker: React.FC<{
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1">
-        <span className="text-[9px] font-bold text-skin-muted shrink-0">{t(lang, 'editorPickColor')}</span>
-        <span className="text-[9px] text-skin-muted italic truncate" title={t(lang, 'editorPickColorHint')}>
-          {t(lang, 'editorPickColorHint')}
+        <span className="text-[9px] font-bold text-skin-muted shrink-0">{label ?? t(lang, 'editorPickColor')}</span>
+        <span className="text-[9px] text-skin-muted italic truncate" title={labelTip ?? t(lang, 'editorPickColorHint')}>
+          {labelTip ?? t(lang, 'editorPickColorHint')}
         </span>
       </div>
       <div className="border border-skin-border rounded overflow-hidden bg-checkerboard flex justify-center">
@@ -686,6 +710,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
     try { return localStorage.getItem(COLLAPSE_STORAGE_KEY) === '1'; } catch { return false; }
   });
   const [brushOpen, setBrushOpen] = useState(false);
+  /** 画笔吸管（一级按钮）的取色面板是否展开。 */
+  const [brushPickOpen, setBrushPickOpen] = useState(false);
+  /** 画笔尺寸 / 颜色：浏览器本地记忆，重开页面、换框都不再回到默认值。 */
+  const [brushSize, setBrushSize] = useState(loadBrushSize);
+  const [brushColor, setBrushColor] = useState(loadBrushColor);
   /** 原图吸管面板是否展开（选中的框一变就收起）。 */
   const [pickColorOpen, setPickColorOpen] = useState(false);
   /** Batch scope of the no-selection actions: the current image only, or every
@@ -700,6 +729,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
     try { localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
   }, [collapsed]);
 
+  // 画笔手感落盘：调一次就一直记住。
+  useEffect(() => {
+    try { localStorage.setItem(BRUSH_SIZE_STORAGE_KEY, String(brushSize)); } catch { /* ignore */ }
+  }, [brushSize]);
+  useEffect(() => {
+    try { localStorage.setItem(BRUSH_COLOR_STORAGE_KEY, brushColor); } catch { /* ignore */ }
+  }, [brushColor]);
+
   // Switching scope re-arms the confirmation: 「所有图片」must be confirmed again.
   useEffect(() => { setWhitenConfirm(false); }, [imageScope]);
 
@@ -708,7 +745,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const region = idx >= 0 ? editableRegions[idx] : null;
 
   // 吸管是「这一个框」的工具：换框就收起，免得在上一个框的原图裁剪上取色。
-  useEffect(() => { setPickColorOpen(false); }, [selectedRegionId, image.id]);
+  useEffect(() => { setPickColorOpen(false); setBrushPickOpen(false); }, [selectedRegionId, image.id]);
 
   // Result gating for the collapsed rail (same rule as the pinned footer, so the
   // icon rail and the footer can never disagree about what is available).
@@ -1357,7 +1394,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
         {/* Brush touch-up. 涂白 / 涂黑 / 清空 stay clickable while the section is
             collapsed — covering a box is the common case, brushing is the
-            exception — so the painter body only holds size / colour / preview. */}
+            exception. 笔色（含吸管取色）同样常驻一级：取色不该藏进二级面板里；
+            展开后才是笔触大小 + 预览画布。 */}
         {!aiLocked && (
           <div className="border border-skin-border rounded-lg overflow-hidden">
             <div className="flex items-center gap-1 px-2 py-1.5 bg-skin-fill/50">
@@ -1373,6 +1411,56 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 <BrushActions region={region} lang={lang} onBrushChange={onBrushChange} />
               </div>
             </div>
+
+            {/* 一级的笔色行（不需要展开画笔面板）：吸管 + 常用色 + 自定义色。
+                吸管取的是本框**原图**的颜色（擦过字也能取到底色），取到就作为画笔
+                颜色，并记进浏览器。 */}
+            <div className="flex items-center gap-1.5 px-2 py-1.5 border-t border-skin-border bg-skin-fill/30">
+              <button
+                onClick={() => setBrushPickOpen(o => !o)}
+                title={t(lang, 'editorBrushPickColorTip')}
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold border rounded shrink-0 transition-colors ${
+                  brushPickOpen
+                    ? 'border-skin-primary text-skin-primary bg-skin-primary/10'
+                    : 'border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary'
+                }`}
+              >
+                <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.66 5.41l.92.92-2.69 2.69-.92-.92 2.69-2.69M17.67 3c-.26 0-.51.1-.71.29l-3.12 3.12-1.93-1.91-1.41 1.41 1.42 1.42L4.16 14.9c-.39.39-.59.9-.59 1.41V19h2.69c.53 0 1.04-.21 1.41-.59l7.78-7.78 1.42 1.41 1.41-1.41-1.91-1.91 3.12-3.12c.38-.38.38-1.02 0-1.41l-1.42-1.42C18.17 3.1 17.92 3 17.67 3z" /></svg>
+                {t(lang, 'editorBrushPickColor')}
+              </button>
+              {['#ffffff', '#000000', '#f8fafc', '#1e293b'].map(c => (
+                <button
+                  key={c}
+                  onClick={() => setBrushColor(c)}
+                  title={c}
+                  className={`w-5 h-5 rounded-full border border-skin-border shadow-sm shrink-0 ${brushColor === c ? 'ring-2 ring-skin-primary ring-offset-1' : ''}`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+              <input
+                type="color" value={brushColor}
+                onChange={(e) => setBrushColor(e.target.value)}
+                title={t(lang, 'editor_brush_color')}
+                className="w-5 h-5 p-0 border-0 rounded-full overflow-hidden shrink-0"
+              />
+            </div>
+
+            {brushPickOpen && (
+              <div className="p-2 border-t border-skin-border">
+                <OriginalColorPicker
+                  region={region}
+                  image={image}
+                  lang={lang}
+                  label={t(lang, 'editorBrushPickColor')}
+                  labelTip={t(lang, 'editorBrushPickColorTip')}
+                  onPick={(hex) => {
+                    setBrushColor(hex);
+                    setBrushPickOpen(false);
+                  }}
+                />
+              </div>
+            )}
+
             {brushOpen && (
               <div className="p-2 border-t border-skin-border">
                 <BrushPainter
@@ -1383,6 +1471,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   preferVerticalDefault={!!config.enableVerticalTextDefault}
                   buildBrushBase={buildBrushBase}
                   onBrushChange={onBrushChange}
+                  size={brushSize}
+                  color={brushColor}
+                  onSizeChange={setBrushSize}
                 />
               </div>
             )}
