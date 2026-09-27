@@ -270,7 +270,7 @@ const generateOpenAIImage = async (
   config: AppConfig,
   signal?: AbortSignal
 ): Promise<string> => {
-  const { openaiBaseUrl, openaiApiKey, openaiModel, openaiStream } = config;
+  const { openaiBaseUrl, openaiApiKey, openaiModel } = config;
 
   const safeApiKey = sanitizeHeaderValue(openaiApiKey);
 
@@ -306,8 +306,6 @@ const generateOpenAIImage = async (
   ];
 
   try {
-    const isStream = openaiStream === true;
-
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -317,7 +315,6 @@ const generateOpenAIImage = async (
       body: JSON.stringify({
         model: openaiModel,
         messages: messages,
-        stream: isStream,
         max_tokens: 4096
       }),
       signal: signal
@@ -331,76 +328,18 @@ const generateOpenAIImage = async (
       throw e;
     }
 
-    let content = '';
+    const data = await response.json();
 
-    if (isStream && response.body) {
-        // Handle Streaming Response.
-        // SSE chunks can split a single `data: {...}` line mid-JSON; the previous
-        // line-at-a-time parse swallowed those as JSON errors and lost tokens.
-        // Buffer raw bytes, only emit fully \n-terminated lines, flush the tail.
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = '';
-        let done = false;
-
-        const processLine = (line: string): string | undefined => {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data: ')) return;
-            const dataStr = trimmed.slice(6);
-            if (dataStr === '[DONE]') return;
-            try {
-                const json = JSON.parse(dataStr);
-
-                // Check for custom images in stream (support for non-standard proxies)
-                if (json.choices?.[0]?.message?.images?.[0]?.image_url?.url) {
-                    return json.choices[0].message.images[0].image_url.url;
-                }
-
-                const deltaContent = json.choices?.[0]?.delta?.content || '';
-                content += deltaContent;
-            } catch (e) {
-                console.warn("Stream parsing error", e);
-            }
-        };
-
-        while (!done) {
-            const { value, done: readerDone } = await reader.read();
-            done = readerDone;
-
-            if (value) {
-                buffer += decoder.decode(value, { stream: true });
-            }
-
-            let newlineIdx: number;
-            while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-                const line = buffer.slice(0, newlineIdx);
-                buffer = buffer.slice(newlineIdx + 1);
-                const earlyImage = processLine(line);
-                if (earlyImage) return earlyImage;
-            }
-        }
-
-        // Flush decoder and any trailing partial line that lacked a final \n.
-        const tail = buffer + decoder.decode();
-        if (tail.length > 0) {
-            const earlyImage = processLine(tail);
-            if (earlyImage) return earlyImage;
-        }
-    } else {
-        // Handle Normal Response
-        const data = await response.json();
-
-        // Support for custom 'images' array in message (e.g. Gemini-OpenAI-Proxy)
-        const message = data.choices?.[0]?.message;
-        if (message?.images && Array.isArray(message.images) && message.images.length > 0) {
-             const firstImg = message.images[0];
-             if (firstImg?.image_url?.url) {
-                 return firstImg.image_url.url;
-             }
-        }
-
-        content = message?.content || '';
+    // Support for custom 'images' array in message (e.g. Gemini-OpenAI-Proxy)
+    const message = data.choices?.[0]?.message;
+    if (message?.images && Array.isArray(message.images) && message.images.length > 0) {
+         const firstImg = message.images[0];
+         if (firstImg?.image_url?.url) {
+             return firstImg.image_url.url;
+         }
     }
+
+    const content = message?.content || '';
 
     if (!content) {
       throw new Error("OpenAI returned no content.");
@@ -413,6 +352,112 @@ const generateOpenAIImage = async (
         throw error; // Re-throw aborts to be caught by the UI
     }
     console.error("OpenAI Chat Generation Error:", error);
+    throw error;
+  }
+};
+
+/** data URI（或裸 base64）→ Blob，保留原始 mime —— 压缩后的 payload 可能是
+ *  WebP，转成 PNG 会白白放大体积。 */
+const base64ToBlob = async (imageBase64: string): Promise<{ blob: Blob; mime: string }> => {
+  if (imageBase64.startsWith('data:')) {
+    const blob = await (await fetch(imageBase64)).blob();
+    return { blob, mime: blob.type || 'image/png' };
+  }
+  const binary = atob(imageBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return { blob: new Blob([bytes], { type: 'image/png' }), mime: 'image/png' };
+};
+
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+/**
+ * Handles the OpenAI-compatible dedicated image endpoint:
+ * `POST {baseUrl}/v1/images/edits` — multipart/form-data image-to-image.
+ *
+ * Differences from generateOpenAIImage (chat/completions):
+ * - the crop travels as the standard `image` file field instead of being
+ *   embedded in `messages`;
+ * - never streams — the endpoint has no SSE mode;
+ * - `response_format` / `size` are deliberately NOT sent: gpt-image-1 rejects
+ *   unknown parameters with a 400, so whatever comes back wins — `b64_json`
+ *   is used directly, `url` is fetched and converted to base64.
+ */
+const generateOpenAIImageEdit = async (
+  imageBase64: string,
+  prompt: string,
+  config: AppConfig,
+  signal?: AbortSignal
+): Promise<string> => {
+  const { openaiBaseUrl, openaiApiKey, openaiModel } = config;
+
+  const safeApiKey = sanitizeHeaderValue(openaiApiKey);
+
+  let cleanBaseUrl = openaiBaseUrl.replace(/\/$/, "");
+  if (!cleanBaseUrl.endsWith('/v1')) {
+    cleanBaseUrl += '/v1';
+  }
+  const url = `${cleanBaseUrl}/images/edits`;
+
+  const { blob, mime } = await base64ToBlob(imageBase64);
+  const ext = EXT_BY_MIME[mime] || 'png';
+
+  const form = new FormData();
+  form.append('model', openaiModel);
+  form.append('prompt', prompt);
+  form.append('n', '1');
+  // 文件名后缀跟着 mime 走 —— 个别中转站靠后缀猜类型。
+  form.append('image', blob, `image.${ext}`);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        // 不要手写 Content-Type：multipart 的 boundary 必须由浏览器生成。
+        'Authorization': `Bearer ${safeApiKey}`,
+      },
+      body: form,
+      signal: signal,
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      const e: any = new Error(`Image Edits API Error: ${err.error?.message || response.statusText}`);
+      e.status = response.status;
+      e.retryAfter = response.headers.get('Retry-After');
+      if (response.status === 404 || response.status === 405) {
+        e.message += "（该地址似乎没有 /images/edits 接口，可在「连接设置 → 图片接口」切回 Chat Completions）";
+      }
+      throw e;
+    }
+
+    const data = await response.json();
+    const first = data?.data?.[0];
+    if (!first) {
+      throw new Error("Image Edits API returned no image data.");
+    }
+
+    if (first.b64_json) {
+      return `data:image/png;base64,${first.b64_json}`;
+    }
+
+    const returnedUrl = first.url || first.image_url?.url;
+    if (returnedUrl) {
+      return await fetchImageAsBase64(returnedUrl);
+    }
+
+    throw new Error("Image Edits API response had neither b64_json nor url.");
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+        throw error; // Re-throw aborts to be caught by the UI
+    }
+    console.error("OpenAI Image Edits Error:", error);
     throw error;
   }
 };
@@ -567,7 +612,11 @@ export const generateRegionEdit = async (
   const worker = async (opSignal: AbortSignal) => {
     if (config.provider === 'openai') {
       if (!config.openaiApiKey) throw new Error("OpenAI API Key is missing");
-      return generateOpenAIImage(imageBase64, prompt, config, opSignal);
+      // 图片接口形态由「连接设置 → 图片接口」决定：
+      // 'chat' = 多模态对话生图（历史默认）；'edit' = 图像专用 /v1/images/edits。
+      return config.openaiImageEndpointMode === 'edit'
+        ? generateOpenAIImageEdit(imageBase64, prompt, config, opSignal)
+        : generateOpenAIImage(imageBase64, prompt, config, opSignal);
     } else {
       return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey, opSignal, timeout);
     }

@@ -99,6 +99,7 @@ const sanitizeProfileList = (value: unknown): ApiProfile[] => {
  *  the whole i18n lookup down with it. */
 const ENUM_FIELDS: Record<string, readonly string[]> = {
   provider: ['openai', 'gemini'],
+  openaiImageEndpointMode: ['chat', 'edit'],
   theme: ['light', 'dark', 'ocean', 'rose', 'forest'],
   language: ['zh', 'en'],
   processingMode: ['api', 'manual', 'editor'],

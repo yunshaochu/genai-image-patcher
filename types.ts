@@ -216,6 +216,18 @@ export const baseImageUrl = (
 
 export type AiProvider = 'openai' | 'gemini';
 
+/**
+ * OpenAI 兼容链路上用哪种图片接口（连接设置里可切）：
+ * - 'chat'：POST /v1/chat/completions，把切片塞进 messages 的多模态对话式生图
+ *           （历史默认，兼容面最广）；
+ * - 'edit'：POST /v1/images/edits，图像专用「图生图」接口
+ *           （multipart/form-data 上传原图 + prompt）。
+ *
+ * 没有接 /v1/images/generations：那是纯文生图，不接受输入原图，接进来只会
+ * 丢掉我们裁好的切片，与图生图管线天然不兼容。
+ */
+export type OpenAIImageEndpointMode = 'chat' | 'edit';
+
 export type ThemeType = 'light' | 'dark' | 'ocean' | 'rose' | 'forest';
 
 export type Language = 'zh' | 'en';
@@ -279,7 +291,8 @@ export interface AppConfig {
   openaiBaseUrl: string;
   openaiApiKey: string;
   openaiModel: string;
-  openaiStream: boolean; // New: Stream Toggle
+  /** OpenAI 兼容链路用哪种图片接口（见 OpenAIImageEndpointMode）。默认 'chat'。 */
+  openaiImageEndpointMode: OpenAIImageEndpointMode;
 
   // Saved image-generation endpoints (OpenAI-compatible). Switching a preset
   // writes its url/key/model into the openai* fields above.

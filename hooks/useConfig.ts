@@ -112,7 +112,9 @@ const DEFAULT_CONFIG: AppConfig = {
   openaiBaseUrl: 'http://localhost:7860/v1',
   openaiApiKey: '',
   openaiModel: 'gemini-imagen',
-  openaiStream: false, 
+  // OpenAI 兼容链路的图片接口形态：'chat' = /v1/chat/completions（历史默认），
+  // 'edit' = /v1/images/edits（图像专用图生图接口，multipart 上传原图）。
+  openaiImageEndpointMode: 'chat',
   // Saved API presets (quick switch between url/key/model triples)
   imageApiProfiles: [],
   activeImageApiProfileId: null,
@@ -203,11 +205,18 @@ export function useConfig() {
             delete migratedConfig.enableSmartAssist;
         }
 
-        // Ensure openaiStream exists (migration for existing users)
-        if (typeof migratedConfig.openaiStream === 'undefined') {
-            migratedConfig.openaiStream = false;
-        }
+        // The Enable Stream (Beta) switch is gone: chat/completions is always
+        // requested non-streaming. Drop the dead key from stored configs.
+        delete (migratedConfig as any).openaiStream;
+
         
+        // Ensure the OpenAI-compatible image endpoint mode exists.
+        // Anything but an explicit 'edit' falls back to the historical
+        // chat/completions behaviour.
+        if (migratedConfig.openaiImageEndpointMode !== 'edit') {
+            migratedConfig.openaiImageEndpointMode = 'chat';
+        }
+
         // Ensure enableSquareFill exists
         if (typeof migratedConfig.enableSquareFill === 'undefined') {
             migratedConfig.enableSquareFill = false;

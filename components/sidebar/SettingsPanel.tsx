@@ -147,15 +147,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         </div>
                     </div>
                     <div className="animate-in fade-in slide-in-from-top-4 pt-1">
-                        <label className="flex items-center gap-2 cursor-pointer group">
-                            <input 
-                                type="checkbox" 
-                                checked={config.openaiStream}
-                                onChange={(e) => onChange('openaiStream', e.target.checked)}
-                                className="rounded border-skin-border text-skin-primary focus:ring-skin-primary"
-                            />
-                            <span className="text-xs text-skin-muted group-hover:text-skin-text transition-colors">Enable Stream (Beta)</span>
-                        </label>
+                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'imageEndpointMode')}</label>
+                        <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+                            <button
+                                onClick={() => onChange('openaiImageEndpointMode', 'chat')}
+                                className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.openaiImageEndpointMode !== 'edit' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                            >
+                                Chat Completions
+                            </button>
+                            <button
+                                onClick={() => onChange('openaiImageEndpointMode', 'edit')}
+                                className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.openaiImageEndpointMode === 'edit' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                            >
+                                Images Edits
+                            </button>
+                        </div>
+                        <p className="text-[10px] text-skin-muted mt-1 leading-snug">
+                            {config.openaiImageEndpointMode === 'edit'
+                                ? t(lang, 'imageEndpointEditHint')
+                                : t(lang, 'imageEndpointChatHint')}
+                        </p>
                     </div>
                 </>
             )}
