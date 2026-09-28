@@ -137,7 +137,7 @@ export const HelpTip: React.FC<{
                         top: placement.top,
                         bottom: placement.bottom,
                     }}
-                    className={`pointer-events-none fixed z-[110] p-2.5 rounded-lg border bg-skin-text text-skin-surface text-[10px] leading-snug shadow-xl animate-in fade-in zoom-in-95 duration-150 ${panelTone}`}
+                    className={`pointer-events-none fixed z-[110] p-2.5 rounded-lg border bg-skin-text text-skin-surface text-[10px] leading-snug whitespace-pre-line shadow-xl animate-in fade-in zoom-in-95 duration-150 ${panelTone}`}
                 >
                     {/* Caret: ties the panel to its icon instead of leaving it floating. */}
                     <span

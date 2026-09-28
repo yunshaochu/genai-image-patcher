@@ -118,7 +118,7 @@ const DEFAULT_CONFIG: AppConfig = {
   // Saved API presets (quick switch between url/key/model triples)
   imageApiProfiles: [],
   activeImageApiProfileId: null,
-  enableSquareFill: false, // Default false
+  enableSquareFill: true, // Default true: keeps the generated result from distorting the original ratio
   squareFillSize: 1024, // px: square edge length for square fill padding
   squareFillCropInset: 0, // px: extra pixels trimmed from every side when cropping back
   geminiApiKey: process.env.API_KEY || '',
@@ -217,9 +217,9 @@ export function useConfig() {
             migratedConfig.openaiImageEndpointMode = 'chat';
         }
 
-        // Ensure enableSquareFill exists
+        // Ensure enableSquareFill exists (on by default)
         if (typeof migratedConfig.enableSquareFill === 'undefined') {
-            migratedConfig.enableSquareFill = false;
+            migratedConfig.enableSquareFill = true;
         }
         // Square fill: old squareFillMode/squareFillMargin were replaced by squareFillSize
         delete (migratedConfig as any).squareFillMode;
