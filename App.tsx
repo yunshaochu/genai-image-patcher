@@ -117,6 +117,7 @@ export default function App() {
       ocrAllRegions,
       translateImageRegions,
       translateAllImages,
+      translateSingleImage,
       stopTranslation,
       unfreezeTranslation,
       freezeTranslation,
@@ -1108,7 +1109,7 @@ export default function App() {
             onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
             onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
             onOcrAll={() => ocrAllRegions(selectedImage.id)}
-            onTranslate={() => translateImageRegions(selectedImage.id)}
+            onTranslate={() => translateSingleImage(selectedImage.id)}
             onTranslateAll={() => translateAllImages()}
             translating={editorTranslating}
             translatingImageId={editorTranslatingImageId}

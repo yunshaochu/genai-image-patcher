@@ -1405,6 +1405,37 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   }, [busy, getImage, recompositeRegion, updateImage]);
 
   /**
+   * Shared driver for one translate run: sweep `pickIds()` and, when the sweep
+   * ends with pages still holding untranslated boxes (their vision call failed
+   * / returned nothing), sweep them again — at most `config.maxRetryRounds`
+   * extra rounds. Used by both the 「全部图片」 batch and the 「当前图片」
+   * single-page entry, so the end-retry applies to either scope.
+   *
+   * A run-scoped synchronous mirror (`skipRegionIds`) keeps a box the store has
+   * not rendered as done yet from being re-sent (imagesRef lags updateImage).
+   */
+  const runTranslateRounds = useCallback(async (pickIds: () => string[], ctrl: AbortController) => {
+    const skipRegionIds = new Set<string>();
+    // 整批重试轮数（0 = 关闭），由设置面板配置。
+    const endRetryBudget = Math.max(0, configRef.current.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
+    for (let attempt = 0; ; attempt++) {
+      if (ctrl.signal.aborted) break;
+      // Re-pick targets every round: boxes still untranslated are swept again.
+      const ids = pickIds().filter(id => {
+        const img = imagesRef.current.find(i => i.id === id);
+        return !!img && pickTranslateTargets(img).some(r => !skipRegionIds.has(r.id));
+      });
+      if (ids.length === 0) break;
+      for (const id of ids) {
+        if (ctrl.signal.aborted) break;
+        await translateImageRegions(id, ctrl.signal, skipRegionIds);
+      }
+      if (ctrl.signal.aborted) break;
+      if (attempt >= endRetryBudget) break;
+    }
+  }, [translateImageRegions, pickTranslateTargets]);
+
+  /**
    * Batch variant: translate every loaded image that has editable regions,
    * sequentially. Per-image failures surface via setErrorMsg but do not
    * abort the batch. One shared AbortController lets the stop button cancel
@@ -1416,34 +1447,33 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     translateAbortRef.current = ctrl;
     setTranslating(true);
     try {
-      // Batch-scoped mirror of the regions this run already translated, so the
-      // round decision never re-picks a box the store has not rendered as done
-      // yet (imagesRef lags updateImage).
-      const skipRegionIds = new Set<string>();
-      // 整批重试轮数（0 = 关闭），由设置面板配置。
-      const endRetryBudget = Math.max(0, configRef.current.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
-      // Re-pick targets every round: after a full pass, pages still holding
-      // untranslated boxes (their call failed / returned nothing) are picked
-      // up again and swept — at most `endRetryBudget` extra rounds.
-      for (let attempt = 0; ; attempt++) {
-        if (ctrl.signal.aborted) break;
-        const ids = imagesRef.current
-          .filter(img => pickTranslateTargets(img).some(r => !skipRegionIds.has(r.id)))
-          .map(img => img.id);
-        if (ids.length === 0) break;
-        for (const id of ids) {
-          if (ctrl.signal.aborted) break;
-          await translateImageRegions(id, ctrl.signal, skipRegionIds);
-        }
-        if (ctrl.signal.aborted) break;
-        if (attempt >= endRetryBudget) break;
-      }
+      await runTranslateRounds(() => imagesRef.current.map(img => img.id), ctrl);
     } finally {
       setTranslating(false);
       setTranslatingImageId(null);
       if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
     }
-  }, [busy, translateImageRegions, pickTranslateTargets]);
+  }, [busy, runTranslateRounds]);
+
+  /**
+   * Single-image variant (作用范围 = 当前图片): same sweep + end-retry as the
+   * batch, just scoped to one page. The retry matters here too — a failed
+   * vision call leaves the page's boxes untranslated, and without a re-sweep
+   * this is the only attempt the user gets.
+   */
+  const translateSingleImage = useCallback(async (imageId: string) => {
+    if (busy) return;
+    const ctrl = new AbortController();
+    translateAbortRef.current = ctrl;
+    setTranslating(true);
+    try {
+      await runTranslateRounds(() => [imageId], ctrl);
+    } finally {
+      setTranslating(false);
+      setTranslatingImageId(null);
+      if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
+    }
+  }, [busy, runTranslateRounds]);
 
   /** OCR every non-context region that doesn't have text yet. */
   const ocrAllRegions = useCallback(async (imageId: string) => {
@@ -1597,6 +1627,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     ocrAllRegions,
     translateImageRegions,
     translateAllImages,
+    translateSingleImage,
     stopTranslation,
     unfreezeTranslation,
     freezeTranslation,
