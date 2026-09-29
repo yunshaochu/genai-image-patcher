@@ -588,6 +588,17 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                   </div>
                 </div>
 
+                <div>
+                  <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'endRetryRoundsLabel')}</label>
+                  <input
+                    type="number" min="0" step="1"
+                    value={config.maxRetryRounds}
+                    onChange={(e) => onConfigChange('maxRetryRounds', Math.max(0, Number(e.target.value)))}
+                    className="w-full p-1.5 text-xs border border-skin-border rounded-lg bg-skin-surface shadow-sm"
+                  />
+                  <span className="block text-[10px] text-skin-muted leading-tight mt-1">{t(lang, 'endRetryRoundsDesc')}</span>
+                </div>
+
                 <div className="pt-2 border-t border-skin-border/50 space-y-2">
                   <label className="flex items-start gap-2 cursor-pointer group">
                     <input

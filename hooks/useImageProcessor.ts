@@ -24,6 +24,17 @@ import { recordPayload, PayloadTransform } from '../services/payloadLog';
  */
 const MAX_ERROR_HISTORY = 5;
 
+/**
+ * 「跑完再回头重试」轮数的兜底默认值（翻译阶段 / 重绘阶段共用）。
+ *
+ * 实际轮数由 config.maxRetryRounds 配置（设置面板「整批重试轮数」可调，0 = 关闭）；
+ * 这里只在配置缺失（如老配置未迁移）时兜底。机制本身：一次完整 sweep 结束后会再扫
+ * 一遍图库，只要还有「未处理」（pending）或「处理失败」（failed）的框，就整体再跑
+ * 一轮，最多这么多轮。它与「单框重试预算」（config.maxRetriesPerRegion，管的是单轮
+ * 之内同一框的尝试次数）相互独立：前者是整批的兜底补跑，后者是轮内重试。
+ */
+const DEFAULT_MAX_END_RETRY_ROUNDS = 3;
+
 /** Trim a thrown error down to a single short string for UI display. */
 const errToMsg = (err: any): string => {
     const raw = err?.message || String(err);
@@ -1044,9 +1055,50 @@ export function useImageProcessor(
             return waiting;
         };
 
+        // Batch-level end-retry: called when a sweep runs out of boxes with
+        // retry budget left. Re-arms the per-region budget for every box still
+        // unprocessed ('pending') or failed, so the next sweep picks them up
+        // again. Returns true when at least one box was re-armed.
+        // Boxes held back by 必须翻译 (no translation cached yet) are skipped:
+        // they must wait for the translate stage, re-arming them would only
+        // spin the loop without ever doing work.
+        const rearmUnfinishedRegions = (): boolean => {
+            const needsTranslation = requireTranslation();
+            let rearmed = 0;
+            for (const img of pickTargets()) {
+                if (img.isSkipped) continue;
+                const hasPaintable = img.regions.some(paintable);
+                // Full-image masking: one image-level cache entry gates every
+                // box of the page (mirrors processSingleImage's early return).
+                if (needsTranslation && config.useFullImageMasking && hasPaintable
+                    && effectiveIntentOf(img, defaultIntent) === 'translate'
+                    && !img.customTranslation?.trim()) {
+                    continue;
+                }
+                for (const r of img.regions) {
+                    if (!paintable(r)) continue;
+                    if (needsTranslation && !config.useFullImageMasking
+                        && effectiveIntentOf(r, defaultIntent) === 'translate'
+                        && !r.customTranslation?.trim()) {
+                        continue;
+                    }
+                    const local = localRegionState.get(r.id);
+                    const status = local?.status ?? r.status;
+                    if (status !== 'pending' && status !== 'failed') continue;
+                    localRegionState.set(r.id, { status, retryCount: 0 });
+                    rearmed++;
+                }
+            }
+            return rearmed > 0;
+        };
+
         // Consecutive rounds where nothing could be attempted. Keeps the loop
         // from spinning on regions held back by 必须翻译 (they stay 'pending').
         let noProgressRounds = 0;
+        // Batch-level end-retry rounds consumed so far (see rearmUnfinishedRegions).
+        let endRetryRounds = 0;
+        // 整批重试轮数（0 = 关闭）。
+        const endRetryBudget = Math.max(0, config.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
 
         try {
             while (true) {
@@ -1068,7 +1120,17 @@ export function useImageProcessor(
                             && (r.retryCount ?? 0) < maxAttemptsPerRegion;
                     })
                 );
-                if (roundTargets.length === 0) break;
+                if (roundTargets.length === 0) {
+                    // Every box either succeeded or burned its budget. If
+                    // unprocessed / failed boxes remain, re-arm them and sweep
+                    // again — at most `endRetryBudget` extra rounds — then
+                    // give up and let the user see the leftovers.
+                    if (endRetryRounds >= endRetryBudget) break;
+                    if (!rearmUnfinishedRegions()) break;
+                    endRetryRounds++;
+                    noProgressRounds = 0;
+                    continue;
+                }
 
                 let didWork = false;
                 if (config.executionMode === 'concurrent') {
@@ -1179,6 +1241,29 @@ export function useImageProcessor(
         const semaphore = new AsyncSemaphore(Math.max(1, limit));
         let failures = 0;
 
+        // Synchronous mirror of the translation cache, owned by this
+        // handleTranslate invocation. imagesRef.current lags React's commit
+        // cycle (same staleness as RegionRunState in handleProcess), so right
+        // after a sweep a just-translated box can still look untranslated —
+        // which would make the end-retry re-send it (duplicate API calls). The
+        // mirror is written the instant a translation lands, and both the
+        // re-sweep and the target filters read it first.
+        const localHasTranslation = new Map<string, boolean>();      // regionId
+        const localImageHasTranslation = new Map<string, boolean>(); // imageId (full-image masking)
+        for (const img of pickTargets()) {
+            if (img.isSkipped) continue;
+            if (config.useFullImageMasking) {
+                localImageHasTranslation.set(img.id, !!img.customTranslation?.trim());
+            }
+            for (const r of img.regions) {
+                if (paintable(r)) localHasTranslation.set(r.id, !!r.customTranslation?.trim());
+            }
+        }
+        const regionHasTranslation = (r: Region): boolean =>
+            localHasTranslation.get(r.id) ?? !!r.customTranslation?.trim();
+        const imageHasTranslation = (img: UploadedImage): boolean =>
+            localImageHasTranslation.get(img.id) ?? !!img.customTranslation?.trim();
+
         /** Stamp the translation into the region's dedicated field. `status` is
          *  the status the box had before this stage started: translating must
          *  never complete/invalidate a box, so a 'completed' patch stays
@@ -1189,6 +1274,7 @@ export function useImageProcessor(
             translation: string,
             status: Region['status']
         ) => {
+            localHasTranslation.set(regionId, true);
             updateImage(imageId, img => ({
                 ...img,
                 regions: img.regions.map(r =>
@@ -1257,6 +1343,7 @@ export function useImageProcessor(
                         await urlToBase64(payloadUrl), config, controller.signal, undefined, glossaryRef.current
                     );
                     if (result.text) {
+                        localImageHasTranslation.set(img.id, true);
                         updateImage(img.id, cur => ({ ...cur, customTranslation: result.text }));
                     } else {
                         failures++; // empty answer — kept untranslated for a retry
@@ -1401,14 +1488,49 @@ export function useImageProcessor(
             if (contextUrl) releaseObjectURL(contextUrl);
         };
 
+        // A box still needs translating when it is in scope, paintable, of the
+        // 「翻译」intent and holds no translation yet. Failed / empty answers
+        // keep exactly this shape (the stage never clears status or sets a
+        // translation on failure), so this same scan drives the end-retry below.
+        const hasPendingTranslationWork = (): boolean => {
+            for (const img of pickTargets()) {
+                if (img.isSkipped) continue;
+                const paintableRegions = img.regions.filter(paintable);
+                if (paintableRegions.length === 0) continue;
+                if (config.useFullImageMasking) {
+                    if (effectiveIntentOf(img, defaultIntent) === 'translate'
+                        && !imageHasTranslation(img)) return true;
+                    continue;
+                }
+                if (paintableRegions.some(r =>
+                    effectiveIntentOf(r, defaultIntent) === 'translate' && !regionHasTranslation(r)
+                )) return true;
+            }
+            return false;
+        };
+
+        // 整批重试轮数（0 = 关闭）。
+        const endRetryBudget = Math.max(0, config.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
+
         try {
-            await runWithConcurrency(
-                pickTargets(),
-                Math.max(1, limit),
-                (img) => translateImage(img),
-                controller.signal,
-                0
-            );
+            // One sweep fills the translation cache; when it ends with boxes
+            // still untranslated (failed calls / empty answers) sweep again —
+            // at most `endRetryBudget` extra times. Boxes that already hold a
+            // translation are skipped inside translateImage, so a repeated
+            // sweep is cheap and side-effect free.
+            for (let attempt = 0; ; attempt++) {
+                if (controller.signal.aborted) break;
+                await runWithConcurrency(
+                    pickTargets(),
+                    Math.max(1, limit),
+                    (img) => translateImage(img),
+                    controller.signal,
+                    0
+                );
+                if (controller.signal.aborted) break;
+                if (attempt >= endRetryBudget) break;
+                if (!hasPendingTranslationWork()) break;
+            }
             if (!controller.signal.aborted && failures > 0) {
                 setErrorMsg(t(config.language, 'translateStageFailed', { count: failures }));
             }

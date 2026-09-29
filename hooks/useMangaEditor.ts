@@ -18,6 +18,16 @@ export type EraseScope = 'all' | 'bubbleOnly' | 'selected';
 export type RestoreScope = 'all' | 'textFree' | 'selected';
 
 /**
+ * 「跑完再回头重试」轮数的兜底默认值（编辑器批量翻译）。
+ *
+ * 实际轮数由 config.maxRetryRounds 配置（设置面板「整批重试轮数」可调，0 = 关闭）；
+ * 这里只在配置缺失时兜底。机制本身：一整批翻译结束后再扫一遍图库，只要还有未翻译
+ * 成功的框（对应页的调用失败 / 返回空），就再跑一整批，最多这么多轮。译文已经落地
+ * 的框会被 pickTranslateTargets 过滤掉，所以重复扫描是幂等且几乎零成本的。
+ */
+const DEFAULT_MAX_END_RETRY_ROUNDS = 3;
+
+/**
  * AI-owned region: completed by the image-generation pipeline, not by the
  * editor. Editor operations (erase / text / brush / OCR / translate) must
  * never touch these — the AI patch always wins. Conversely, editor-completed
@@ -880,10 +890,18 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * translateAllImages; single-page runs create their own controller so the
    * dock's stop button can abort the vision call / gate wait.
    */
-  const translateImageRegions = useCallback(async (imageId: string, outerSignal?: AbortSignal) => {
+  const translateImageRegions = useCallback(async (
+    imageId: string,
+    outerSignal?: AbortSignal,
+    /** Batch-scoped synchronous mirror of the regions this run already
+     *  translated. The store commit lags behind updateImage, so the batch's
+     *  end-retry hands it in to avoid re-translating a page whose update has
+     *  not rendered back into imagesRef yet. Undefined = single-page run. */
+    skipRegionIds?: Set<string>
+  ) => {
     const img = getImage(imageId);
     if (!img || busy) return;
-    const targets = pickTranslateTargets(img);
+    const targets = pickTranslateTargets(img).filter(r => !skipRegionIds?.has(r.id));
     if (targets.length === 0) return;
 
     // Batch runs share their controller; single-page runs own one.
@@ -966,6 +984,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
           });
         }
       }
+      // Land what this call translated into the batch mirror right away, so the
+      // end-retry scan counts it as done even before React commits the store.
+      if (skipRegionIds) for (const nr of [...translated, ...frozen]) skipRegionIds.add(nr.id);
       if (translated.length === 0 && frozen.length === 0) {
         throw new Error('AI 没有识别到任何文字（可能全部为空框/误检）');
       }
@@ -1391,17 +1412,31 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    */
   const translateAllImages = useCallback(async () => {
     if (busy) return;
-    const ids = imagesRef.current
-      .filter(img => pickTranslateTargets(img).length > 0)
-      .map(img => img.id);
-    if (ids.length === 0) return;
     const ctrl = new AbortController();
     translateAbortRef.current = ctrl;
     setTranslating(true);
     try {
-      for (const id of ids) {
+      // Batch-scoped mirror of the regions this run already translated, so the
+      // round decision never re-picks a box the store has not rendered as done
+      // yet (imagesRef lags updateImage).
+      const skipRegionIds = new Set<string>();
+      // 整批重试轮数（0 = 关闭），由设置面板配置。
+      const endRetryBudget = Math.max(0, configRef.current.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
+      // Re-pick targets every round: after a full pass, pages still holding
+      // untranslated boxes (their call failed / returned nothing) are picked
+      // up again and swept — at most `endRetryBudget` extra rounds.
+      for (let attempt = 0; ; attempt++) {
         if (ctrl.signal.aborted) break;
-        await translateImageRegions(id, ctrl.signal);
+        const ids = imagesRef.current
+          .filter(img => pickTranslateTargets(img).some(r => !skipRegionIds.has(r.id)))
+          .map(img => img.id);
+        if (ids.length === 0) break;
+        for (const id of ids) {
+          if (ctrl.signal.aborted) break;
+          await translateImageRegions(id, ctrl.signal, skipRegionIds);
+        }
+        if (ctrl.signal.aborted) break;
+        if (attempt >= endRetryBudget) break;
       }
     } finally {
       setTranslating(false);

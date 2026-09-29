@@ -501,6 +501,25 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         <p className="text-[10px] text-skin-muted leading-tight">{t(lang, 'aiPayloadTargetKBHint')}</p>
                                     </OffDim>
                                 </SettingsCard>
+
+                                {/* 整批重试轮数：和右侧 dock「处理选项」里的是同一个配置，
+                                    放在这里是为了编辑器模式（WorkflowDock 不渲染）也能调整。 */}
+                                <SettingsCard
+                                    title={t(lang, 'endRetryRoundsLabel')}
+                                    help={t(lang, 'endRetryRoundsDesc')}
+                                    summary={`${config.maxRetryRounds}`}
+                                    summaryTone={config.maxRetryRounds > 0 ? 'on' : 'off'}
+                                >
+                                    <div className="flex items-center gap-3">
+                                        <input
+                                            type="number" min="0" step="1"
+                                            value={config.maxRetryRounds}
+                                            onChange={(e) => updateConfig('maxRetryRounds', Math.max(0, Number(e.target.value) || 0))}
+                                            className="w-20 p-2 text-xs text-center border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50"
+                                        />
+                                        <span className="flex-1 text-[10px] text-skin-muted leading-tight">{t(lang, 'endRetryRoundsDesc')}</span>
+                                    </div>
+                                </SettingsCard>
                             </>
                         )}
 

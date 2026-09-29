@@ -103,6 +103,7 @@ const DEFAULT_CONFIG: AppConfig = {
   processFullImageIfNoRegions: false, 
   apiTimeout: 150000, // 150 seconds default
   maxRetriesPerRegion: 1,
+  maxRetryRounds: 3,
   showRetryDiagnostics: false,
   theme: 'light',
   language: 'zh',
@@ -331,6 +332,11 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // 整批「跑完再重试」轮数：老配置没有 → 3（重试机制引入时的默认值）。
+        if (typeof migratedConfig.maxRetryRounds === 'undefined') {
+            migratedConfig.maxRetryRounds = 3;
         }
 
         // 提示词模块拆分「翻译 / 擦除 / 自定义」后，全局提示词只保留不变量。

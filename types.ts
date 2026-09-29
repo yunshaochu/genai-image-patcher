@@ -325,6 +325,10 @@ export interface AppConfig {
   // Retry & Timeout Settings
   apiTimeout: number; // in milliseconds
   maxRetriesPerRegion: number; // per-region retry budget (excludes first attempt). Standard mode: each region counts independently. Full-image-masking mode: all regions in an image share one counter (one API call per image).
+  /** 整批「跑完再重试」轮数（0 = 关闭）：一次翻译/重绘 sweep 结束后扫描图库，
+   *  只要还有未处理（pending）或处理失败（failed）的框，就整体再跑一轮，最多
+   *  这么多轮。与 maxRetriesPerRegion（单轮内同一框的尝试次数）相互独立。 */
+  maxRetryRounds: number;
   showRetryDiagnostics: boolean; // show per-region retry count badge + error history
 
   // Workflow Mode
