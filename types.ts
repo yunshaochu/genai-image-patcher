@@ -242,6 +242,25 @@ export type Language = 'zh' | 'en';
 
 export type ProcessingMode = 'api' | 'manual' | 'editor';
 
+/**
+ * 画布标签页。
+ *
+ * 分成两类：
+ *  - **查看页**：`original` 准备 = 只看原图；`result` 已完成 = 只看结果图。
+ *    两处都不画框（准备页以前也画框、也能框选，现在统一收到工作页里）。
+ *  - **工作页**：`edit` 编辑（编辑器）/ `redraw` 重绘（AI 重绘）/ `patch` 修补
+ *    （手动修补工坊）。三者等价：框可见可交互（选中/移动/缩放/画新框）+ 框内
+ *    贴图实时预览，所以能一边改一边看结果。
+ */
+export type ViewMode = 'original' | 'result' | 'edit' | 'redraw' | 'patch';
+
+/** 工作页 = 画框 + 贴图预览（编辑 / 重绘 / 修补）。 */
+export const isWorkView = (v: ViewMode): boolean => v === 'edit' || v === 'redraw' || v === 'patch';
+
+/** 每个工作流对应的工作页 —— 切换工作流 / 首次进入时自动落到它。 */
+export const workViewOf = (mode: ProcessingMode): ViewMode =>
+    mode === 'editor' ? 'edit' : mode === 'manual' ? 'patch' : 'redraw';
+
 export type PerformanceMode = 'unlimited' | 'balanced';
 
 /**

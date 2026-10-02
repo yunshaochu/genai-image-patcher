@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, RedrawIntent, isRegionPaintable } from '../types';
+import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, RedrawIntent, ViewMode, isRegionPaintable, isWorkView } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
@@ -28,7 +28,7 @@ interface EditorCanvasProps {
   showOcrButton?: boolean;
   onAdjustRegionSize?: (regionId: string, isExpand: boolean) => void;
   onInteractionStart?: () => void;
-  viewMode?: 'original' | 'result' | 'edit';
+  viewMode?: ViewMode;
   restoreMode?: boolean;
   onUpdateRestoreBoxes?: (regionId: string, boxes: RestoreBox[]) => void;
   onUpdateRestoreMask?: (regionId: string, maskBase64: string | null) => void;
@@ -744,13 +744,15 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     onUpdateRestoreBoxes(regionId, (region.restoreBoxes || []).filter(b => b.id !== boxId));
   };
 
-  const isOriginalMode = viewMode === 'original';
   const isEditMode = viewMode === 'edit';
-  // The editor tab ('edit') combines the result view's patch overlays with
-  // the original view's box interactions (select / move / resize / draw).
-  const boxesInteractive = isOriginalMode || isEditMode;
-  const showPatchOverlays = viewMode === 'result' || isEditMode;
+  // 工作页（编辑 / 重绘 / 修补）= 结果页的贴图叠加 + 框交互（选中/移动/缩放/画框），
+  // 所以能一边改一边看框内的实时结果。准备页与已完成页是纯查看页：不画框。
+  const isWorkTab = isWorkView(viewMode);
+  const boxesInteractive = isWorkTab;
+  const showPatchOverlays = isWorkTab || viewMode === 'result';
   const isRestoreActive = restoreMode && viewMode === 'result';
+  /** 框只在工作页出现；已完成页只有开启「框选还原」时才临时把框放出来。 */
+  const showRegionBoxes = isWorkTab || isRestoreActive;
 
   // Which region boxes are drawn at all. Editor workflow: text regions
   // (bubble outlines stay hidden visual context). Generation workflows:
@@ -823,7 +825,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               typeset text always sits on top of the AI-redrawn base. */}
           {showPatchOverlays && image.regions.filter(r =>
             r.status === 'completed' && r.processedImageUrl ||
-            (isEditMode && r.editorComposited && r.processedImageUrl)
+            (isWorkTab && r.editorComposited && r.processedImageUrl)
           ).sort((a, b) =>
             Number(a.editorComposited ?? false) - Number(b.editorComposited ?? false)
           ).map((region) => {
@@ -881,8 +883,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             );
           })}
 
-          {/* Regions */}
-          {image.regions.map((region) => {
+          {/* Regions — 只在工作页（编辑 / 重绘 / 修补）和「框选还原」时出现 */}
+          {showRegionBoxes && image.regions.map((region) => {
             // Only the boxes relevant to this display context are drawn —
             // editor: text regions; generation: paintable classes per source.
             if (!isRegionVisible(region)) return null;

@@ -170,6 +170,34 @@ export const resolveEraseRect = (
 export const getRegionEditorText = (region: Region): string =>
   region.editorText ?? (region.editorFrozenText?.trim() ? '' : region.ocrText ?? '');
 
+/** 叠放次序调整方向：'up' = 盖到相邻贴图的上面。 */
+export type LayerDirection = 'up' | 'down';
+
+/**
+ * 叠放次序（谁盖谁）= regions 数组的下标：下标越大越靠上。
+ *
+ * 编辑画布按 `image.regions.map()` 的 DOM 顺序叠贴图，拼接 stitchImage 也按同一
+ * 个顺序 drawImage —— 所以"上一层"就是往后挪一位。新建的框 append 在末尾，于是
+ * 老框天然被新框盖住（看起来像"按时间顺序"，其实是数组顺序）。
+ *
+ * 返回原数组（同一引用）表示没动 —— 调用方据此跳过一次无意义的 updateImage。
+ */
+export const moveRegionLayer = (
+  regions: Region[],
+  regionId: string,
+  dir: LayerDirection
+): Region[] => {
+  const i = regions.findIndex(r => r.id === regionId);
+  if (i < 0) return regions;
+  const j = dir === 'up' ? i + 1 : i - 1;
+  if (j < 0 || j >= regions.length) return regions;
+  const next = [...regions];
+  const tmp = next[i];
+  next[i] = next[j];
+  next[j] = tmp;
+  return next;
+};
+
 /**
  * The completed, AI-redrawn bubble whose box contains `region`'s centre
  * (closest centre wins). Used by the aiBubbleBase flow: after a whole-bubble

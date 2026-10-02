@@ -3,10 +3,11 @@ import { AppConfig, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
-import { getRegionEditorText, resolveAutoFontSize, editorRegionDisplay } from '../services/mangaEditor';
+import { getRegionEditorText, resolveAutoFontSize, editorRegionDisplay, LayerDirection } from '../services/mangaEditor';
 import { EDITOR_FONTS, SYSTEM_FONT_STACK, editorFontStack, ensureEditorFontLoaded } from '../services/fontService';
 import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 import { DockActions, useRunGating } from './sidebar/DockActions';
+import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -74,6 +75,11 @@ interface EditorDockProps {
   /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
   onDownload: (processAll: boolean) => void;
   onApplyAsOriginal: (processAll: boolean) => void;
+  /**
+   * 调整本框的叠放次序（谁盖谁 = regions 数组下标，下标越大越靠上）。
+   * 贴图部分重叠时才看得出差别：编辑画布与拼接都按数组顺序绘制。
+   */
+  onReorderRegion: (regionId: string, dir: LayerDirection) => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -703,7 +709,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onUnfreeze, onFreeze, onWhitenFrozenTextFree, onWhitenFrozenTextFreeAll,
   onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
   onUndoFreezeFix, freezeUndoDepth, onRevealAiBase,
-  onDownload, onApplyAsOriginal,
+  onDownload, onApplyAsOriginal, onReorderRegion,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -1092,10 +1098,18 @@ const EditorDock: React.FC<EditorDockProps> = ({
     onSelectRegion(editableRegions[(idx + delta + len) % len].id);
   };
 
+  // 叠放次序：regions 数组下标越大越靠上（编辑画布按数组顺序叠 DOM，拼接也是按
+  // 数组顺序 drawImage）。只有贴图互相重叠时看得出差别。
+  const layerIdx = image.regions.findIndex(r => r.id === region.id);
+  const canLayerUp = layerIdx >= 0 && layerIdx < image.regions.length - 1;
+  const canLayerDown = layerIdx > 0;
+
   return (
     <aside className="h-full w-[272px] shrink-0 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
       {/* Header: region identity + navigation + collapse */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-skin-border">
+        {/* 徽标区可以截断，按钮区永不收缩 —— 面板只有 272px 宽。 */}
+        <div className="flex items-center gap-1 min-w-0 overflow-hidden">
         <span className="text-[10px] font-mono text-skin-muted">#{idx + 1}<span className="opacity-50">/{editableRegions.length}</span></span>
         <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
           region.detectedClass === 'text_bubble' ? 'bg-amber-100 text-amber-700' :
@@ -1124,7 +1138,16 @@ const EditorDock: React.FC<EditorDockProps> = ({
           }
           return null;
         })()}
-        <div className="ml-auto flex items-center gap-0.5">
+        </div>
+        <div className="ml-auto flex items-center gap-0.5 shrink-0">
+          {/* 叠放次序：↑ 上移一层（盖到相邻贴图之上）/ ↓ 下移一层 */}
+          <LayerOrderButtons
+            lang={lang}
+            canUp={canLayerUp}
+            canDown={canLayerDown}
+            onChange={(dir) => onReorderRegion(region.id, dir)}
+          />
+          <span className="w-px h-3.5 bg-skin-border mx-0.5 shrink-0" />
           <button
             onClick={() => gotoRegion(-1)}
             disabled={editableRegions.length < 2}

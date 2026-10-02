@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
@@ -14,7 +14,7 @@ import { downloadWorkStateZip, readWorkStateZip } from './services/workStateTran
 import { fetchOpenAIModels } from './services/aiService';
 import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
-import { resolveAutoFontSize } from './services/mangaEditor';
+import { resolveAutoFontSize, moveRegionLayer, LayerDirection } from './services/mangaEditor';
 import { setDefaultFontFamily } from './services/textLayout';
 import { editorFontStack, getEditorFont, ensureEditorFontLoaded } from './services/fontService';
 import { useConfig } from './hooks/useConfig';
@@ -156,6 +156,8 @@ export default function App() {
   const [transModels, setTransModels] = useState<string[]>([]);
 
   const isEditorMode = config.processingMode === 'editor';
+  const isApiMode = config.processingMode === 'api';
+  const isManualMode = config.processingMode === 'manual';
 
   // ── 编辑器字体（嵌字） ────────────────────────────────────────
   // 三步：
@@ -198,23 +200,28 @@ export default function App() {
       selectedImage.regions.some(r => r.status === 'completed') || !!selectedImage.finalResultUrl
   );
 
-  // The '编辑' canvas tab only exists in the editor workflow. Leaving the
-  // workflow while sitting on that tab falls back to 'original' so the
-  // canvas never gets stuck on a hidden view.
-  useEffect(() => {
-      if (!isEditorMode && viewMode === 'edit') setViewMode('original');
-  }, [isEditorMode, viewMode, setViewMode]);
+  // 每个工作流的工作页：编辑器 → 编辑，AI 重绘 → 重绘，手动修补工坊 → 修补。
+  // 工作页才是画框 + 实时预览结果的地方，所以进入工作流就落到它上面。
+  const workTab = workViewOf(config.processingMode);
 
-  // Entering the editor workflow lands on the '编辑' tab — that tab is what
-  // the whole workflow is built around. Switching images later keeps whatever
-  // tab is active (viewMode is global); only a fresh entry re-selects '编辑'.
-  // The ref starts false so mounting straight into the editor workflow (a
-  // persisted processingMode) also lands on '编辑'.
-  const prevIsEditorRef = useRef(false);
+  // 工作页不属于当前工作流时（例如从编辑器切到 AI 重绘还停在「编辑」）回到
+  // 准备页，画布永远不会停在一个当前工作流里不存在的标签页上。
   useEffect(() => {
-      if (isEditorMode && !prevIsEditorRef.current) setViewMode('edit');
-      prevIsEditorRef.current = isEditorMode;
-  }, [isEditorMode, setViewMode]);
+      if (viewMode !== 'original' && viewMode !== 'result' && viewMode !== workTab) {
+          setViewMode('original');
+      }
+  }, [viewMode, workTab, setViewMode]);
+
+  // 进入 / 切换工作流 → 自动落到该工作流的工作页。切换图片不会重置（viewMode
+  // 是全局的，用户可能正停在「已完成」上逐张看结果）。
+  // ref 初值为 null，所以直接用持久化的 processingMode 启动也会落到工作页。
+  const prevModeRef = useRef<ProcessingMode | null>(null);
+  useEffect(() => {
+      if (prevModeRef.current !== config.processingMode) {
+          prevModeRef.current = config.processingMode;
+          setViewMode(workTab);
+      }
+  }, [config.processingMode, workTab, setViewMode]);
 
   // Debounce Timer Ref for Heavy Operations
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -766,6 +773,26 @@ export default function App() {
       if (selectedImageId_safe) resetRegion(selectedImageId_safe, regionId);
   }, [selectedImageId_safe, resetRegion]);
 
+  // 叠放次序：贴图部分重叠时谁盖谁 = regions 数组下标（下标越大越靠上）。
+  // ↑ / ↓ 就是和相邻的一项交换位置；没动就不写状态（moveRegionLayer 返回原数组）。
+  const reorderRegion = useCallback((imageId: string, regionId: string, dir: LayerDirection) => {
+      updateImage(imageId, img => {
+          const regions = moveRegionLayer(img.regions, regionId, dir);
+          if (regions === img.regions) return img;
+          // 和 handleUpdateRegions 一样把当前 history 条目同步过去，撤销/重做
+          // 才不会把旧顺序带回来。
+          const currentHistory = [...img.history];
+          if (currentHistory[img.historyIndex]) {
+              currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions };
+          }
+          return { ...img, regions, history: currentHistory };
+      });
+  }, [updateImage]);
+  // 编辑器面板只认识 regionId（目标图 = 当前选中图）。
+  const editorOnReorderRegion = useCallback((regionId: string, dir: LayerDirection) => {
+      if (selectedImageId_safe) reorderRegion(selectedImageId_safe, regionId, dir);
+  }, [selectedImageId_safe, reorderRegion]);
+
   // Ctrl+wheel over the SELECTED box in the editor workflow steps its font
   // size by ±5 — the same step the dock's ± buttons use (EditorDock
   // stepFontSize). Base = explicit size → the size the compositor resolved →
@@ -863,12 +890,31 @@ export default function App() {
                  >
                    {t(config.language, 'readyToCreate')}
                  </button>
+                  {/* 工作页：每个工作流一个（编辑器→编辑 / AI 重绘→重绘 /
+                      手动修补工坊→修补）。三者等价：框可见可改，框内贴图实时
+                      预览，所以能一边改一边看结果。 */}
                   {isEditorMode && (
                      <button 
                          onClick={() => { setViewMode('edit'); setRestoreMode(false); }}
                          className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'edit' ? 'bg-sky-500 text-white border-sky-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
                      >
                          {t(config.language, 'editorEditTab')}
+                     </button>
+                  )}
+                  {isApiMode && (
+                     <button 
+                         onClick={() => { setViewMode('redraw'); setRestoreMode(false); }}
+                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'redraw' ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                     >
+                         {t(config.language, 'redrawTab')}
+                     </button>
+                  )}
+                  {isManualMode && (
+                     <button 
+                         onClick={() => { setViewMode('patch'); setRestoreMode(false); }}
+                         className={`px-3 py-1.5 rounded-full text-xs font-bold backdrop-blur-md border shadow-sm transition-all ${viewMode === 'patch' ? 'bg-fuchsia-500 text-white border-fuchsia-500' : 'bg-skin-surface/80 text-skin-text border-skin-border hover:bg-skin-surface'}`}
+                     >
+                         {t(config.language, 'patchTab')}
                      </button>
                   )}
                   {/* The result tab is ALWAYS available so the tab set is the same
@@ -1073,6 +1119,7 @@ export default function App() {
             onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
             onDownload={handleDownload}
             onApplyAsOriginal={handleApplyAsOriginalWrapper}
+            onReorderRegion={(regionId, dir) => editorOnReorderRegion(regionId, dir)}
           />
         )}
 
@@ -1094,6 +1141,7 @@ export default function App() {
             onUpdateImageTranslation={handleUpdateImageTranslation}
             onManualPatchUpdate={handleManualPatchUpdate}
             onOcrRegion={handleOcrRegion}
+            onReorderRegion={reorderRegion}
             images={images}
             processingState={processingState}
             processAll={processAll}

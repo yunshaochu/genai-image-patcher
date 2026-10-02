@@ -1,11 +1,10 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, ImageHistoryState, PerformanceMode, RedrawIntent } from '../types';
+import { UploadedImage, Region, ImageHistoryState, PerformanceMode, RedrawIntent, ViewMode } from '../types';
 import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES, PREVIEW_MAX_PX } from '../services/imageUtils';
 import { saveSession, loadSession, clearSession } from '../services/sessionStore';
 
-// 'edit' is the editor-workflow canvas tab (patch overlays + box interactions).
-type ViewMode = 'original' | 'result' | 'edit';
+// ViewMode now lives in types.ts (it grew the per-workflow work tabs 重绘 / 修补).
 
 // Normalized store: byId for O(1) lookups, order for stable iteration.
 // Replaces the previous setImages(prev => prev.map(...)) pattern that did O(N)

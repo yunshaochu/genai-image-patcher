@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Region } from '../types';
+import { Region, ViewMode, isWorkView } from '../types';
 
 export type InteractionType = 'idle' | 'drawing' | 'moving' | 'resizing';
 
@@ -19,10 +19,12 @@ export function useCanvasInteraction(
     onUpdateRegions: (imageId: string, regions: Region[]) => void,
     onSelectRegion: (id: string | null) => void,
     onInteractionStart?: () => void,
-    // 'edit' (editor canvas tab) behaves like 'original': full box interaction.
-    viewMode: 'original' | 'result' | 'edit' = 'original',
+    // 只有工作页（编辑 / 重绘 / 修补）能画框、拖框、缩放框；准备页与已完成页
+    // 是纯查看页，不接受任何框交互。
+    viewMode: ViewMode = 'original',
     disabled: boolean = false
 ) {
+    const boxesInteractive = isWorkView(viewMode);
     const [interaction, setInteraction] = useState<InteractionState>({ type: 'idle', startPos: { x: 0, y: 0 } });
 
     // Refs to avoid stale closures in event listeners
@@ -45,7 +47,7 @@ export function useCanvasInteraction(
     };
 
     const handleBackgroundMouseDown = (e: React.MouseEvent) => {
-        if (disabled || viewMode === 'result') return;
+        if (disabled || !boxesInteractive) return;
         if (e.button !== 0 || e.altKey) return;
         
         if (onInteractionStart) onInteractionStart();
@@ -61,7 +63,7 @@ export function useCanvasInteraction(
     };
 
     const handleRegionMouseDown = (e: React.MouseEvent, region: Region) => {
-        if (disabled || viewMode === 'result') return;
+        if (disabled || !boxesInteractive) return;
         if (e.altKey) return;
         e.stopPropagation();
 
@@ -85,7 +87,7 @@ export function useCanvasInteraction(
     };
 
     const handleResizeMouseDown = (e: React.MouseEvent, region: Region, handle: string) => {
-        if (disabled || viewMode === 'result') return;
+        if (disabled || !boxesInteractive) return;
         if (e.altKey) return;
         e.stopPropagation();
         

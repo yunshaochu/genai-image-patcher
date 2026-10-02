@@ -226,9 +226,15 @@ export const translations = {
     editorSelectRegionHint: "先在画布上选中一个文本框",
     editorEditTab: "编辑",
     editorEditHint: "点击画布上的任意文本框，即可在此编辑它的文字、方向、字号与擦除状态。",
+    /** AI 重绘工作流的画布工作页（与编辑器「编辑」页同性质：画框 + 实时预览）。 */
+    redrawTab: "重绘",
+    /** 手动修补工坊的画布工作页。 */
+    patchTab: "修补",
     editorDockProps: "属性",
     editorPrevRegion: "上一个框",
     editorNextRegion: "下一个框",
+    editorLayerUp: "上移一层（盖到相邻贴图之上）",
+    editorLayerDown: "下移一层（被相邻贴图盖住）",
     editorDockCollapse: "收起属性面板",
     editorAiLocked: "此框已由 AI 重绘完成，内容不可在编辑器中修改。",
     editorBrushSection: "画笔修补",
@@ -375,7 +381,7 @@ export const translations = {
     status_processing: "处理中",
     status_completed: "已完成",
     status_failed: "失败",
-    noResultYet: "还没有重绘结果（先在「准备开始」页框选区域，再点开始重绘）",
+    noResultYet: "还没有结果 —— 先在工作页（编辑 / 重绘 / 修补）框选区域并处理，再回这里看成品",
     
     // Canvas
     readyToCreate: "准备开始",
@@ -497,7 +503,7 @@ export const translations = {
     help_ai_1_title: "导入图片",
     help_ai_1_desc: "左栏「上传文件 / 上传文件夹」导入，也可以把图片或整个文件夹直接拖进窗口；截图直接 Ctrl+V 粘贴。",
     help_ai_2_title: "框选要改的地方",
-    help_ai_2_desc: "在「准备开始」页按住左键拖出矩形框（水印、气泡、杂物都行）。框能拖动、能拉角缩放；按 Delete / Backspace 或点框上的 ✕ 删除它。",
+    help_ai_2_desc: "在「重绘」页按住左键拖出矩形框（水印、气泡、杂物都行）。框能拖动、能拉角缩放；按 Delete / Backspace 或点框上的 ✕ 删除它。「准备开始」页只看原图、不显示框。",
     help_ai_3_title: "写提示词",
     help_ai_3_desc: "右侧「提示词」面板。全局默认提示词对所有框生效；选中某个框后可以单独覆盖它。场景分「翻译 / 擦除 / 自定义」三套槽，互不干扰，来回切也不会丢内容。",
     help_ai_4_title: "配置生图接口",
@@ -797,9 +803,14 @@ export const translations = {
     editorSelectRegionHint: "Select a text box on the canvas first",
     editorEditTab: "Edit",
     editorEditHint: "Click any text box on the canvas to edit its text, direction, font size and erasure here.",
+    // Work tabs of the other two workflows (same nature as the editor's Edit tab).
+    redrawTab: "Redraw",
+    patchTab: "Patch",
     editorDockProps: "Props",
     editorPrevRegion: "Previous box",
     editorNextRegion: "Next box",
+    editorLayerUp: "Move up one layer (over the neighbouring patch)",
+    editorLayerDown: "Move down one layer (under the neighbouring patch)",
     editorDockCollapse: "Collapse panel",
     editorAiLocked: "This box was completed by AI redraw and is read-only in the editor.",
     editorBrushSection: "Brush touch-up",
@@ -946,7 +957,7 @@ export const translations = {
     status_processing: "PROCESSING",
     status_completed: "DONE",
     status_failed: "FAILED",
-    noResultYet: "No redraw result yet — draw boxes on “Ready to Create”, then hit Redraw",
+    noResultYet: "No result yet — draw boxes on the work tab (Edit / Redraw / Patch) and run it, then come back here",
     
     // Canvas
     readyToCreate: "Ready to Create",
@@ -1068,7 +1079,7 @@ export const translations = {
     help_ai_1_title: "Upload",
     help_ai_1_desc: "Use Files / Folder in the left rail, drop images or a whole folder onto the window, or paste a screenshot with Ctrl+V.",
     help_ai_2_title: "Draw the boxes",
-    help_ai_2_desc: "On the 'Ready' tab, drag a rectangle over whatever needs fixing (watermark, bubble, clutter). Boxes drag and resize; Delete / Backspace or the ✕ on the box removes one.",
+    help_ai_2_desc: "On the 'Redraw' tab, drag a rectangle over whatever needs fixing (watermark, bubble, clutter). Boxes drag and resize; Delete / Backspace or the ✕ on the box removes one. The 'Ready' tab shows the untouched picture only — no boxes.",
     help_ai_3_title: "Write the prompt",
     help_ai_3_desc: "The Prompt panel on the right. The global prompt applies to every box; select a box to override just that one. Scenes (Translate / Erase / Custom) keep three separate slots, so switching never loses text.",
     help_ai_4_title: "Configure the endpoint",

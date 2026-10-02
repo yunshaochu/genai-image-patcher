@@ -7,8 +7,10 @@ import { Section } from './sidebar/Section';
 import { SettingsPanel } from './sidebar/SettingsPanel';
 import { FullImageMaskRow, ManualPatchRow } from './sidebar/WorkbenchItems';
 import { DockActions, useRunGating } from './sidebar/DockActions';
+import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
 import { DEFAULT_PROMPT, defaultRegionPrompt } from '../hooks/useConfig';
 import type { PromptField } from '../hooks/useImageManager';
+import { LayerDirection } from '../services/mangaEditor';
 
 /**
  * Right-side dock for the two API-driven workflows, mirroring EditorDock's
@@ -53,6 +55,11 @@ interface WorkflowDockProps {
   onUpdateImageTranslation: (imageId: string, translation: string) => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
   onOcrRegion: (imageId: string, regionId: string) => void;
+  /**
+   * 调整选中格的叠放次序（谁盖谁 = regions 数组下标，下标越大越靠上）。
+   * AI 重绘 / 手动修补工坊共用：贴图部分重叠时，↑ 让这一格盖到相邻贴图之上。
+   */
+  onReorderRegion?: (imageId: string, regionId: string, dir: LayerDirection) => void;
   // Run / result actions are pinned to the dock's bottom edge (see DockActions).
   images: UploadedImage[];
   processingState: ProcessingStep;
@@ -78,6 +85,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   onUpdateImageTranslation,
   onManualPatchUpdate,
   onOcrRegion,
+  onReorderRegion,
   images,
   processingState,
   processAll,
@@ -137,6 +145,11 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   const selectedRegion = currentImage && selectedRegionId
     ? currentImage.regions.find(r => r.id === selectedRegionId) ?? null
     : null;
+  // 叠放次序：regions 数组下标越大越靠上 —— 编辑画布按数组顺序叠 DOM，拼接也是按
+  // 数组顺序 drawImage。只有贴图互相重叠时看得出差别。
+  const layerIdx = selectedRegion
+    ? currentImage?.regions.findIndex(r => r.id === selectedRegion.id) ?? -1
+    : -1;
   const showFullImagePrompt = !!config.processFullImageIfNoRegions
     && !!currentImage
     && currentImage.regions.length === 0;
@@ -279,13 +292,24 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
     <aside className="h-full w-[272px] shrink-0 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-skin-border shrink-0">
         <span className="text-[10px] font-bold text-skin-text">{t(lang, isManualMode ? 'modeManual' : 'modeApi')}</span>
-        <button
-          onClick={() => setCollapsed(true)}
-          className="ml-auto p-1 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
-          title={t(lang, 'dockCollapse')}
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7" /></svg>
-        </button>
+        <div className="ml-auto flex items-center gap-1 shrink-0">
+          {/* 叠放次序：选中了框就能调（AI 重绘 / 手动修补工坊通用） */}
+          {selectedRegion && (
+            <LayerOrderButtons
+              lang={lang}
+              canUp={layerIdx >= 0 && layerIdx < currentImage!.regions.length - 1}
+              canDown={layerIdx > 0}
+              onChange={(dir) => onReorderRegion?.(currentImage!.id, selectedRegion.id, dir)}
+            />
+          )}
+          <button
+            onClick={() => setCollapsed(true)}
+            className="p-1 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+            title={t(lang, 'dockCollapse')}
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7" /></svg>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
