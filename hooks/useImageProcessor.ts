@@ -116,11 +116,19 @@ const regionOverlapsExisting = (
  */
 const mergeProcessedRegions = (
     img: UploadedImage,
-    regionsMap: Map<string, Region>
+    regionsMap: Map<string, Region>,
+    /** 本次调用**真正产出结果**的框 id。缺省 = 合并 regionsMap 里的全部框。
+     *  必须传：运行期间编辑器可能已经接管某个别的框（AI「擦除」产出后自动解冻
+     *  → 重合成，这一步会 release 掉管线那张 AI 贴图的 blob）。若这里拿"轮开始
+     *  快照"里的 processed.* 去覆盖它，就会把它指回**已被 release 的 URL** ——
+     *  画布与自动保存（sessionStore 的 GET blob）双双 404。 */
+    processedIds?: ReadonlySet<string>
 ): Region[] => {
     return img.regions.map(r => {
         const processed = regionsMap.get(r.id);
         if (!processed) return r;
+        // 不碰本次没产出的框 —— 它们可能已被编辑器在本次运行期间更新（见上）。
+        if (processedIds && !processedIds.has(r.id)) return r;
         return {
             ...r,
             status: processed.status,
@@ -320,7 +328,10 @@ export function useImageProcessor(
                     errorHistory: nextHistory,
                 });
             });
-            updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+            updateImage(imageSnapshot.id, img => ({
+                ...img,
+                regions: mergeProcessedRegions(img, regionsMap, new Set(failed.map(r => r.id))),
+            }));
         };
 
         // A file that cannot even be decoded must not abort the whole batch,
@@ -417,6 +428,8 @@ export function useImageProcessor(
             }
         }
         if (regionsToProcess.length === 0) return false;
+        // 本次调用真正产出的框 id —— mergeProcessedRegions 只回写它们（见其注释）。
+        const processedRegionIds = new Set(regionsToProcess.map(r => r.id));
 
         const imgElement = await loadImageOrFail();
         if (!imgElement) return true; // an attempt was charged to the regions
@@ -434,7 +447,7 @@ export function useImageProcessor(
             }
         }
         regionsToProcess.forEach(r => setRegion({ ...r, status: 'processing' }));
-        updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+        updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap, processedRegionIds) }));
 
         if (signal.aborted) return false;
         setProcessingState(ProcessingStep.CROPPING);
@@ -622,7 +635,7 @@ export function useImageProcessor(
                             ...img,
                             fullAiResultUrl: apiResultUrl,
                             finalResultUrl: stitchedUrl,
-                            regions: mergeProcessedRegions(img, regionsMap),
+                            regions: mergeProcessedRegions(img, regionsMap, processedRegionIds),
                             history: updatedHistory
                         };
                     });
@@ -685,7 +698,7 @@ export function useImageProcessor(
                         }
                         if (img.fullAiResultUrl) releaseObjectURL(img.fullAiResultUrl);
 
-                        return { ...img, fullAiResultUrl: apiResultUrl, regions: mergeProcessedRegions(img, regionsMap), history: updatedHistory };
+                        return { ...img, fullAiResultUrl: apiResultUrl, regions: mergeProcessedRegions(img, regionsMap, processedRegionIds), history: updatedHistory };
                     });
                 }
             } catch (err: any) {
@@ -933,7 +946,10 @@ export function useImageProcessor(
                 markBubbleContainedTexts(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
 
-                updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap) }));
+                // 只回写本框：同轮的**别的**框可能在这期间已被编辑器接管（自动
+                // 解冻/重合成并 release 了它的 AI 贴图）—— 拿轮开始快照覆盖它们
+                // 会写成死链（画布空白 + sessionStore GET blob 404）。
+                updateImage(imageSnapshot.id, img => ({ ...img, regions: mergeProcessedRegions(img, regionsMap, new Set([region.id])) }));
             } catch (err: any) {
                 if (err.name === 'AbortError') return;
                 // Clean up any URLs we created in this task
