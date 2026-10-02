@@ -15,7 +15,8 @@ import { EditorTextStyle } from '../types';
  *   vertical punctuation forms are emulated (90° rotation for dashes /
  *   brackets / ellipsis, em-box offsets for 。、：；！？) since canvas cannot
  *   trigger OpenType 'vert' features.
- * - The text block is centered inside the box.
+ * - Alignment: 横排靠左（每行从框的左内边起排，块本身仍在框内垂直居中）；
+ *   竖排整块居中（列从右往左排）。
  */
 
 export interface ResolvedTextStyle {
@@ -306,8 +307,11 @@ export const layoutText = (
 };
 
 /**
- * Draw previously laid-out text into ctx, centered inside a boxW×boxH box
- * whose top-left corner is at (0, 0) of the current transform.
+ * Draw previously laid-out text into ctx, inside a boxW×boxH box whose
+ * top-left corner is at (0, 0) of the current transform.
+ *
+ * 横排：每行**靠左**（贴框的左内边距），整块在框内垂直居中。
+ * 竖排：整块居中（列从右往左，首字对齐）。
  */
 export const drawTextLayout = (
   ctx: CanvasRenderingContext2D,
@@ -335,21 +339,24 @@ export const drawTextLayout = (
     ctx.fillText(line, x, y);
   };
 
-  // The block stays CENTERED even when it overflows the box — these offsets are
-  // deliberately not clamped to 0. The compositor sizes the patch's overflow
-  // margin from measureLayoutBlock() as a symmetric HALF-spill per side (see
-  // compositeRegionPatch), so an overflowing block must spill equally on both
-  // sides. Clamping made the whole overflow run down (horizontal) or left
-  // (vertical): that side got only half the margin it needed — the excess was
-  // cut off at the canvas edge — while the opposite margin went unused.
+  // The block stays CENTERED (vertically for 横排, both axes for 竖排) even when
+  // it overflows the box — these offsets are deliberately not clamped to 0. The
+  // compositor sizes the patch's overflow margin from measureLayoutBlock() as a
+  // symmetric HALF-spill per side (see compositeRegionPatch), so an overflowing
+  // block must spill equally on both sides. Clamping made the whole overflow run
+  // down (horizontal) or left (vertical): that side got only half the margin it
+  // needed — the excess was cut off at the canvas edge — while the opposite
+  // margin went unused.
   if (!isVertical) {
     const lineH = fontSize * LINE_HEIGHT_RATIO;
     const blockH = lines.length * lineH;
     let y = padding + (innerH - blockH) / 2;
     for (const line of lines) {
-      const w = ctx.measureText(line).width;
-      const x = padding + (innerW - w) / 2;
-      drawLine(line, x, y);
+      // 横排靠左：每行贴框的左内边起排（块本身仍然垂直居中）。
+      // 只有"整行宽度超出框"的极端情况（无法断行的超长串）会往右溢出 —— 横排
+      // 的溢出边距由 measureLayoutBlock 的 blockW 决定，这里保持不夹取，行为
+      // 与居中时一致（贴边绘制，多余部分同样被画布裁掉）。
+      drawLine(line, padding, y);
       y += lineH;
     }
   } else {
