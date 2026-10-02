@@ -152,7 +152,9 @@ const BrushActions: React.FC<{
   region: Region;
   lang: 'zh' | 'en';
   onBrushChange: (regionId: string, url: string | null) => void;
-}> = ({ region, lang, onBrushChange }) => {
+  /** AI「擦除」产物优先：本框不许再用画笔修补（会盖住干净底图）。 */
+  locked?: boolean;
+}> = ({ region, lang, onBrushChange, locked }) => {
   /** One-click whole-box white / black out. A solid colour is stretched onto
    *  the crop when compositing, so a tiny canvas is all that is needed. */
   const fillWholeRegion = async (color: string) => {
@@ -174,23 +176,25 @@ const BrushActions: React.FC<{
     <>
       <button
         onClick={() => fillWholeRegion('#ffffff')}
-        className={fillBtn}
-        title={t(lang, 'editorBrushFillTip')}
+        disabled={locked}
+        className={`${fillBtn} disabled:opacity-40 disabled:cursor-not-allowed`}
+        title={locked ? t(lang, 'editorBrushLockedByAi') : t(lang, 'editorBrushFillTip')}
       >
         {t(lang, 'editorBrushFillWhite')}
       </button>
       <button
         onClick={() => fillWholeRegion('#000000')}
-        className={fillBtn}
-        title={t(lang, 'editorBrushFillTip')}
+        disabled={locked}
+        className={`${fillBtn} disabled:opacity-40 disabled:cursor-not-allowed`}
+        title={locked ? t(lang, 'editorBrushLockedByAi') : t(lang, 'editorBrushFillTip')}
       >
         {t(lang, 'editorBrushFillBlack')}
       </button>
       <button
         onClick={() => onBrushChange(region.id, null)}
-        disabled={!region.editorBrushUrl}
+        disabled={!region.editorBrushUrl || locked}
         className="px-1.5 py-0.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-rose-500 hover:border-rose-400 disabled:opacity-40 disabled:hover:text-skin-muted disabled:hover:border-skin-border transition-colors"
-        title={t(lang, 'editorBrushClearTip')}
+        title={locked ? t(lang, 'editorBrushLockedByAi') : t(lang, 'editorBrushClearTip')}
       >
         {t(lang, 'editorBrushClear')}
       </button>
@@ -214,7 +218,9 @@ const BrushPainter: React.FC<{
   size: number;
   color: string;
   onSizeChange: (size: number) => void;
-}> = ({ region, image, lang, preferVerticalDefault, buildBrushBase, onBrushChange, size, color, onSizeChange }) => {
+  /** AI「擦除」产物优先：本框的干净底图不许被笔画盖住。 */
+  locked?: boolean;
+}> = ({ region, image, lang, preferVerticalDefault, buildBrushBase, onBrushChange, size, color, onSizeChange, locked }) => {
   const displayRef = useRef<HTMLCanvasElement>(null);
   const brushCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const baseImgRef = useRef<HTMLImageElement | null>(null);
@@ -399,8 +405,9 @@ const BrushPainter: React.FC<{
             ref={displayRef}
             width={base?.naturalWidth || 1}
             height={base?.naturalHeight || 1}
-            style={{ width: displayW, height: displayH, touchAction: 'none', cursor: 'crosshair' }}
+            style={{ width: displayW, height: displayH, touchAction: 'none', cursor: locked ? 'not-allowed' : 'crosshair' }}
             onPointerDown={(e) => {
+              if (locked) return;
               e.currentTarget.setPointerCapture(e.pointerId);
               const p = toCropCoords(e);
               if (!p) return;
@@ -424,7 +431,7 @@ const BrushPainter: React.FC<{
           <div className="w-full h-24 animate-pulse bg-skin-fill" />
         )}
       </div>
-      <p className="text-[9px] text-skin-muted italic">{t(lang, 'editorBrushHint')}</p>
+      <p className={`text-[9px] italic ${locked ? 'text-amber-600' : 'text-skin-muted'}`}>{t(lang, locked ? 'editorBrushLockedByAi' : 'editorBrushHint')}</p>
     </div>
   );
 };
@@ -1434,7 +1441,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 <svg className={`w-3 h-3 transition-transform ${brushOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
               </button>
               <div className="ml-auto flex items-center gap-1">
-                <BrushActions region={region} lang={lang} onBrushChange={onBrushChange} />
+                <BrushActions region={region} lang={lang} onBrushChange={onBrushChange} locked={!!region.aiErasedBase} />
               </div>
             </div>
 
@@ -1500,6 +1507,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   size={brushSize}
                   color={brushColor}
                   onSizeChange={setBrushSize}
+                  locked={!!region.aiErasedBase}
                 />
               </div>
             )}

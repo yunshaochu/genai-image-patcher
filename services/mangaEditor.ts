@@ -587,7 +587,9 @@ export const compositeRegionPatch = async (
   // painting). Drawn BEFORE the typeset text: the brush is a background
   // touch-up — it covers leftover original artwork/text — so the translation
   // stays readable on top of it (涂白 must not swallow the translation).
-  if (region.editorBrushUrl) {
+  // aiErasedBase = AI「擦除」产物的干净底图就是这一格的画面：画笔层会盖住它，
+  // 和编辑器擦除一样一律作废（数据层已清 editorBrushUrl，这里是最后一道闸门）。
+  if (region.editorBrushUrl && !region.aiErasedBase) {
     try {
       const brushImg = await loadImage(region.editorBrushUrl);
       ctx.drawImage(brushImg, mx, my, cropW, cropH);

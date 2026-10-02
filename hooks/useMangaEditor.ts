@@ -622,18 +622,22 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, []);
 
-  // AI「擦除」产物 vs 编辑器擦除：只要本框拿到了 AI 抹干净的底图
-  // （aiErasedBase），编辑器自己那份泛洪擦除结果就作废 —— 标记清掉、擦除缓存
-  // 丢弃（否则再次合成会复用"在原图上擦出来的"旧结果），然后按"未擦除"重建贴图。
-  // 兜底用：管线写回完成时已经清过 editorErased，这里替老会话 / 导入的工态收尾。
-  // editorErased=false 后本 effect 自然不再命中。
+  // AI「擦除」产物 vs 编辑器加的底图层：只要本框拿到了 AI 抹干净的底图
+  // （aiErasedBase），编辑器那两份会盖住底图的图层就全部作废 —— 泛洪擦除
+  // （editorErased）和画笔修补（editorBrushUrl，全涂白 / 涂黑 / 笔画都会糊住
+  // 这张干净底图）。擦除缓存一并丢弃（否则再次合成会复用"在原图上擦出来的"
+  // 旧结果），然后重建贴图。
+  // 兜底用：管线写回完成时已经清过 editorErased，这里替老会话 / 导入的工态收尾；
+  // 两个标记都清掉后本 effect 自然不再命中。
   useEffect(() => {
     for (const img of images) {
-      const stale = img.regions.filter(r => r.aiErasedBase && r.editorErased);
+      const stale = img.regions.filter(r => r.aiErasedBase && (r.editorErased || r.editorBrushUrl));
       if (stale.length === 0) continue;
       stale.forEach(r => dropErasedCache(r.id));
+      // 画笔 blob 不在这里 release：history 快照可能还引用着同一份（与 handBack
+      // 同一处理）。清空字段即可，免得撤销时贴图指向已回收的 URL。
       const nextById = new Map<string, Region>(
-        stale.map(r => [r.id, { ...r, editorErased: false } as Region])
+        stale.map(r => [r.id, { ...r, editorErased: false, editorBrushUrl: undefined } as Region])
       );
       updateImage(img.id, current => ({
         ...current,
@@ -688,6 +692,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const setBrushLayer = useCallback(async (imageId: string, regionId: string, brushUrl: string | null) => {
     const target = getImage(imageId)?.regions.find(r => r.id === regionId);
     if (!target || isAiOwned(target)) return;
+    // aiErasedBase = AI「擦除」产物就是这一格的画面：画笔层会盖住它，一律拒绝
+    // （UI 已禁用；这里再兜一道，防止老会话 / 快捷键等旁路绕进来）。
+    if (target.aiErasedBase) return;
     const next: Region = { ...target, editorBrushUrl: brushUrl ?? undefined };
     updateImage(imageId, img => ({
       ...img,
