@@ -1,11 +1,11 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
-import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL } from './services/imageUtils';
+import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl } from './services/imageUtils';
 import { downloadImagesAsZip } from './services/downloadZip';
 // Type-only: mixing an interface into a value import makes the dev server emit a
 // runtime import for a name that does not exist ('does not provide an export named …').
@@ -30,6 +30,24 @@ const PayloadInspector = lazy(() => import('./components/PayloadInspector'));
 /** Does this image have anything beyond the untouched picture? */
 const imageHasResult = (img: UploadedImage): boolean =>
   img.regions.some(r => r.status === 'completed') || !!img.finalResultUrl || !!img.fullAiResultUrl;
+
+/**
+ * 有效重绘意图 —— 与管线（useImageProcessor.effectiveIntent）同一套规则：
+ * 全图遮罩模式看图片级标记，标准模式看这一格自己的覆盖，都没表态 → 全局默认场景。
+ *
+ * 手动回填也按它决定落点：擦除 → 贴回来的就是干净底图（编辑器可排版 / 解冻填入）；
+ * 翻译 / 自定义 → 贴回来的是成品图，AI 产物独占只读。
+ */
+const effectiveIntentOf = (
+  region: Region | undefined,
+  image: UploadedImage | undefined,
+  config: AppConfig
+): RedrawIntent => {
+  const fallback = config.defaultRedrawIntent ?? 'translate';
+  return config.useFullImageMasking
+    ? (image?.redrawIntent ?? fallback)
+    : (region?.redrawIntent ?? fallback);
+};
 
 export default function App() {
   const { config, setConfig } = useConfig();
@@ -246,7 +264,18 @@ export default function App() {
                             targetImg.originalHeight,
                             config.fullImageOpaquePercent
                         );
-                        updatedRegions.push({ ...r, processedImageUrl: crop, status: 'completed', anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height });
+                        const cropIntent = effectiveIntentOf(r, targetImg, config);
+                        const cropEraseBase = cropIntent === 'erase' ? await cloneObjectUrl(crop) : undefined;
+                        if (cropEraseBase && r.aiEraseBaseUrl) releaseObjectURL(r.aiEraseBaseUrl);
+                        updatedRegions.push({
+                            ...r,
+                            processedImageUrl: crop,
+                            status: 'completed',
+                            anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height,
+                            ...(cropIntent === 'erase'
+                                ? { aiErasedBase: true, editorErased: false, editorWhitedOut: false, aiEraseBaseUrl: cropEraseBase ?? r.aiEraseBaseUrl }
+                                : { aiErasedBase: undefined, aiEraseBaseUrl: undefined }),
+                        });
                     } catch (e) {
                         console.error("Failed to extract crop for region", r.id, e);
                         updatedRegions.push({ ...r, status: 'failed' });
@@ -272,23 +301,47 @@ export default function App() {
         return;
     }
 
-    updateImage(imageId, img => {
-        // Release old region URL before replacing
-        const oldRegion = img.regions.find(r => r.id === regionId);
-        if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
+    // 回填落点按有效重绘意图走：「擦除」= 贴回来的是干净底图（aiErasedBase +
+    // 独立底图槽），编辑器可以在它上面排版、也能「解冻填入」；「翻译 / 自定义」
+    // = 贴回来的是成品图，AI 产物独占只读。
+    const targetImg = images.find(img => img.id === imageId);
+    const pasteIntent = effectiveIntentOf(targetImg?.regions.find(r => r.id === regionId), targetImg, config);
+    void (async () => {
+        const eraseBase = pasteIntent === 'erase' ? await cloneObjectUrl(imageDataUrl) : undefined;
+        updateImage(imageId, img => {
+            // Release old region URL before replacing
+            const oldRegion = img.regions.find(r => r.id === regionId);
+            if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
+            // 旧底图只在真的拿到新底图时才回收（否则留着还能继续当底图用）。
+            if (eraseBase && oldRegion?.aiEraseBaseUrl) releaseObjectURL(oldRegion.aiEraseBaseUrl);
 
-        const updatedRegions = img.regions.map(r =>
-           r.id === regionId ? { ...r, processedImageUrl: imageDataUrl, status: 'completed' as const, anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height } : r
-        );
+            const updatedRegions = img.regions.map(r => {
+                if (r.id !== regionId) return r;
+                const pasted: Region = {
+                    ...r,
+                    processedImageUrl: imageDataUrl,
+                    status: 'completed' as const,
+                    anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height,
+                    // 贴回来的图是按当前框裁的，不带编辑器溢出边距，也不是编辑器
+                    // 合成的产物。
+                    patchMarginX: undefined,
+                    patchMarginY: undefined,
+                    editorComposited: false,
+                };
+                return pasteIntent === 'erase'
+                    ? { ...pasted, aiErasedBase: true, editorErased: false, editorWhitedOut: false, aiEraseBaseUrl: eraseBase ?? r.aiEraseBaseUrl }
+                    : { ...pasted, aiErasedBase: undefined, aiEraseBaseUrl: undefined };
+            });
 
-        const currentHistory = [...img.history];
-        if (currentHistory[img.historyIndex]) {
-            currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
-        }
+            const currentHistory = [...img.history];
+            if (currentHistory[img.historyIndex]) {
+                currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions: updatedRegions };
+            }
 
-        return { ...img, regions: updatedRegions, history: currentHistory };
-    });
-  }, [images, config.useInvertedMasking, config.fullImageOpaquePercent, updateImage]);
+            return { ...img, regions: updatedRegions, history: currentHistory };
+        });
+    })();
+  }, [images, config.useInvertedMasking, config.fullImageOpaquePercent, config.defaultRedrawIntent, updateImage]);
 
   // --- Interaction Start Handler (Called by EditorCanvas on mousedown) ---
   const handleInteractionStart = useCallback(() => {

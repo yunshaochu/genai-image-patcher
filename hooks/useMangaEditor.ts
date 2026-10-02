@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppConfig, Region, UploadedImage, RedrawIntent } from '../types';
-import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
+import { loadImage, cropRegion, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { recognizeText } from '../services/detectionService';
 import { translateEditorRegions } from '../services/editorTranslate';
 import {
@@ -35,6 +35,17 @@ const getContextBubbles = (img: UploadedImage): Region[] =>
   img.regions.filter(r => r.detectedClass === 'bubble');
 
 /**
+ * AI「擦除」产物的干净底图 URL —— 编辑器每次重建贴图都从它出发。
+ *
+ * 不能直接用 processedImageUrl：合成器一跑，它就成了"底图 + 文字"的成品，再拿它
+ * 当底图会把上一版文字烤进画面（改字 / 拖框 → 满屏重影）。所以管线落盘时另存
+ * 一份独立 URL（Region.aiEraseBaseUrl）。老会话没有这个字段时退回：只有还没被
+ * 编辑器合成过的贴图才是干净底图。
+ */
+const eraseBaseUrlOf = (r: Region): string | undefined =>
+  r.aiEraseBaseUrl ?? (r.editorComposited ? undefined : r.processedImageUrl);
+
+/**
  * Base image the compositor builds a region's patch from. Normally the plain
  * preview; for aiBubbleBase regions the covering AI-redrawn bubble patch is
  * drawn in first, so typeset text sits on the clean bubble (and any explicit
@@ -46,9 +57,11 @@ const buildEditorBase = async (
   region: Region
 ): Promise<HTMLImageElement | HTMLCanvasElement> => {
   const imageEl = await loadImage(img.previewUrl);
-  // AI「擦除」意图：本框自己的贴图就是干净底图 —— 先把它按锚点（含溢出边距）
-  // 铺回整图，后续排版直接落在它上面，而且不再做泛洪擦除（原文早被 AI 抹掉）。
-  if (region.aiErasedBase && region.processedImageUrl) {
+  // AI「擦除」意图：本框那份干净底图 —— 先按锚点铺回整图，后续排版直接落在它
+  // 上面，而且不再做泛洪擦除（原文早被 AI 抹掉）。底图尺寸就是当时的框，不带
+  // 编辑器的溢出边距（patchMargin* 是合成结果的属性，不是底图的）。
+  const eraseBaseUrl = eraseBaseUrlOf(region);
+  if (region.aiErasedBase && eraseBaseUrl) {
     const base = document.createElement('canvas');
     base.width = imageEl.naturalWidth;
     base.height = imageEl.naturalHeight;
@@ -56,13 +69,11 @@ const buildEditorBase = async (
     if (!bctx) return imageEl;
     bctx.drawImage(imageEl, 0, 0);
     try {
-      const patchImg = await loadImage(region.processedImageUrl);
-      const mx = region.patchMarginX ?? 0;
-      const my = region.patchMarginY ?? 0;
-      const ax = (((region.anchorX ?? region.x) - mx) / 100) * base.width;
-      const ay = (((region.anchorY ?? region.y) - my) / 100) * base.height;
-      const aw = (((region.anchorWidth ?? region.width) + mx * 2) / 100) * base.width;
-      const ah = (((region.anchorHeight ?? region.height) + my * 2) / 100) * base.height;
+      const patchImg = await loadImage(eraseBaseUrl);
+      const ax = ((region.anchorX ?? region.x) / 100) * base.width;
+      const ay = ((region.anchorY ?? region.y) / 100) * base.height;
+      const aw = ((region.anchorWidth ?? region.width) / 100) * base.width;
+      const ah = ((region.anchorHeight ?? region.height) / 100) * base.height;
       bctx.drawImage(patchImg, ax, ay, aw, ah);
     } catch (e) {
       console.warn('Failed to overlay AI erased base for region', region.id, e);
@@ -360,7 +371,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
               }
             : r;
           if (url && result) {
-            if (base.processedImageUrl && base.processedImageUrl !== url) {
+            // 老会话兜底：还没迁出独立底图槽（aiEraseBaseUrl）时，processedImageUrl
+            // 可能是 AI「擦除」产物的唯一副本 —— 释放它等于把底图也删了。
+            const keepAsBase = base.aiErasedBase && !base.aiEraseBaseUrl && !base.editorComposited;
+            if (base.processedImageUrl && base.processedImageUrl !== url && !keepAsBase) {
               releaseObjectURL(base.processedImageUrl);
             }
             return {
@@ -488,6 +502,40 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [images, recompositeRegion]);
 
+  // 老会话 / 老路径迁移：把「贴图上就是干净底图」的框补成真正的擦除底图框。
+  // 两类：
+  //  1) aiErasedBase 已打但没有独立底图槽（本版本之前，AI「擦除」产物只存在
+  //     processedImageUrl 里）→ 趁还没被编辑器合成（贴图仍是干净底图）复制一份；
+  //     已经合成过的框救不回来（底图里已经有字了），只能重置后重跑一次擦除。
+  //  2) 场景是「擦除」且已完成、又不是编辑器合成出来的 —— 手动修补工坊粘回来的
+  //     干净底图就是这一类（老版本回填时没写 aiErasedBase，于是被当成 AI 独占
+  //     只读、解冻不了）。这里补上标记，之后就能排版 / 解冻填入。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      for (const img of imagesRef.current) {
+        for (const r of img.regions) {
+          const isEraseProduct =
+            (r.aiErasedBase && !r.aiEraseBaseUrl) ||
+            (!r.aiErasedBase && !r.editorComposited && r.status === 'completed' && intentOf(r) === 'erase');
+          if (!isEraseProduct) continue;
+          if (r.editorComposited || !r.processedImageUrl) continue;
+          const url = await cloneObjectUrl(r.processedImageUrl);
+          if (!url) continue;
+          if (cancelled) { releaseObjectURL(url); return; }
+          updateImage(img.id, current => ({
+            ...current,
+            regions: current.regions.map(x =>
+              x.id === r.id && !x.aiEraseBaseUrl && !x.editorComposited
+                ? { ...x, aiErasedBase: true, editorErased: false, aiEraseBaseUrl: url }
+                : x),
+          }));
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [images, updateImage, intentOf]);
+
   // AI「擦除」场景产出干净底图后，编辑器这边自动接手：
   //  1. 自动解冻 —— 该框若挂着 held-back 译文，把底图已无原文，直接放出来排版
   //     （不泛洪擦除、不会和图上文字重叠）；
@@ -499,12 +547,15 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   useEffect(() => {
     for (const img of images) {
       for (const r of img.regions) {
-        if (!r.aiErasedBase || !r.processedImageUrl) continue;
-        if (erasedBaseCompositedRef.current.get(r.id) === r.processedImageUrl) continue;
+        // 底图用独立槽里的那一份（见 eraseBaseUrlOf），并用底图 URL 作"已接过手"
+        // 的键 —— 合成会换掉 processedImageUrl，用它当键会漏判/重复判。
+        const baseUrl = eraseBaseUrlOf(r);
+        if (!r.aiErasedBase || !baseUrl) continue;
+        if (erasedBaseCompositedRef.current.get(r.id) === baseUrl) continue;
 
         const frozen = r.editorFrozenText?.trim();
         if (frozen && !r.editorText?.trim()) {
-          erasedBaseCompositedRef.current.set(r.id, r.processedImageUrl);
+          erasedBaseCompositedRef.current.set(r.id, baseUrl);
           const next: Region = {
             ...r,
             editorText: frozen,
@@ -521,7 +572,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         }
 
         if (r.editorComposited || !r.editorText?.trim()) continue;
-        erasedBaseCompositedRef.current.set(r.id, r.processedImageUrl);
+        erasedBaseCompositedRef.current.set(r.id, baseUrl);
         void recompositeRegion(img.id, r.id);
       }
     }
@@ -1033,19 +1084,25 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   /**
    * 重置 one region (the canvas' Reset / Redo button).
    *
-   * A plain region keeps the historical hard reset: back to 'pending' with its
-   * patch dropped (typed text deliberately survives in editorText — that is how
-   * the button always behaved). A `bubble` ALSO resets the text_bubble regions
-   * it contains: the bubble derives its own completion from them (see
-   * syncBubbleStatuses), so resetting only the bubble would be undone by the
-   * very next sync pass and the bubble could never be handed back to the AI.
+   * 语义 = 「把这一格交回 AI 重绘」，落点和 dock 的「冻结翻译」一致：
+   *  - 产物消失：贴图丢掉、editorComposited 复位、status 回到 'pending'
+   *    （结果视图与拼接都只认 'completed'），于是管线可以重新挑到它；
+   *  - 原图复原：擦除（editorErased）、涂白（editorWhitedOut）以及 AI 底图
+   *    标记（aiBubbleBase / aiErasedBase）全部撤回 —— 不撤回的话，贴图已经
+   *    没了，编辑器却还把它显示成「已擦除」；
+   *  - 已嵌的字转为冻结译文（editorText → editorFrozenText），绝不随重置一起
+   *    丢掉。原本就挂着 editorFrozenText 的 AI「翻译」产物同理保留。
    *
-   * Contained text that already carries WORK is frozen rather than wiped — the
-   * same landing as 冻结翻译 / freezeTranslation: the typeset text moves into
-   * editorFrozenText, the original artwork comes back and the box drops to
-   * 'pending' for the AI redraw, so a reset can never silently throw the user's
-   * translation away. The freeze is flagged manual, so the page-wide quick
-   * fixes (涂白并解冻 / 再次冻结) leave that decision alone.
+   * A `bubble` ALSO resets the text_bubble regions it contains: the bubble
+   * derives its own completion from them (see syncBubbleStatuses), so resetting
+   * only the bubble would be undone by the very next sync pass and the bubble
+   * could never be handed back to the AI.
+   *
+   * The brush layer is deliberately kept — it is background touch-up the user
+   * painted, not a generated result. The dropped patch's blob URL is NOT
+   * released here: the history entry of the current state shares the very same
+   * URL (handleUpdateRegions keeps history[historyIndex].regions in sync), so
+   * revoking it would break undo/redo.
    */
   const resetRegion = useCallback((imageId: string, regionId: string) => {
     const img = getImage(imageId);
@@ -1057,50 +1114,41 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       : [];
 
     /**
-     * Back to "nothing generated here yet". The patch is dropped (nothing reads
-     * it any more: the result overlay and the stitcher both require status
-     * 'completed'), and the editor markers are cleared. The brush layer is
-     * deliberately kept — it is background touch-up the user painted, not a
-     * generated result.
+     * Back to "nothing generated here yet" + 原图复原 + 已嵌的字转冻结。
+     * See the doc comment above for why each flag is dropped.
      */
-    const teardown = (r: Region): Region => ({
-      ...r,
-      status: 'pending',
-      processedImageUrl: undefined,
-      editorComposited: false,
-      patchMarginX: undefined,
-      patchMarginY: undefined,
-      restoreBoxes: undefined,
-    });
-
-    // The clicked box itself: only its generated content goes away. Typed text
-    // deliberately survives in editorText, exactly as this button always
-    // behaved for a single region.
-    const nextById = new Map<string, Region>([[regionId, teardown(region)]]);
-    for (const child of children) {
-      // A run owns a 'processing' box — never pull it out from under the API.
-      if (child.status === 'processing') continue;
-      nextById.set(child.id, {
-        ...teardown(child),
-        // The bubble's patch is going away, so the box no longer sits on a
-        // clean AI base: it must be erasable / re-picked by the redraw again.
+    const handBack = (r: Region): Region => {
+      // 撤回擦除 = 这份结果不要了，缓存一并丢弃（见 dropErasedCache）：之后
+      // 再点擦除会重新请求后端，而不是复用"重置前那张"的旧结果。
+      if (r.editorErased) dropErasedCache(r.id);
+      return {
+        ...r,
+        status: 'pending' as const,
+        processedImageUrl: undefined,
+        editorComposited: false,
+        patchMarginX: undefined,
+        patchMarginY: undefined,
+        restoreBoxes: undefined,
         editorErased: false,
         editorWhitedOut: false,
         aiBubbleBase: undefined,
-        // 冻结 instead of wiping: the typeset text is held back and the box
-        // goes back to 'pending' for the AI redraw — the same landing as the
-        // dock's 冻结翻译, so a bubble reset can never throw a translation
-        // away.
-        ...(child.editorText?.trim()
-          ? { editorFrozenText: child.editorText, editorText: undefined }
+        aiErasedBase: undefined,
+        // 擦除产物一起作废（不 release：history 里可能还引用着同一份 blob）。
+        aiEraseBaseUrl: undefined,
+        ...(r.editorText?.trim()
+          ? { editorFrozenText: r.editorText, editorText: undefined }
           : {}),
-      });
-    }
+      };
+    };
+
+    // A run owns a 'processing' child — never pull it out from under the API.
+    const targets = [region, ...children.filter(c => c.status !== 'processing')];
+    const nextById = new Map<string, Region>(targets.map(t => [t.id, handBack(t)]));
     updateImage(imageId, current => ({
       ...current,
       regions: current.regions.map(r => nextById.get(r.id) ?? r),
     }));
-  }, [getImage, updateImage]);
+  }, [getImage, updateImage, dropErasedCache]);
 
   /** Push a quick-fix snapshot onto the undo stack (bounded), exposing depth. */
   const pushFreezeUndo = useCallback((entries: FreezeUndoEntry[]) => {

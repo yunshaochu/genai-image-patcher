@@ -104,6 +104,25 @@ export const releaseObjectURL = (url: string | undefined | null) => {
 };
 
 /**
+ * An INDEPENDENT Object URL pointing at a copy of the same blob.
+ *
+ * Used for the AI「擦除」底图: the region keeps its own URL so `processedImageUrl`
+ * stays free to be overwritten / released by the compositor without ever
+ * revoking the base underneath it (two fields sharing one URL means whoever
+ * releases first kills both).
+ */
+export const cloneObjectUrl = async (url: string | undefined | null): Promise<string | undefined> => {
+    if (!url) return undefined;
+    try {
+        const blob = await (await fetch(url)).blob();
+        return URL.createObjectURL(blob);
+    } catch (e) {
+        console.error('Failed to clone the patch blob', e);
+        return undefined;
+    }
+};
+
+/**
  * Release all Object URLs on an UploadedImage object.
  * Call this before removing an image from state or when replacing URLs.
  */
@@ -116,6 +135,7 @@ export const cleanupImageUrls = (img: UploadedImage) => {
     img.regions.forEach(r => {
         releaseObjectURL(r.processedImageUrl);
         releaseObjectURL(r.restoreMaskUrl);
+        releaseObjectURL(r.aiEraseBaseUrl);
     });
     img.history.forEach(h => {
         releaseObjectURL(h.previewUrl);
@@ -124,6 +144,7 @@ export const cleanupImageUrls = (img: UploadedImage) => {
         h.regions.forEach(r => {
             releaseObjectURL(r.processedImageUrl);
             releaseObjectURL(r.restoreMaskUrl);
+            releaseObjectURL(r.aiEraseBaseUrl);
         });
     });
 };

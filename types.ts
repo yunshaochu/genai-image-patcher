@@ -145,6 +145,12 @@ export interface Region {
    *    effect): AI 产物绝对优先，编辑器的擦除结果一律让位；
    *  - the box stays editable (NOT AI-owned) so the user can typeset into it. */
   aiErasedBase?: boolean;
+  /** AI「擦除」产物本体（干净底图，Object URL，独立所有）。
+   *  必须和 processedImageUrl 分开存：合成器一旦跑过，processedImageUrl 就是
+   *  「底图 + 文字」的成品，再拿它当底图会把上一版文字烤进去（改字/拖框重影）；
+   *  而"没有东西可渲染"时 processedImageUrl 会被连带清掉，底图也会一起消失
+   *  （于是退回原图、原文又露出来）。编辑器每次都从这一份底图重建贴图。 */
+  aiEraseBaseUrl?: string;
   /** Editor patch overflow margin beyond the anchor box, as % of the full image
    *  width/height (patch extends this far past the crop on each side so
    *  overflowing text stays visible). 0/undefined = crop-sized patch. */

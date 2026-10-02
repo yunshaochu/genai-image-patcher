@@ -28,10 +28,12 @@ const META_KEY = 'session';
  *  ZIP instead of IndexedDB. */
 export type PersistableUrl = Blob | string | undefined;
 
-export type RegionRecord = Omit<Region, 'processedImageUrl' | 'restoreMaskUrl' | 'editorBrushUrl'> & {
+export type RegionRecord = Omit<Region, 'processedImageUrl' | 'restoreMaskUrl' | 'editorBrushUrl' | 'aiEraseBaseUrl'> & {
   processed?: PersistableUrl;
   restoreMask?: PersistableUrl;
   editorBrush?: PersistableUrl;
+  /** AI「擦除」产物的干净底图（见 Region.aiEraseBaseUrl）。 */
+  aiEraseBase?: PersistableUrl;
 };
 
 export interface ImageRecord {
@@ -133,13 +135,14 @@ export async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
   ]);
   const regions: RegionRecord[] = await Promise.all(
     img.regions.map(async (r) => {
-      const { processedImageUrl, restoreMaskUrl, editorBrushUrl, ...scalars } = r;
-      const [processed, restoreMask, editorBrush] = await Promise.all([
+      const { processedImageUrl, restoreMaskUrl, editorBrushUrl, aiEraseBaseUrl, ...scalars } = r;
+      const [processed, restoreMask, editorBrush, aiEraseBase] = await Promise.all([
         urlToPersistable(processedImageUrl),
         urlToPersistable(restoreMaskUrl),
         urlToPersistable(editorBrushUrl),
+        urlToPersistable(aiEraseBaseUrl),
       ]);
-      return { ...scalars, processed, restoreMask, editorBrush };
+      return { ...scalars, processed, restoreMask, editorBrush, aiEraseBase };
     })
   );
   return {
@@ -169,7 +172,7 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
   const finalResultUrl = persistableToUrl(rec.finalResult);
   const fullAiResultUrl = persistableToUrl(rec.fullAi);
   const regions: Region[] = rec.regions.map((r) => {
-    const { processed, restoreMask, editorBrush, ...scalars } = r;
+    const { processed, restoreMask, editorBrush, aiEraseBase, ...scalars } = r;
     // 迁移：把旧版塞在 customPrompt 里的 marker 译文块拆到 customTranslation。
     const trans = migratePromptToTranslation(scalars.customPrompt);
     return {
@@ -182,6 +185,7 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
       processedImageUrl: persistableToUrl(processed),
       restoreMaskUrl: persistableToUrl(restoreMask),
       editorBrushUrl: persistableToUrl(editorBrush),
+      aiEraseBaseUrl: persistableToUrl(aiEraseBase),
     };
   });
   const initialState: ImageHistoryState = {

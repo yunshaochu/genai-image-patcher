@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl } from '../types';
 import { defaultRegionPrompt } from './useConfig';
-import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL } from '../services/imageUtils';
+import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
 // `generateTranslation` is used by the translate stage (handleTranslate) and,
 // only when 重绘前翻译 (config.translateBeforeRedraw) is on, by the generate
@@ -125,6 +125,8 @@ const mergeProcessedRegions = (
             // editorFrozenText 只在管线确实要 hold back（非空）时才覆盖 —— 清空不属于
             // 管线职责，免得冲掉用户手动冻结的译文。
             aiErasedBase: processed.aiErasedBase ?? r.aiErasedBase,
+            // 擦除底图同理：跟着 processed 走（新底图优先），没有就保留旧的。
+            aiEraseBaseUrl: processed.aiEraseBaseUrl ?? r.aiEraseBaseUrl,
             ...(processed.editorFrozenText?.trim() ? { editorFrozenText: processed.editorFrozenText } : {}),
             // Retry diagnostics — processed.* always wins so we don't lose
             // the latest count/history when a parallel region update races.
@@ -620,6 +622,12 @@ export function useImageProcessor(
                         );
                         // AI takes ownership: drop any editor-intermediate patch.
                         if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
+                        // 「擦除」产物另外留一份干净底图（独立 URL），编辑器每次从
+                        // 它重建贴图；processedImageUrl 会被合成结果覆盖/回收。
+                        const eraseBase = imageIntent === 'erase'
+                            ? await cloneObjectUrl(finalRegionImageUrl)
+                            : undefined;
+                        if (eraseBase && region.aiEraseBaseUrl) releaseObjectURL(region.aiEraseBaseUrl);
                         const completedRegion: Region = {
                             ...region,
                             processedImageUrl: finalRegionImageUrl,
@@ -633,8 +641,11 @@ export function useImageProcessor(
                             anchorHeight: region.height,
                             // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。
                             // 擦除产物优先：编辑器已有的泛洪擦除结果一并作废
-                            // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面）。
-                            ...(imageIntent === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
+                            // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面），
+                            // 并单独保存一份干净底图供编辑器反复重建贴图。
+                            ...(imageIntent === 'erase'
+                                ? { aiErasedBase: true, editorErased: false, aiEraseBaseUrl: eraseBase ?? region.aiEraseBaseUrl }
+                                : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         };
                         setRegion(completedRegion);
@@ -863,6 +874,12 @@ export function useImageProcessor(
                 // earlier in this task). Spreading the original `region` snapshot here
                 // would silently overwrite that update.
                 const baseRegion = regionsMap.get(region.id) ?? region;
+                // 「擦除」产物另存一份干净底图（独立 URL）：编辑器每次都从它重建
+                // 贴图，processedImageUrl 才敢被合成结果覆盖 / 被回收。
+                const eraseBase = regionIntentValue === 'erase'
+                    ? await cloneObjectUrl(apiResultUrl)
+                    : undefined;
+                if (eraseBase && baseRegion.aiEraseBaseUrl) releaseObjectURL(baseRegion.aiEraseBaseUrl);
                 // 落点按意图决定（见 types.ts RedrawIntent）：
                 //  - translate → AI 已把中文画进图：编辑器显示「已冻结」，译文 hold back；
                 //  - erase     → 本框贴图就是干净底图（aiErasedBase）：编辑器显示「已擦除」，
@@ -882,7 +899,9 @@ export function useImageProcessor(
                     // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身不写回：
                     // 它属于用户设置（覆盖 ?? 默认场景），运行时按需推导。
                     // 擦除产物优先：同时清掉编辑器已有的擦除标记（底图已由 AI 抹干净）。
-                    ...(regionIntentValue === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
+                    ...(regionIntentValue === 'erase'
+                        ? { aiErasedBase: true, editorErased: false, aiEraseBaseUrl: eraseBase ?? baseRegion.aiEraseBaseUrl }
+                        : {}),
                     ...(regionIntentValue === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                 };
                 setRegion(completedRegion);
