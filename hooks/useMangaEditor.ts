@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppConfig, Region, UploadedImage, RedrawIntent } from '../types';
+import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf } from '../types';
 import { loadImage, cropRegion, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { recognizeText } from '../services/detectionService';
 import { translateEditorRegions } from '../services/editorTranslate';
@@ -9,6 +9,7 @@ import {
   findCoveringCompletedBubble,
   findContainedTextRegions,
   syncBubbleStatuses,
+  eraseBaseUrlOf,
   ErasedCacheEntry,
 } from '../services/mangaEditor';
 import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
@@ -34,16 +35,7 @@ export const isAiOwned = (r: Region): boolean =>
 const getContextBubbles = (img: UploadedImage): Region[] =>
   img.regions.filter(r => r.detectedClass === 'bubble');
 
-/**
- * AI「擦除」产物的干净底图 URL —— 编辑器每次重建贴图都从它出发。
- *
- * 不能直接用 processedImageUrl：合成器一跑，它就成了"底图 + 文字"的成品，再拿它
- * 当底图会把上一版文字烤进画面（改字 / 拖框 → 满屏重影）。所以管线落盘时另存
- * 一份独立 URL（Region.aiEraseBaseUrl）。老会话没有这个字段时退回：只有还没被
- * 编辑器合成过的贴图才是干净底图。
- */
-const eraseBaseUrlOf = (r: Region): string | undefined =>
-  r.aiEraseBaseUrl ?? (r.editorComposited ? undefined : r.processedImageUrl);
+/** AI「擦除」产物的干净底图（定义在 services/mangaEditor，合成器也要用）。 */
 
 /**
  * Base image the compositor builds a region's patch from. Normally the plain
@@ -259,9 +251,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     []
   );
 
-  /** 有效重绘场景：本框覆盖 ?? 全局默认场景（未表态的框走默认）。 */
+  /**
+   * 有效重绘场景：本框覆盖 ?? 全局默认场景。
+   * 已完成的框用**完成时**的场景（effectiveIntentOf），不跟随当前默认场景。
+   */
   const intentOf = useCallback((r: Region): RedrawIntent =>
-    r.redrawIntent ?? configRef.current.defaultRedrawIntent ?? 'translate', []);
+    effectiveIntentOf(r, configRef.current.defaultRedrawIntent ?? 'translate'), []);
 
   /**
    * Rebuild the region's patch from its editor fields and write the result
@@ -380,7 +375,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             return {
               ...base,
               processedImageUrl: url,
-              status: hasWrittenText ? ('completed' as const) : ('pending' as const),
+              // 本框贴着 AI「擦除」产物时，即使现在没有字也仍然是"AI 已产出"：
+              // 冻结翻译只是把译文撤出来，画面（那张干净底图）还在。
+              status: (hasWrittenText || !!eraseBaseUrlOf(base)) ? ('completed' as const) : ('pending' as const),
               editorComposited: true,
               patchMarginX: result.marginXPct,
               patchMarginY: result.marginYPct,
@@ -391,7 +388,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             };
           }
           // Nothing left to composite: revert only patches WE produced.
-          if (base.editorComposited) {
+          // 但绝不能顺手删掉 AI「擦除」产物 —— 冻结翻译 / 清空文字时它是这格的
+          // 画面本体，只有 AI 重绘 / 手动修补页上那个 ↺ 重置按钮才能丢掉它。
+          if (base.editorComposited && !eraseBaseUrlOf(base)) {
             if (base.processedImageUrl) releaseObjectURL(base.processedImageUrl);
             return {
               ...base,
@@ -1045,9 +1044,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
 
   /**
    * Manual freeze (the reverse of unfreeze): pull the typeset translation
-   * OUT of the image — the original artwork is restored, the translation is
-   * held in editorFrozenText and the region goes back to pending so the AI
-   * redraw pipeline can pick it up.
+   * OUT of the image — the translation is held in editorFrozenText and every
+   * layer this box painted over the base comes off (erasure / whiteout /
+   * brush).
+   *
+   * 冻结只撤"译文和编辑器自己加的图层"，**不撤 AI 重绘 / 手动修补的产物**：
+   * 本框若贴着 AI「擦除」产出的干净底图，冻结后画面就是那张底图，状态仍是
+   * 'completed'（合成器保证这一格永远有图）。要丢掉产物只能去那两个页面点框上
+   * 的 ↺ 重置。
    *
    * "Restore the original" means EVERY background layer this box put over the
    * artwork comes back off, not just the erasure: the flood-fill erase

@@ -74,6 +74,38 @@ export interface EditorTextStyle {
  */
 export type RedrawIntent = 'translate' | 'erase' | 'custom';
 
+/**
+ * 有效重绘意图：本框自己的覆盖 ?? 兜底（一般是全局「默认场景」）。
+ *
+ * 关键点：**已完成的框不再跟随兜底**。
+ * 绝大多数框的标记都是「跟随默认」（redrawIntent 为 undefined），如果它们完成
+ * 之后还继续读"当前默认场景"，那么用户改一次默认场景，所有已画好的成品的语义
+ * （编辑器显示态、用哪套提示词槽、要不要译文…）都会跟着变 —— 这是错的：完成时
+ * 跑的是哪个场景，这个框就永远是哪个场景。
+ *
+ * 管线在产出结果时会把当时的场景**落库**（见 useImageProcessor 的
+ * `redrawIntent: <跑了哪个场景>`），所以正常路径下这里直接读到覆盖值。
+ * 老会话的已完成框没有落库值，就从产物形态反推：
+ *  - aiErasedBase（AI「擦除」产出的干净底图）→ 一定是 'erase'；
+ *  - editorFrozenText（AI「翻译」hold back 的译文）→ 一定是 'translate'。
+ */
+export const effectiveIntentOf = (
+    v: {
+        redrawIntent?: RedrawIntent;
+        status?: Region['status'];
+        aiErasedBase?: boolean;
+        editorFrozenText?: string;
+    },
+    fallback: RedrawIntent = 'translate'
+): RedrawIntent => {
+    if (v.redrawIntent) return v.redrawIntent;
+    if (v.status === 'completed') {
+        if (v.aiErasedBase) return 'erase';
+        if (v.editorFrozenText?.trim()) return 'translate';
+    }
+    return fallback ?? 'translate';
+};
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image

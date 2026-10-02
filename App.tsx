@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf, effectiveIntentOf } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
@@ -38,15 +38,16 @@ const imageHasResult = (img: UploadedImage): boolean =>
  * 手动回填也按它决定落点：擦除 → 贴回来的就是干净底图（编辑器可排版 / 解冻填入）；
  * 翻译 / 自定义 → 贴回来的是成品图，AI 产物独占只读。
  */
-const effectiveIntentOf = (
+const targetIntentOf = (
   region: Region | undefined,
   image: UploadedImage | undefined,
   config: AppConfig
 ): RedrawIntent => {
   const fallback = config.defaultRedrawIntent ?? 'translate';
+  // effectiveIntentOf：已完成的框用它"完成时"落库的场景，不跟随当前默认场景。
   return config.useFullImageMasking
-    ? (image?.redrawIntent ?? fallback)
-    : (region?.redrawIntent ?? fallback);
+    ? effectiveIntentOf(image ?? {}, fallback)
+    : effectiveIntentOf(region ?? {}, fallback);
 };
 
 export default function App() {
@@ -271,13 +272,15 @@ export default function App() {
                             targetImg.originalHeight,
                             config.fullImageOpaquePercent
                         );
-                        const cropIntent = effectiveIntentOf(r, targetImg, config);
+                        const cropIntent = targetIntentOf(r, targetImg, config);
                         const cropEraseBase = cropIntent === 'erase' ? await cloneObjectUrl(crop) : undefined;
                         if (cropEraseBase && r.aiEraseBaseUrl) releaseObjectURL(r.aiEraseBaseUrl);
                         updatedRegions.push({
                             ...r,
                             processedImageUrl: crop,
                             status: 'completed',
+                            // 场景落库：这格是按 cropIntent 回填的，之后不再跟随默认场景。
+                            redrawIntent: cropIntent,
                             anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height,
                             ...(cropIntent === 'erase'
                                 ? { aiErasedBase: true, editorErased: false, editorWhitedOut: false, aiEraseBaseUrl: cropEraseBase ?? r.aiEraseBaseUrl }
@@ -312,7 +315,7 @@ export default function App() {
     // 独立底图槽），编辑器可以在它上面排版、也能「解冻填入」；「翻译 / 自定义」
     // = 贴回来的是成品图，AI 产物独占只读。
     const targetImg = images.find(img => img.id === imageId);
-    const pasteIntent = effectiveIntentOf(targetImg?.regions.find(r => r.id === regionId), targetImg, config);
+    const pasteIntent = targetIntentOf(targetImg?.regions.find(r => r.id === regionId), targetImg, config);
     void (async () => {
         const eraseBase = pasteIntent === 'erase' ? await cloneObjectUrl(imageDataUrl) : undefined;
         updateImage(imageId, img => {
@@ -328,6 +331,8 @@ export default function App() {
                     ...r,
                     processedImageUrl: imageDataUrl,
                     status: 'completed' as const,
+                    // 场景落库：这格是按 pasteIntent 回填的，之后不再跟随默认场景。
+                    redrawIntent: pasteIntent,
                     anchorX: r.x, anchorY: r.y, anchorWidth: r.width, anchorHeight: r.height,
                     // 贴回来的图是按当前框裁的，不带编辑器溢出边距，也不是编辑器
                     // 合成的产物。

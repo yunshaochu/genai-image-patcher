@@ -1,4 +1,4 @@
-import { Region, RedrawIntent } from '../types';
+import { Region, RedrawIntent, effectiveIntentOf } from '../types';
 import { loadImage, releaseObjectURL, previewPixelSize } from './imageUtils';
 import { eraseTextInCanvasAuto, EraseKind } from './textErase';
 import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
@@ -170,6 +170,17 @@ export const resolveEraseRect = (
 export const getRegionEditorText = (region: Region): string =>
   region.editorText ?? (region.editorFrozenText?.trim() ? '' : region.ocrText ?? '');
 
+/**
+ * AI「擦除」产物的干净底图 URL —— 编辑器每次重建贴图都从它出发。
+ *
+ * 不能直接用 processedImageUrl：合成器一跑，它就成了"底图 + 文字"的成品，再拿
+ * 它当底图会把上一版文字烤进画面（改字 / 拖框 → 满屏重影）。所以管线落盘时另存
+ * 一份独立 URL（Region.aiEraseBaseUrl）。老会话没有这个字段时退回：只有还没被
+ * 编辑器合成过的贴图才是干净底图。
+ */
+export const eraseBaseUrlOf = (r: Region): string | undefined =>
+  r.aiEraseBaseUrl ?? (r.editorComposited ? undefined : r.processedImageUrl);
+
 /** 叠放次序调整方向：'up' = 盖到相邻贴图的上面。 */
 export type LayerDirection = 'up' | 'down';
 
@@ -323,7 +334,8 @@ export const editorRegionDisplay = (
   region: Region,
   defaultIntent: RedrawIntent = 'translate'
 ): EditorRegionDisplay => {
-  const intent = region.redrawIntent ?? defaultIntent;
+  // 已完成的框用它"完成时"的场景（见 effectiveIntentOf），不跟随当前默认场景。
+  const intent = effectiveIntentOf(region, defaultIntent);
   if (region.status === 'completed' && region.editorComposited) return 'completed';
   if (intent === 'translate' && region.status === 'completed' && !region.editorComposited) return 'frozen';
   if (intent === 'erase' && region.aiErasedBase && !region.editorComposited) return 'erased';
@@ -422,7 +434,10 @@ export const compositeRegionPatch = async (
   /** Optional stage sink for the editor's recomposite timing instrumentation. */
   onStage?: (stage: string) => void
 ): Promise<CompositeResult | null> => {
-  if (!regionNeedsComposite(region)) return null;
+  // AI「擦除」产物本身就是这一格的画面：即使这一格现在没有字、没有擦除、没有
+  // 画笔（例如刚点了「冻结翻译」把译文撤出来），也必须继续出图 —— 否则贴图会被
+  // 判成"没什么可渲染"而整块清掉，AI 重绘的结果就丢了。
+  if (!regionNeedsComposite(region) && !eraseBaseUrlOf(region)) return null;
 
   const imgW = imageEl instanceof HTMLImageElement ? imageEl.naturalWidth : imageEl.width;
   const imgH = imageEl instanceof HTMLImageElement ? imageEl.naturalHeight : imageEl.height;

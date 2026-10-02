@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl, effectiveIntentOf } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -127,6 +127,9 @@ const mergeProcessedRegions = (
             aiErasedBase: processed.aiErasedBase ?? r.aiErasedBase,
             // 擦除底图同理：跟着 processed 走（新底图优先），没有就保留旧的。
             aiEraseBaseUrl: processed.aiEraseBaseUrl ?? r.aiEraseBaseUrl,
+            // 完成场景落库值同样要跟着 processed 走，否则会被上面"保留用户字段"
+            // 的这层逻辑丢掉，已完成的框又会变回"跟随默认场景"。
+            redrawIntent: processed.redrawIntent ?? r.redrawIntent,
             ...(processed.editorFrozenText?.trim() ? { editorFrozenText: processed.editorFrozenText } : {}),
             // Retry diagnostics — processed.* always wins so we don't lose
             // the latest count/history when a parallel region update races.
@@ -143,11 +146,11 @@ const mergeProcessedRegions = (
  * 兜底这一层很关键：批量「全部图片」时，绝大多数框从没被单独点选过，
  * 它们的 redrawIntent 是 undefined —— 没有兜底就全按 translate 跑了，
  * 用户的 tab 选择形同虚设。
+ *
+ * 已完成的对象走 types.ts 的 effectiveIntentOf：它读"落库在框上的完成场景"
+ * （没有就从产物形态反推），**不跟随当前默认场景** —— 否则改一次默认场景，
+ * 所有已画好的成品语义都会跟着变。
  */
-const effectiveIntent = (
-    v: { redrawIntent?: RedrawIntent },
-    fallback: RedrawIntent = 'translate'
-): RedrawIntent => v.redrawIntent ?? fallback ?? 'translate';
 
 /** 意图对应的选区提示词槽（可能是空串）。 */
 const intentPromptSlot = (v: Region | UploadedImage, intent: RedrawIntent): string =>
@@ -395,10 +398,10 @@ export function useImageProcessor(
         // 不该被它拦在门外（它们会一直 pending 却永远等不到译文）。
         if (requireTranslation() && !isSyntheticFullImage) {
             if (config.useFullImageMasking) {
-                if (effectiveIntent(imageSnapshot, defaultIntent) === 'translate' && !imageSnapshot.customTranslation?.trim()) return false;
+                if (effectiveIntentOf(imageSnapshot, defaultIntent) === 'translate' && !imageSnapshot.customTranslation?.trim()) return false;
             } else {
                 regionsToProcess = regionsToProcess.filter(r =>
-                    effectiveIntent(r, defaultIntent) !== 'translate' || !!r.customTranslation?.trim()
+                    effectiveIntentOf(r, defaultIntent) !== 'translate' || !!r.customTranslation?.trim()
                 );
             }
         }
@@ -485,7 +488,7 @@ export function useImageProcessor(
                     return redrawBase64;
                 };
 
-                const imageIntent = effectiveIntent(imageSnapshot, defaultIntent);
+                const imageIntent = effectiveIntentOf(imageSnapshot, defaultIntent);
                 const imagePromptText = intentPromptText(imageSnapshot, imageIntent);
                 let translationText = '';
                 // 译文只在「翻译」意图下使用，而且只读独立字段 customTranslation；
@@ -577,10 +580,12 @@ export function useImageProcessor(
                             editorComposited: false,
                             patchMarginX: undefined,
                             patchMarginY: undefined,
-                            // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身
-                            // 不写回：它属于用户设置（覆盖 ?? 默认场景），运行时不落库。
+                            // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。
                             // 擦除产物优先：编辑器已有的泛洪擦除结果一并作废
                             // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面）。
+                            // 场景**落库**：这一格就是按 imageIntent 画出来的，之后
+                            // 不再跟随「默认场景」（改默认不该改已完成的成品）。
+                            redrawIntent: imageIntent,
                             ...(imageIntent === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         });
@@ -643,6 +648,9 @@ export function useImageProcessor(
                             // 擦除产物优先：编辑器已有的泛洪擦除结果一并作废
                             // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面），
                             // 并单独保存一份干净底图供编辑器反复重建贴图。
+                            // 场景**落库**：这一格就是按 imageIntent 画出来的，之后
+                            // 不再跟随「默认场景」。
+                            redrawIntent: imageIntent,
                             ...(imageIntent === 'erase'
                                 ? { aiErasedBase: true, editorErased: false, aiEraseBaseUrl: eraseBase ?? region.aiEraseBaseUrl }
                                 : {}),
@@ -763,7 +771,7 @@ export function useImageProcessor(
                     return redrawBase64;
                 };
 
-                const regionIntentValue = effectiveIntent(region, defaultIntent);
+                const regionIntentValue = effectiveIntentOf(region, defaultIntent);
                 const regionPromptText = intentPromptText(region, regionIntentValue);
                 let translationText = '';
                 // 译文只在「翻译」意图下使用，而且只读独立字段 customTranslation。
@@ -802,7 +810,7 @@ export function useImageProcessor(
                 // in the "no-regions auto-full-image" path) appends to it.
                 let basePrompt = config.prompt.trim();
                 if (imageSnapshot.regions.length === 0 && config.processFullImageIfNoRegions) {
-                   const imgPrompt = intentPromptText(imageSnapshot, effectiveIntent(imageSnapshot, defaultIntent));
+                   const imgPrompt = intentPromptText(imageSnapshot, effectiveIntentOf(imageSnapshot, defaultIntent));
                    if (imgPrompt) basePrompt += ` ${imgPrompt}`;
                 }
                 let effectivePrompt = basePrompt;
@@ -896,8 +904,10 @@ export function useImageProcessor(
                     anchorY: region.y,
                     anchorWidth: region.width,
                     anchorHeight: region.height,
-                    // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身不写回：
-                    // 它属于用户设置（覆盖 ?? 默认场景），运行时按需推导。
+                    // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。
+                    // 场景**落库**：这一格就是按 regionIntentValue 画出来的，之后不再
+                    // 跟随「默认场景」—— 改一次默认不该把所有成品的语义全改掉。
+                    redrawIntent: regionIntentValue,
                     // 擦除产物优先：同时清掉编辑器已有的擦除标记（底图已由 AI 抹干净）。
                     ...(regionIntentValue === 'erase'
                         ? { aiErasedBase: true, editorErased: false, aiEraseBaseUrl: eraseBase ?? baseRegion.aiEraseBaseUrl }
@@ -1019,7 +1029,7 @@ export function useImageProcessor(
                     const status = local?.status ?? r.status;
                     if (status !== 'pending' && status !== 'failed') continue;
                     // 只统计「翻译」意图里还缺译文的框：擦除 / 自定义不需要译文。
-                    const intent = config.useFullImageMasking ? effectiveIntent(img, defaultIntent) : effectiveIntent(r, defaultIntent);
+                    const intent = config.useFullImageMasking ? effectiveIntentOf(img, defaultIntent) : effectiveIntentOf(r, defaultIntent);
                     if (intent !== 'translate') continue;
                     const missing = config.useFullImageMasking
                         ? !img.customTranslation?.trim()
@@ -1209,7 +1219,7 @@ export function useImageProcessor(
             // cache entry, so either the whole page is already translated or
             // every region waits for the same call.
             if (config.useFullImageMasking) {
-                if (paintableRegions.length === 0 || effectiveIntent(img, defaultIntent) !== 'translate' || img.customTranslation?.trim()) return;
+                if (paintableRegions.length === 0 || effectiveIntentOf(img, defaultIntent) !== 'translate' || img.customTranslation?.trim()) return;
                 await semaphore.acquire();
                 let payloadUrl: string | undefined;
                 try {
@@ -1264,7 +1274,7 @@ export function useImageProcessor(
             // customTranslation (this is the field 必须翻译 tests during generation).
             // 只有「翻译」意图需要译文；擦除 / 自定义跳过（省额度）。
             const regionsToTranslate = paintableRegions.filter(r =>
-                effectiveIntent(r, defaultIntent) === 'translate' && !r.customTranslation?.trim()
+                effectiveIntentOf(r, defaultIntent) === 'translate' && !r.customTranslation?.trim()
             );
             if (regionsToTranslate.length === 0) return;
 

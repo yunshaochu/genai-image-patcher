@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable } from '../../types';
+import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable, effectiveIntentOf } from '../../types';
 import { defaultRegionPrompt } from '../../hooks/useConfig';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
@@ -78,11 +78,15 @@ const intentSlotText = (
     return slot.trim() || defaultRegionPrompt(intent);
 };
 
-/** 这一格 / 这一图当前生效的重绘场景（自己的覆盖 ?? 全局默认）。 */
+/**
+ * 这一格 / 这一图当前生效的重绘场景。
+ * 已完成的用 effectiveIntentOf —— 它读"完成时落库"的场景（没有就从产物形态
+ * 反推），绝不跟随当前默认场景，否则改一次默认就把成品的提示词槽也换了。
+ */
 const effectiveIntent = (
-    v: { redrawIntent?: RedrawIntent },
+    v: { redrawIntent?: RedrawIntent; status?: Region['status']; aiErasedBase?: boolean; editorFrozenText?: string },
     defaultIntent: RedrawIntent
-): RedrawIntent => v.redrawIntent ?? defaultIntent ?? 'translate';
+): RedrawIntent => effectiveIntentOf(v, defaultIntent);
 
 const sceneLabel = (lang: Language, v: RedrawIntent): string =>
     t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
