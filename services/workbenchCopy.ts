@@ -10,11 +10,14 @@
  *
  *   全局默认提示词
  *   [图片级专用提示词]        ← 仅全图遮罩行
- *   [该框的提示词（含译文缓存块）]  ← 选区行
+ *   [该框的提示词]            ← 选区行，按当前意图取对应的槽
+ *   [该框的译文]              ← 仅「翻译」意图（擦除 / 自定义绝不拼译文，
+ *                              否则模型会去嵌字而不是擦除）
  *
- * Both halves of region.customPrompt are included ("复制完整"): the user's own
- * instructions AND the cached translation block, because a redraw model needs
- * the translation to know which Chinese text to draw.
+ * The translation is a SEPARATE field now (Region.customTranslation), so it is
+ * appended here in the very same shape the redraw pipeline uses
+ * (TRANSLATION_CACHE_MARKER + text) — a redraw model needs it to know which
+ * Chinese text to draw.
  *
  * Clipboard notes:
  * - `navigator.clipboard.write` accepts several MIME types at once, so one
@@ -26,24 +29,31 @@
  */
 
 import { AppConfig } from '../types';
+import { TRANSLATION_CACHE_MARKER } from './translationCache';
 
 /**
  * Compose the prompt the app would send for this target.
  * Regions without a prompt of their own simply contribute nothing.
+ *
+ * `prompts.translation` is the box's / image's 本框译文: it is only ever passed
+ * when the target's effective redraw intent is 'translate', and it is appended
+ * in the exact shape `useImageProcessor` builds for the redraw API.
  */
 export const buildWorkbenchPrompt = (
     config: AppConfig,
-    prompts: { imagePrompt?: string; regionPrompt?: string }
+    prompts: { imagePrompt?: string; regionPrompt?: string; translation?: string }
 ): string => {
     const parts: string[] = [];
     const global = (config.prompt ?? '').trim();
     if (global) parts.push(global);
 
     // A region row copies its own box; the full-image row copies the
-    // image-level prompt. Both are pasted VERBATIM (cached translation block
-    // included).
+    // image-level prompt. Pasted VERBATIM.
     const own = (prompts.regionPrompt ?? prompts.imagePrompt ?? '').trim();
     if (own) parts.push(own);
+
+    const translation = (prompts.translation ?? '').trim();
+    if (translation) parts.push(`${TRANSLATION_CACHE_MARKER}\n${translation}`);
 
     return parts.join('\n\n');
 };

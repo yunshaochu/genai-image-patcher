@@ -299,6 +299,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                     image={currentImage}
                     config={config}
                     onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, 'special-full-image-mask', base64)}
+                    onIntentChange={(v) => onUpdateImageIntent(currentImage.id, v)}
                   />
                 )}
 
@@ -324,6 +325,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                       onOcr={() => onOcrRegion(currentImage.id, region.id)}
                       showOcr={config.enableMangaMode && config.enableOCR}
                       showRetryDiagnostics={!!config.showRetryDiagnostics}
+                      onIntentChange={(v) => onUpdateRegionIntent(currentImage.id, region.id, v)}
                     />
                   );
                 })() : !config.useFullImageMasking && (

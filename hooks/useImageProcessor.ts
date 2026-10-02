@@ -577,7 +577,9 @@ export function useImageProcessor(
                             patchMarginY: undefined,
                             // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身
                             // 不写回：它属于用户设置（覆盖 ?? 默认场景），运行时不落库。
-                            ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
+                            // 擦除产物优先：编辑器已有的泛洪擦除结果一并作废
+                            // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面）。
+                            ...(imageIntent === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         });
                     });
@@ -630,7 +632,9 @@ export function useImageProcessor(
                             anchorWidth: region.width,
                             anchorHeight: region.height,
                             // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。
-                            ...(imageIntent === 'erase' ? { aiErasedBase: true } : {}),
+                            // 擦除产物优先：编辑器已有的泛洪擦除结果一并作废
+                            // （AI 底图已干净，再擦一次只是白跑 + 可能啃掉画面）。
+                            ...(imageIntent === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         };
                         setRegion(completedRegion);
@@ -877,7 +881,8 @@ export function useImageProcessor(
                     anchorHeight: region.height,
                     // 结果形态标记（编辑器据此显示 已冻结 / 已擦除）。意图本身不写回：
                     // 它属于用户设置（覆盖 ?? 默认场景），运行时按需推导。
-                    ...(regionIntentValue === 'erase' ? { aiErasedBase: true } : {}),
+                    // 擦除产物优先：同时清掉编辑器已有的擦除标记（底图已由 AI 抹干净）。
+                    ...(regionIntentValue === 'erase' ? { aiErasedBase: true, editorErased: false } : {}),
                     ...(regionIntentValue === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                 };
                 setRegion(completedRegion);

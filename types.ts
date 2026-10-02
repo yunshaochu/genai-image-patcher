@@ -140,7 +140,9 @@ export interface Region {
   /** Set when an AI-redraw completed this box under the 「擦除」intent: the box's
    *  own patch is already a text-free base. Effects:
    *  - the editor composites text ON TOP of this AI patch and never erases
-   *    (the base is clean);
+   *    (the base is clean) — any editor erasure this box already had is
+   *    INVALIDATED when the AI result lands (see useMangaEditor's cleanup
+   *    effect): AI 产物绝对优先，编辑器的擦除结果一律让位；
    *  - the box stays editable (NOT AI-owned) so the user can typeset into it. */
   aiErasedBase?: boolean;
   /** Editor patch overflow margin beyond the anchor box, as % of the full image

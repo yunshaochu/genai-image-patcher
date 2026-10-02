@@ -1328,7 +1328,10 @@ const EditorDock: React.FC<EditorDockProps> = ({
         <div className="grid grid-cols-2 gap-1.5">
           <button
             onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
-            disabled={regionEditLocked}
+            // aiErasedBase = 本框贴图就是 AI「擦除」产出的干净底图：编辑器不许再擦
+            // （AI 产物绝对优先），按钮直接锁掉。
+            disabled={regionEditLocked || !!region.aiErasedBase}
+            title={region.aiErasedBase ? t(lang, 'editorEraseLockedByAi') : undefined}
             className={`px-2 py-1.5 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
               region.editorErased
                 ? 'border-sky-300 text-sky-600 bg-sky-500/10 hover:bg-sky-500/20'

@@ -78,20 +78,79 @@ const intentSlotText = (
     return slot.trim() || defaultRegionPrompt(intent);
 };
 
+/** 这一格 / 这一图当前生效的重绘场景（自己的覆盖 ?? 全局默认）。 */
+const effectiveIntent = (
+    v: { redrawIntent?: RedrawIntent },
+    defaultIntent: RedrawIntent
+): RedrawIntent => v.redrawIntent ?? defaultIntent ?? 'translate';
+
+const sceneLabel = (lang: Language, v: RedrawIntent): string =>
+    t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
+
+/**
+ * 工坊里的场景分段控件：和「AI 重绘」模式的提示词模块是同一份标记
+ * （Region.redrawIntent / UploadedImage.redrawIntent），所以这里既能看到当前
+ * 生效的场景，也能就地改（undefined = 清掉覆盖、跟随全局默认场景）。
+ * 工坊没有提示词输入框（提示词在「AI 重绘」模式里写），但场景必须在这里可见
+ * 可改 —— 它决定了「复制提示词」复制哪一套槽。
+ */
+const IntentSwitch: React.FC<{
+    lang: Language;
+    label: string;
+    active: RedrawIntent;
+    hasOverride: boolean;
+    onChange?: (intent: RedrawIntent | undefined) => void;
+}> = ({ lang, label, active, hasOverride, onChange }) => (
+    <div className="pt-1 border-t border-skin-border space-y-1">
+        <div className="flex items-center justify-between gap-1">
+            <span className="text-[9px] uppercase font-bold text-skin-muted truncate">{label}</span>
+            {hasOverride ? (
+                <button
+                    onClick={() => onChange?.(undefined)}
+                    className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer shrink-0"
+                    title={t(lang, 'promptFollowDefaultTip')}
+                >
+                    {t(lang, 'promptFollowDefault')}
+                </button>
+            ) : (
+                <span className="text-[9px] text-skin-muted shrink-0">{t(lang, 'promptFollowingDefault')}</span>
+            )}
+        </div>
+        <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+            {(['translate', 'erase', 'custom'] as const).map(v => (
+                <button
+                    key={v}
+                    onClick={() => onChange?.(v)}
+                    title={t(lang, 'promptTabHint')}
+                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${active === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                >
+                    {sceneLabel(lang, v)}
+                </button>
+            ))}
+        </div>
+    </div>
+);
+
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
   config: AppConfig;
   onPatchUpdate: (base64: string) => void;
-}> = ({ image, config, onPatchUpdate }) => {
+  /** 改这张图的重绘场景覆盖（undefined = 跟随全局默认场景）。 */
+  onIntentChange?: (intent: RedrawIntent | undefined) => void;
+}> = ({ image, config, onPatchUpdate, onIntentChange }) => {
   const [maskedPreview, setMaskedPreview] = useState<string | null>(null);
   // Padding info of the square-filled copy (null when square fill is off)
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
+  const defaultIntent = config.defaultRedrawIntent ?? 'translate';
+  const intent = effectiveIntent(image, defaultIntent);
   // The whole-image row has no region: the prompt it exports is the global one
   // plus this image's intent-specific prompt (default scene prompt included).
+  // 译文只在「翻译」场景拼 —— 擦除 / 自定义复制出去的模型不该看到译文。
   const promptText = buildWorkbenchPrompt(config, {
-    imagePrompt: intentSlotText(image, config.defaultRedrawIntent ?? 'translate'),
+    imagePrompt: intentSlotText(image, defaultIntent),
+    translation: intent === 'translate' ? image.customTranslation : undefined,
   });
 
   useEffect(() => {
@@ -227,6 +286,13 @@ export const FullImageMaskRow: React.FC<{
              </div>
           </div>
       </div>
+      <IntentSwitch
+        lang={config.language}
+        label={t(config.language, 'promptFullImageScene')}
+        active={intent}
+        hasOverride={image.redrawIntent !== undefined}
+        onChange={onIntentChange}
+      />
       <div className="text-[9px] text-skin-muted text-center italic bg-skin-surface/50 rounded py-0.5">
          Paste here updates all crops
       </div>
@@ -243,17 +309,23 @@ export const ManualPatchRow: React.FC<{
   onOcr: () => void;
   showOcr: boolean;
   showRetryDiagnostics: boolean;
-}> = ({ region, image, config, onPatchUpdate, lang, onOcr, showOcr, showRetryDiagnostics }) => {
+  /** 改这一格的重绘场景覆盖（undefined = 跟随全局默认场景）。 */
+  onIntentChange?: (intent: RedrawIntent | undefined) => void;
+}> = ({ region, image, config, onPatchUpdate, lang, onOcr, showOcr, showRetryDiagnostics, onIntentChange }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
   const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
   // Padding info of the square-filled copy (null when square fill is off)
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
+  const defaultIntent = config.defaultRedrawIntent ?? 'translate';
+  const intent = effectiveIntent(region, defaultIntent);
   // Exactly what the app would send for this box: global prompt + this box's
-  // intent-specific prompt (default scene prompt included when the slot is empty).
+  // intent-specific prompt (default scene prompt included when the slot is
+  // empty) + 本框译文（仅「翻译」场景 —— 擦除场景只复制提示词）。
   const promptText = buildWorkbenchPrompt(config, {
-    regionPrompt: intentSlotText(region, config.defaultRedrawIntent ?? 'translate'),
+    regionPrompt: intentSlotText(region, defaultIntent),
+    translation: intent === 'translate' ? region.customTranslation : undefined,
   });
 
   useEffect(() => {
@@ -394,6 +466,14 @@ export const ManualPatchRow: React.FC<{
              )}
           </div>
       </div>
+
+      <IntentSwitch
+        lang={lang}
+        label={t(lang, 'promptRegionScene')}
+        active={intent}
+        hasOverride={region.redrawIntent !== undefined}
+        onChange={onIntentChange}
+      />
 
       {showRetryDiagnostics && region.errorHistory && region.errorHistory.length > 0 && (
         <div className="border-t border-skin-border pt-1.5">

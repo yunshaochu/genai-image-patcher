@@ -562,6 +562,29 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, []);
 
+  // AI「擦除」产物 vs 编辑器擦除：只要本框拿到了 AI 抹干净的底图
+  // （aiErasedBase），编辑器自己那份泛洪擦除结果就作废 —— 标记清掉、擦除缓存
+  // 丢弃（否则再次合成会复用"在原图上擦出来的"旧结果），然后按"未擦除"重建贴图。
+  // 兜底用：管线写回完成时已经清过 editorErased，这里替老会话 / 导入的工态收尾。
+  // editorErased=false 后本 effect 自然不再命中。
+  useEffect(() => {
+    for (const img of images) {
+      const stale = img.regions.filter(r => r.aiErasedBase && r.editorErased);
+      if (stale.length === 0) continue;
+      stale.forEach(r => dropErasedCache(r.id));
+      const nextById = new Map<string, Region>(
+        stale.map(r => [r.id, { ...r, editorErased: false } as Region])
+      );
+      updateImage(img.id, current => ({
+        ...current,
+        regions: current.regions.map(r => nextById.get(r.id) ?? r),
+      }));
+      for (const nr of nextById.values()) {
+        void recompositeRegion(img.id, nr.id, nr);
+      }
+    }
+  }, [images, updateImage, recompositeRegion, dropErasedCache]);
+
   /**
    * Merge editor field updates into a region and schedule a recomposite.
    *
@@ -624,14 +647,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   ): Region[] => {
     if (scope === 'selected') {
       const r = img.regions.find(r => r.id === selectedRegionId);
-      return r && !r.editorErased && !isAiOwned(r) ? [r] : [];
+      // aiErasedBase 同样排除：AI「擦除」产物的底图已经是干净的，编辑器不得再擦
+      // （AI 产物绝对优先；单选也不开后门）。aiBubbleBase 只排除 batch，见下。
+      return r && !r.editorErased && !isAiOwned(r) && !r.aiErasedBase ? [r] : [];
     }
     return img.regions.filter(r => {
       if (r.contextOnly || r.editorErased || isAiOwned(r)) return false;
       // aiBubbleBase / aiErasedBase regions already sit on an AI-redrawn
       // (text-free) base — batch erasure would burn the flood fill for nothing.
-      // The single-region 'selected' scope above stays available as a manual
-      // override when the AI redraw left residue.
       if (r.aiBubbleBase || r.aiErasedBase) return false;
       if (scope === 'bubbleOnly') return r.detectedClass === 'text_bubble';
       return true; // 'all' — manual boxes + text_bubble + text_free
@@ -886,7 +909,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
             editorText: res.zh,
             customTranslation: res.zh,
             editorFrozenText: undefined,
-            editorErased: true,
+            // aiBubbleBase / aiErasedBase：底图已经是 AI 重绘出来的干净图
+            // （泡底 / 本框擦除产物），直接把译文排上去，不再泛洪擦除。
+            editorErased: r.aiBubbleBase || r.aiErasedBase ? false : true,
             editorStyle: style,
           });
         }
@@ -944,9 +969,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   /**
    * Manual unfreeze (fix an AI false positive): move the frozen translation
    * into editorText, erase the original and typeset — the regular path.
-   * aiBubbleBase regions skip the erasure: their base is the AI-redrawn
-   * bubble, which is already text-free (residue can be erased manually via
-   * the single-region erase afterwards).
+   * aiBubbleBase / aiErasedBase regions skip the erasure: their base is
+   * already text-free (an AI-redrawn bubble, or this box's own AI「擦除」
+   * patch), so the flood fill has nothing to do — and must not touch the AI
+   * result.
    */
   const unfreezeTranslation = useCallback(async (imageId: string, regionId: string) => {
     const img = getImage(imageId);
@@ -957,7 +983,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
       ...region,
       editorText: region.editorFrozenText,
       editorFrozenText: undefined,
-      editorErased: region.aiBubbleBase ? false : true,
+      editorErased: region.aiBubbleBase || region.aiErasedBase ? false : true,
     };
     updateImage(imageId, current => ({
       ...current,
@@ -1100,6 +1126,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     if (!img) return;
     const targets = img.regions.filter(r =>
       !r.contextOnly && !isAiOwned(r) &&
+      // aiErasedBase 是 AI「擦除」的产物，涂白会盖掉这张干净底图 —— 跳过。
+      !r.aiErasedBase &&
       r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
     );
     if (targets.length === 0) return;

@@ -191,6 +191,7 @@ export const translations = {
     editorErasedBadge: "已擦除",
     editorEraseRegion: "擦除",
     editorRestoreRegion: "撤回擦除",
+    editorEraseLockedByAi: "AI 重绘已把此框抹干净（底图即擦除产物），编辑器不再擦除。",
     editorTextPlaceholder: "输入要嵌入的文字（留空则只擦除）",
     editorDirAuto: "自动",
     editorDirVertical: "竖排",
@@ -565,8 +566,8 @@ export const translations = {
     help_wb_14_desc: "工坊自己不生图，所以底部没有重绘按钮（「翻译」按钮仍然保留，用来先把译文备好）。图都从外部 AI 来。",
 
     // Content - Patch Workbench: tips
-    help_wb_15_title: "提示词在「AI 重绘」模式里编辑",
-    help_wb_15_desc: "工坊面板本身没有提示词输入框，复制用的是「全局提示词 + 该框场景提示词」。所以先切到「AI 重绘」模式把它们写好，再切回工坊复制。",
+    help_wb_15_title: "提示词在「AI 重绘」模式里编辑，场景可以在工坊里切",
+    help_wb_15_desc: "工坊面板本身没有提示词输入框，复制用的是「全局提示词 + 该框场景提示词」（场景=翻译时还会带上「本框译文」）。提示词先切到「AI 重绘」模式写好，再切回工坊复制；面板上的「此框场景」可以就地切换，和那边是同一份标记。",
     help_wb_16_title: "浏览器不允许一次复制图文时",
     help_wb_16_desc: "Firefox 或较老的浏览器会拒绝图文一起写剪贴板，此时会自动退化成只复制图片 —— 文字用旁边的「提示词」按钮单独复制。",
     help_wb_17_title: "整页一次处理更快",
@@ -761,6 +762,7 @@ export const translations = {
     editorErasedBadge: "Erased",
     editorEraseRegion: "Erase",
     editorRestoreRegion: "Undo Erase",
+    editorEraseLockedByAi: "AI redraw already wiped this box (its patch IS the erasure) — the editor will not erase again.",
     editorTextPlaceholder: "Text to typeset (empty = erase only)",
     editorDirAuto: "Auto",
     editorDirVertical: "Vert",
@@ -1135,8 +1137,8 @@ export const translations = {
     help_wb_14_desc: "The workbench never generates, which is why the redraw button is absent (Translate stays, to prepare translations first). Images come from outside.",
 
     // Content - Patch Workbench: tips
-    help_wb_15_title: "Prompts are edited in AI Redraw mode",
-    help_wb_15_desc: "The workbench panel has no prompt box, and copying uses 'global prompt + this box's scene prompt'. Write them in AI Redraw mode, then switch back to copy.",
+    help_wb_15_title: "Prompts live in AI Redraw mode; the scene can be switched here",
+    help_wb_15_desc: "The workbench panel has no prompt box, and copying uses 'global prompt + this box's scene prompt' (plus 'this box's translation' when the scene is Translate). Write the prompts in AI Redraw mode, then come back to copy — the panel's scene switch edits the very same flag.",
     help_wb_16_title: "When the browser refuses image + text",
     help_wb_16_desc: "Firefox and older browsers reject combined clipboard writes; the app then falls back to image only — copy the text with the neighbouring 'Prompt' button.",
     help_wb_17_title: "Batch pasting is faster",

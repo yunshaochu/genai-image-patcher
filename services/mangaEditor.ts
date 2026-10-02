@@ -415,7 +415,10 @@ export const compositeRegionPatch = async (
     /** 本次擦除量到的原文墨色（自动取色用）。 */
     textColor?: string;
   } | null = null;
-  if (region.editorErased) {
+  // aiErasedBase = AI「擦除」意图的产出，本框贴图就是干净底图：编辑器侧的擦除
+  // 结果在这里一律作废（数据层已被清成 editorErased=false，这里是最后一道闸门），
+  // 绝不可以在 AI 已经抹干净的底图上再跑一次泛洪擦除。
+  if (region.editorErased && !region.aiErasedBase) {
     const kind: EraseKind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
     // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
     // text box — see resolveEraseRect.
