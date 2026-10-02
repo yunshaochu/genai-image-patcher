@@ -1197,6 +1197,13 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                             : 'bg-rose-100/90 text-rose-700 border-rose-200'
                         }`}
                         style={badgeStyle()}
+                        // 失败原因只有工坊那一行会列出文本，这里至少让鼠标悬停就
+                        // 能看到最近一条（开了重试诊断才有）。
+                        title={
+                          showRetryDiagnostics && region.errorHistory?.length
+                            ? region.errorHistory[region.errorHistory.length - 1]
+                            : undefined
+                        }
                       >
                         {t(language, `status_${region.status}` as any)}
                         {showRetryDiagnostics && (region.retryCount ?? 0) > 0 && (

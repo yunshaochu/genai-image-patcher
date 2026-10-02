@@ -625,14 +625,15 @@ export function useImageProcessor(
                             maskImg.naturalHeight,
                             config.fullImageOpaquePercent
                         );
-                        // AI takes ownership: drop any editor-intermediate patch.
-                        if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
                         // 「擦除」产物另外留一份干净底图（独立 URL），编辑器每次从
                         // 它重建贴图；processedImageUrl 会被合成结果覆盖/回收。
                         const eraseBase = imageIntent === 'erase'
                             ? await cloneObjectUrl(finalRegionImageUrl)
                             : undefined;
                         if (eraseBase && region.aiEraseBaseUrl) releaseObjectURL(region.aiEraseBaseUrl);
+                        // 旧贴图同样紧挨着提交前才回收（中间不能有 await，否则
+                        // 已 revoke 的 URL 还会被渲染 / 自动保存取一次 → GET 失败）。
+                        if (region.processedImageUrl) releaseObjectURL(region.processedImageUrl);
                         const completedRegion: Region = {
                             ...region,
                             processedImageUrl: finalRegionImageUrl,
@@ -873,9 +874,7 @@ export function useImageProcessor(
 
                 if (signal.aborted) return;
 
-                // Release old region URL before setting new one
                 const oldRegion = regionsMap.get(region.id);
-                if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
 
                 // Base the completed region on the LATEST regionsMap entry (which may
                 // already include the cached translation written into customPrompt
@@ -888,6 +887,11 @@ export function useImageProcessor(
                     ? await cloneObjectUrl(apiResultUrl)
                     : undefined;
                 if (eraseBase && baseRegion.aiEraseBaseUrl) releaseObjectURL(baseRegion.aiEraseBaseUrl);
+                // 旧贴图必须**紧挨着提交新状态之前**才回收：中间一旦有 await，
+                // React 会带着"指向已 revoke URL"的旧状态再渲染一次 —— 画布的
+                // <img> 和自动保存（sessionStore 的 fetch）都会去 GET 那个已经
+                // 死掉的 blob，于是满屏 net::ERR_FILE_NOT_FOUND。
+                if (oldRegion?.processedImageUrl) releaseObjectURL(oldRegion.processedImageUrl);
                 // 落点按意图决定（见 types.ts RedrawIntent）：
                 //  - translate → AI 已把中文画进图：编辑器显示「已冻结」，译文 hold back；
                 //  - erase     → 本框贴图就是干净底图（aiErasedBase）：编辑器显示「已擦除」，

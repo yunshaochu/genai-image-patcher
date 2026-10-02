@@ -290,6 +290,20 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                     ) : null}
                                 />
 
+                                {/* 开关原先只在「AI 重绘」的「处理选项」里，而错误历史
+                                    只渲染在「手动修补工坊」那一行 —— 两个模式互相够不着。
+                                    放进全局设置，任何工作流都能开。 */}
+                                <SettingsCard
+                                    title={t(lang, 'showRetryDiagnostics')}
+                                    help={t(lang, 'showRetryDiagnosticsDesc')}
+                                    action={
+                                        <Toggle
+                                            checked={!!config.showRetryDiagnostics}
+                                            onChange={(v) => updateConfig('showRetryDiagnostics', v)}
+                                        />
+                                    }
+                                />
+
                                 <SettingsCard
                                     title={t(lang, 'appearance')}
                                     summary={<><span className={`w-2 h-2 rounded-full ${themeMeta.bg}`} />{langLabel}</>}

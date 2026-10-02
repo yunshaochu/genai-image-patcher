@@ -112,6 +112,8 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   });
   const [modelList, setModelList] = useState<string[]>([]);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
+  /** 选中框的「错误历史」是否展开（重试诊断）。 */
+  const [errHistoryOpen, setErrHistoryOpen] = useState(false);
 
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
@@ -480,6 +482,28 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
 
                       {/* 译文是独立字段（不再混进提示词）：只在「翻译」场景出现。
                           手动可改；只有翻译场景会把它作为上下文发给重绘模型。 */}
+                      {/* 重试诊断：错误历史此前只渲染在工坊那一行（只有手动修补
+                          工坊会出现），AI 重绘 模式里点了失败却无处看原因。 */}
+                      {selectedRegion && config.showRetryDiagnostics && (selectedRegion.errorHistory?.length ?? 0) > 0 && (
+                        <div className="pt-1.5 border-t border-skin-border">
+                          <button
+                            onClick={() => setErrHistoryOpen(v => !v)}
+                            className="text-[10px] text-skin-muted hover:text-skin-primary transition-colors w-full text-left"
+                          >
+                            {errHistoryOpen
+                              ? t(lang, 'errorHistoryHide')
+                              : t(lang, 'errorHistoryShow').replace('{count}', String(selectedRegion.errorHistory!.length))}
+                          </button>
+                          {errHistoryOpen && (
+                            <ol className="mt-1 space-y-1 list-decimal list-inside text-[10px] text-rose-600/90 break-all">
+                              {selectedRegion.errorHistory!.map((msg, i) => (
+                                <li key={i} className="leading-tight">{msg}</li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      )}
+
                       {activeIntent === 'translate' && (
                         <div className="pt-1">
                           <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">
