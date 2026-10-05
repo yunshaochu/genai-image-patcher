@@ -357,6 +357,21 @@ export interface AppConfig {
   /** OpenAI 兼容链路用哪种图片接口（见 OpenAIImageEndpointMode）。默认 'chat'。 */
   openaiImageEndpointMode: OpenAIImageEndpointMode;
 
+  /**
+   * AI 重绘请求的**附加参数**：一段 JSON 对象文本（可留空）。
+   *
+   * 绝大多数接口不需要它，所以留空 = 请求体与以前完全一致（一个字节都不多
+   * 发）。填了就原样并进重绘请求的负载：
+   *  - OpenAI 兼容链路：chat 并入 JSON body，edits 并入 multipart 表单字段；
+   *  - Gemini 原生：并入 generateContent 的 config。
+   *
+   * 典型用途是中转站 / 自部署后端的私有开关，例如
+   * `{"size": "512x512", "num_inference_steps": 8}`。
+   * 解析不出对象（空串 / 语法错 / 数组）时**静默忽略**，不让手滑的 JSON
+   * 变成一次重绘失败；同名键会覆盖内置字段（model / prompt 等）。
+   */
+  imageApiExtraParams: string;
+
   // Saved image-generation endpoints (OpenAI-compatible). Switching a preset
   // writes its url/key/model into the openai* fields above.
   imageApiProfiles: ApiProfile[];

@@ -116,6 +116,8 @@ const DEFAULT_CONFIG: AppConfig = {
   // OpenAI 兼容链路的图片接口形态：'chat' = /v1/chat/completions（历史默认），
   // 'edit' = /v1/images/edits（图像专用图生图接口，multipart 上传原图）。
   openaiImageEndpointMode: 'chat',
+  // 附加请求参数：留空 = 不发任何额外字段（见 AppConfig.imageApiExtraParams）
+  imageApiExtraParams: '',
   // Saved API presets (quick switch between url/key/model triples)
   imageApiProfiles: [],
   activeImageApiProfileId: null,
@@ -216,6 +218,11 @@ export function useConfig() {
         // chat/completions behaviour.
         if (migratedConfig.openaiImageEndpointMode !== 'edit') {
             migratedConfig.openaiImageEndpointMode = 'chat';
+        }
+
+        // 附加请求参数：老配置没有这个键 → 留空（不发送额外字段）。
+        if (typeof migratedConfig.imageApiExtraParams !== 'string') {
+            migratedConfig.imageApiExtraParams = '';
         }
 
         // Ensure enableSquareFill exists (on by default)

@@ -1,10 +1,19 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { AppConfig } from '../../types';
 import { t } from '../../services/translations';
 import { ApiProfileSwitcher } from './ApiProfileSwitcher';
 import { SecretInput } from './SecretInput';
 import { FloatingPanel } from './FloatingPanel';
+
+/** 附加请求参数这块默认收起（低频逃生口），但展开过一次就记住 —— 需要它的
+ *  人不用每次进来都再点开一遍。 */
+const EXTRA_PARAMS_OPEN_KEY = 'genai_patcher_extra_params_open_v1';
+
+const EXTRA_PARAMS_PLACEHOLDER = `{
+  "size": "512x512",
+  "num_inference_steps": 8
+}`;
 
 interface SettingsPanelProps {
     config: AppConfig;
@@ -24,6 +33,36 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     const lang = config.language;
     const [showModelDropdown, setShowModelDropdown] = useState(false);
     const dropdownRef = useRef<HTMLDivElement>(null);
+
+    const [showExtraParams, setShowExtraParams] = useState(() => {
+        try { return localStorage.getItem(EXTRA_PARAMS_OPEN_KEY) === '1'; } catch { return false; }
+    });
+    useEffect(() => {
+        try { localStorage.setItem(EXTRA_PARAMS_OPEN_KEY, showExtraParams ? '1' : '0'); } catch { /* ignore */ }
+    }, [showExtraParams]);
+
+    // 写坏 JSON 只在这里红字提示，不拦保存 —— 请求侧的做法一致（忽略而非报错）。
+    const extraParamsError = useMemo(() => {
+        const raw = (config.imageApiExtraParams || '').trim();
+        if (!raw) return '';
+        try {
+            const parsed = JSON.parse(raw);
+            return (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+                ? t(lang, 'imageExtraParamsNotObject')
+                : '';
+        } catch {
+            return t(lang, 'imageExtraParamsInvalid');
+        }
+    }, [config.imageApiExtraParams, lang]);
+
+    const extraParamsCount = useMemo(() => {
+        try {
+            const parsed = JSON.parse(config.imageApiExtraParams || '');
+            return (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                ? Object.keys(parsed).length
+                : 0;
+        } catch { return 0; }
+    }, [config.imageApiExtraParams]);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -195,6 +234,50 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </div>
                 </>
             )}
+
+            {/* 附加请求参数：给中转站 / 自部署后端塞私有开关的逃生口。
+                大多数接口不需要，所以默认收起，展开状态记在本机。 */}
+            <div className="pt-2 border-t border-skin-border">
+                <button
+                    type="button"
+                    onClick={() => setShowExtraParams(v => !v)}
+                    className="w-full flex items-center gap-1.5 text-[10px] uppercase font-bold text-skin-muted hover:text-skin-text transition-colors"
+                >
+                    <span>{t(lang, 'imageExtraParams')}</span>
+                    {extraParamsCount > 0 && (
+                        <span className="text-[9px] px-1.5 py-px rounded-full border border-skin-primary/40 bg-skin-primary/10 text-skin-primary normal-case font-medium">
+                            {t(lang, 'imageExtraParamsCount', { count: extraParamsCount })}
+                        </span>
+                    )}
+                    <svg
+                        className={`w-3 h-3 ml-auto transition-transform ${showExtraParams ? 'rotate-180' : ''}`}
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </button>
+
+                {showExtraParams && (
+                    <div className="mt-2 space-y-1.5 animate-in fade-in slide-in-from-top-1">
+                        <textarea
+                            value={config.imageApiExtraParams || ''}
+                            onChange={(e) => onChange('imageApiExtraParams', e.target.value)}
+                            rows={4}
+                            spellCheck={false}
+                            placeholder={EXTRA_PARAMS_PLACEHOLDER}
+                            className="w-full p-2 text-xs font-mono border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50 resize-y custom-scrollbar"
+                        />
+                        {extraParamsError && (
+                            <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-snug">
+                                ⚠️ {extraParamsError}
+                            </p>
+                        )}
+                        <p className="text-[10px] text-skin-muted leading-snug">
+                            {t(lang, 'imageExtraParamsHint')}
+                        </p>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };

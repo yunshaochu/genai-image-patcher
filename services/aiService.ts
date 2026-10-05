@@ -155,7 +155,8 @@ const generateGeminiImage = async (
   modelName: string,
   apiKey: string,
   signal?: AbortSignal,
-  timeoutMs?: number
+  timeoutMs?: number,
+  extraParams?: Record<string, unknown>
 ): Promise<string> => {
   // Allow custom API Key from settings, fallback to env var
   const finalApiKey = apiKey || process.env.API_KEY;
@@ -182,7 +183,16 @@ const generateGeminiImage = async (
               { text: prompt },
             ],
           },
-          ...(timeoutMs ? { config: { httpOptions: { timeout: timeoutMs } } } : {}),
+          // 附加参数并入 config（Gemini 侧的"请求选项"包）；没填就完全不出现
+          // 这个键，请求与以前逐字节一致。
+          ...((timeoutMs || extraParams)
+            ? {
+                config: {
+                  ...(timeoutMs ? { httpOptions: { timeout: timeoutMs } } : {}),
+                  ...(extraParams || {}),
+                },
+              }
+            : {}),
         });
 
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -229,6 +239,24 @@ const generateGeminiImage = async (
   };
 
   return apiCall();
+};
+
+/**
+ * 用户在「连接设置 → 附加请求参数」里写的 JSON 对象（AppConfig.imageApiExtraParams）。
+ *
+ * 解析得很宽松：空串 / 语法错 / 不是对象 → 返回 undefined（= 不附加任何字段），
+ * 因为这是"大多数时候用不上"的逃生口，写坏一次不该把整次重绘打成失败。
+ */
+const parseExtraParams = (raw: string | undefined): Record<string, unknown> | undefined => {
+  if (!raw || !raw.trim()) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    console.warn('[imageApiExtraParams] 附加请求参数不是合法 JSON 对象，本次忽略：', raw);
+    return undefined;
+  }
 };
 
 /**
@@ -315,7 +343,9 @@ const generateOpenAIImage = async (
       body: JSON.stringify({
         model: openaiModel,
         messages: messages,
-        max_tokens: 4096
+        max_tokens: 4096,
+        // 附加参数放在最后：用户显式写下的键覆盖内置字段。
+        ...(parseExtraParams(config.imageApiExtraParams) || {}),
       }),
       signal: signal
     });
@@ -414,6 +444,14 @@ const generateOpenAIImageEdit = async (
   form.append('n', '1');
   // 文件名后缀跟着 mime 走 —— 个别中转站靠后缀猜类型。
   form.append('image', blob, `image.${ext}`);
+
+  // 附加参数：multipart 只有字符串，对象/数组就地序列化成 JSON 文本。
+  const extraParams = parseExtraParams(config.imageApiExtraParams);
+  if (extraParams) {
+    for (const [key, value] of Object.entries(extraParams)) {
+      form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+    }
+  }
 
   try {
     const response = await fetch(url, {
@@ -618,7 +656,15 @@ export const generateRegionEdit = async (
         ? generateOpenAIImageEdit(imageBase64, prompt, config, opSignal)
         : generateOpenAIImage(imageBase64, prompt, config, opSignal);
     } else {
-      return generateGeminiImage(imageBase64, prompt, config.geminiModel, config.geminiApiKey, opSignal, timeout);
+      return generateGeminiImage(
+        imageBase64,
+        prompt,
+        config.geminiModel,
+        config.geminiApiKey,
+        opSignal,
+        timeout,
+        parseExtraParams(config.imageApiExtraParams)
+      );
     }
   };
 
