@@ -73,6 +73,24 @@ export interface EditorTextStyle {
 export type RedrawIntent = 'translate' | 'erase' | 'custom';
 
 /**
+ * 当前开关下可用的重绘场景。翻译 / 擦除本质上属于漫画汉化功能（气泡译文、
+ * 擦字重绘），所以漫画模块关闭后只剩「自定义」—— UI 用它来决定显示哪几个
+ * 场景按钮，管线的实际判定也走同一个来源，两边不会各说各话。
+ */
+export const availableRedrawIntents = (enableMangaMode: boolean): readonly RedrawIntent[] =>
+    enableMangaMode ? ['translate', 'erase', 'custom'] : ['custom'];
+
+/**
+ * 把一个场景规整到当前开关可用的范围：漫画模块关闭 → 一律「自定义」，
+ * 哪怕 config / region 里存着历史遗留的 'translate' / 'erase'。
+ */
+export const clampRedrawIntent = (
+    intent: RedrawIntent | undefined,
+    enableMangaMode: boolean,
+    fallback: RedrawIntent = 'translate'
+): RedrawIntent => (!enableMangaMode ? 'custom' : intent ?? fallback);
+
+/**
  * 有效重绘意图：本框自己的覆盖 ?? 兜底（一般是全局「默认场景」）。
  *
  * 关键点：**已完成的框不再跟随兜底**。
@@ -94,8 +112,11 @@ export const effectiveIntentOf = (
         aiErasedBase?: boolean;
         editorFrozenText?: string;
     },
-    fallback: RedrawIntent = 'translate'
+    fallback: RedrawIntent = 'translate',
+    /** 漫画模块关闭 → 只剩「自定义」：翻译 / 擦除这些漫画场景一律规整回去。 */
+    enableMangaMode: boolean = true
 ): RedrawIntent => {
+    if (!enableMangaMode) return 'custom';
     if (v.redrawIntent) return v.redrawIntent;
     if (v.status === 'completed') {
         if (v.aiErasedBase) return 'erase';

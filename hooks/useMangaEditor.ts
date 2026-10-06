@@ -265,7 +265,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * 已完成的框用**完成时**的场景（effectiveIntentOf），不跟随当前默认场景。
    */
   const intentOf = useCallback((r: Region): RedrawIntent =>
-    effectiveIntentOf(r, configRef.current.defaultRedrawIntent ?? 'translate'), []);
+    effectiveIntentOf(r, configRef.current.defaultRedrawIntent ?? 'translate', configRef.current.enableMangaMode), []);
 
   /**
    * Rebuild the region's patch from its editor fields and write the result

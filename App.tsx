@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf, effectiveIntentOf } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf, clampRedrawIntent, effectiveIntentOf } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
@@ -42,11 +42,11 @@ const targetIntentOf = (
   image: UploadedImage | undefined,
   config: AppConfig
 ): RedrawIntent => {
-  const fallback = config.defaultRedrawIntent ?? 'translate';
+  const fallback = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
   // effectiveIntentOf：已完成的框用它"完成时"落库的场景，不跟随当前默认场景。
   return config.useFullImageMasking
-    ? effectiveIntentOf(image ?? {}, fallback)
-    : effectiveIntentOf(region ?? {}, fallback);
+    ? effectiveIntentOf(image ?? {}, fallback, config.enableMangaMode)
+    : effectiveIntentOf(region ?? {}, fallback, config.enableMangaMode);
 };
 
 export default function App() {

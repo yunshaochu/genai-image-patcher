@@ -1,6 +1,6 @@
 
 import { useState, useRef, useEffect } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl, effectiveIntentOf } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -209,6 +209,13 @@ export function useImageProcessor(
     // text_free) and manual regions. `bubble` outlines are context-only.
     const paintable = (r: Region): boolean => isRegionPaintable(r);
 
+    // 漫画模块关闭后只剩「自定义」场景。把开关透传给 effectiveIntentOf，管线里
+    // 所有意图判定都自动忽略历史遗留的翻译 / 擦除标记，与 UI 的隐藏保持同源。
+    const effectiveIntentOf = (
+        v: Parameters<typeof rawEffectiveIntentOf>[0],
+        fallback?: RedrawIntent
+    ): RedrawIntent => rawEffectiveIntentOf(v, fallback, config.enableMangaMode);
+
     // Live glossary for the in-flight run. `config.glossaryText` is the
     // persisted copy; a batch must not depend on a React re-render to see the
     // terms merged by an earlier image, so runs read/write this ref and flush
@@ -280,7 +287,7 @@ export function useImageProcessor(
         if (signal.aborted) return false;
         if (imageSnapshot.isSkipped) return false;
         // 默认场景：所有没被单独改过意图的框都走它（用户可在提示词模块设置）。
-        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
+        const defaultIntent: RedrawIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
 
         // Build regionsMap from imageSnapshot, but PATCH each entry with the latest
         // status/retryCount from localRegionState. This is the fix for the retry-loop
@@ -954,7 +961,7 @@ export function useImageProcessor(
     const handleProcess = async (processAll: boolean) => {
         if (abortControllerRef.current) abortControllerRef.current.abort();
         // 默认场景（未单独设置意图的框走它）——与 processSingleImage 用同一个来源。
-        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
+        const defaultIntent: RedrawIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
         const controller = new AbortController();
         abortControllerRef.current = controller;
         setProcessingState(ProcessingStep.CROPPING);
@@ -1216,7 +1223,7 @@ export function useImageProcessor(
         setProcessingState(ProcessingStep.CROPPING);
         setErrorMsg(null);
         // 翻译阶段也只处理「翻译场景」的框；未单独设置的框按全局默认场景判定。
-        const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
+        const defaultIntent: RedrawIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
 
         const selectedId = selectedImage?.id;
         const pickTargets = (): UploadedImage[] => {

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable, effectiveIntentOf } from '../../types';
+import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, effectiveIntentOf } from '../../types';
 import { defaultRegionPrompt } from '../../hooks/useConfig';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
@@ -69,9 +69,10 @@ const copyButtonClass =
  */
 const intentSlotText = (
     v: { customPrompt?: string; customPromptErase?: string; customPromptFree?: string; redrawIntent?: RedrawIntent },
-    defaultIntent: RedrawIntent
+    defaultIntent: RedrawIntent,
+    enableMangaMode: boolean
 ): string => {
-    const intent = v.redrawIntent ?? defaultIntent ?? 'translate';
+    const intent = clampRedrawIntent(v.redrawIntent, enableMangaMode, defaultIntent);
     const slot = (intent === 'erase' ? v.customPromptErase
         : intent === 'custom' ? v.customPromptFree
             : v.customPrompt) ?? '';
@@ -85,8 +86,9 @@ const intentSlotText = (
  */
 const effectiveIntent = (
     v: { redrawIntent?: RedrawIntent; status?: Region['status']; aiErasedBase?: boolean; editorFrozenText?: string },
-    defaultIntent: RedrawIntent
-): RedrawIntent => effectiveIntentOf(v, defaultIntent);
+    defaultIntent: RedrawIntent,
+    enableMangaMode: boolean
+): RedrawIntent => effectiveIntentOf(v, defaultIntent, enableMangaMode);
 
 const sceneLabel = (lang: Language, v: RedrawIntent): string =>
     t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
@@ -103,37 +105,42 @@ const IntentSwitch: React.FC<{
     label: string;
     active: RedrawIntent;
     hasOverride: boolean;
+    /** 当前开关下可选的场景；只剩一个时整套控件隐藏（没必要给单选项做分段控件）。 */
+    intents: readonly RedrawIntent[];
     onChange?: (intent: RedrawIntent | undefined) => void;
-}> = ({ lang, label, active, hasOverride, onChange }) => (
-    <div className="pt-1 border-t border-skin-border space-y-1">
-        <div className="flex items-center justify-between gap-1">
-            <span className="text-[9px] uppercase font-bold text-skin-muted truncate">{label}</span>
-            {hasOverride ? (
-                <button
-                    onClick={() => onChange?.(undefined)}
-                    className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer shrink-0"
-                    title={t(lang, 'promptFollowDefaultTip')}
-                >
-                    {t(lang, 'promptFollowDefault')}
-                </button>
-            ) : (
-                <span className="text-[9px] text-skin-muted shrink-0">{t(lang, 'promptFollowingDefault')}</span>
-            )}
+}> = ({ lang, label, active, hasOverride, intents, onChange }) => {
+    if (intents.length <= 1) return null;
+    return (
+        <div className="pt-1 border-t border-skin-border space-y-1">
+            <div className="flex items-center justify-between gap-1">
+                <span className="text-[9px] uppercase font-bold text-skin-muted truncate">{label}</span>
+                {hasOverride ? (
+                    <button
+                        onClick={() => onChange?.(undefined)}
+                        className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer shrink-0"
+                        title={t(lang, 'promptFollowDefaultTip')}
+                    >
+                        {t(lang, 'promptFollowDefault')}
+                    </button>
+                ) : (
+                    <span className="text-[9px] text-skin-muted shrink-0">{t(lang, 'promptFollowingDefault')}</span>
+                )}
+            </div>
+            <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+                {intents.map(v => (
+                    <button
+                        key={v}
+                        onClick={() => onChange?.(v)}
+                        title={t(lang, 'promptTabHint')}
+                        className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${active === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                    >
+                        {sceneLabel(lang, v)}
+                    </button>
+                ))}
+            </div>
         </div>
-        <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
-            {(['translate', 'erase', 'custom'] as const).map(v => (
-                <button
-                    key={v}
-                    onClick={() => onChange?.(v)}
-                    title={t(lang, 'promptTabHint')}
-                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all ${active === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
-                >
-                    {sceneLabel(lang, v)}
-                </button>
-            ))}
-        </div>
-    </div>
-);
+    );
+};
 
 export const FullImageMaskRow: React.FC<{
   image: UploadedImage;
@@ -147,13 +154,13 @@ export const FullImageMaskRow: React.FC<{
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
-  const defaultIntent = config.defaultRedrawIntent ?? 'translate';
-  const intent = effectiveIntent(image, defaultIntent);
+  const defaultIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
+  const intent = effectiveIntent(image, defaultIntent, config.enableMangaMode);
   // The whole-image row has no region: the prompt it exports is the global one
   // plus this image's intent-specific prompt (default scene prompt included).
   // 译文只在「翻译」场景拼 —— 擦除 / 自定义复制出去的模型不该看到译文。
   const promptText = buildWorkbenchPrompt(config, {
-    imagePrompt: intentSlotText(image, defaultIntent),
+    imagePrompt: intentSlotText(image, defaultIntent, config.enableMangaMode),
     translation: intent === 'translate' ? image.customTranslation : undefined,
   });
 
@@ -293,6 +300,7 @@ export const FullImageMaskRow: React.FC<{
         label={t(config.language, 'promptFullImageScene')}
         active={intent}
         hasOverride={image.redrawIntent !== undefined}
+        intents={availableRedrawIntents(config.enableMangaMode)}
         onChange={onIntentChange}
       />
       <div className="text-[9px] text-skin-muted text-center italic bg-skin-surface/50 rounded py-0.5">
@@ -318,13 +326,13 @@ export const ManualPatchRow: React.FC<{
   const paddingInfoRef = useRef<PaddingInfo | null>(null);
   const imgCopy = useCopyFeedback();
   const txtCopy = useCopyFeedback();
-  const defaultIntent = config.defaultRedrawIntent ?? 'translate';
-  const intent = effectiveIntent(region, defaultIntent);
+  const defaultIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
+  const intent = effectiveIntent(region, defaultIntent, config.enableMangaMode);
   // Exactly what the app would send for this box: global prompt + this box's
   // intent-specific prompt (default scene prompt included when the slot is
   // empty) + 本框译文（仅「翻译」场景 —— 擦除场景只复制提示词）。
   const promptText = buildWorkbenchPrompt(config, {
-    regionPrompt: intentSlotText(region, defaultIntent),
+    regionPrompt: intentSlotText(region, defaultIntent, config.enableMangaMode),
     translation: intent === 'translate' ? region.customTranslation : undefined,
   });
 
@@ -472,6 +480,7 @@ export const ManualPatchRow: React.FC<{
         label={t(lang, 'promptRegionScene')}
         active={intent}
         hasOverride={region.redrawIntent !== undefined}
+        intents={availableRedrawIntents(config.enableMangaMode)}
         onChange={onIntentChange}
       />
 

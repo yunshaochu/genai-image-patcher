@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable } from '../../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, clampRedrawIntent } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
 
@@ -58,7 +58,7 @@ export const useRunGating = ({
   // 译文只对「翻译」意图有意义：擦除 / 自定义不需要译文（也会跳过翻译阶段）。
   // 兜底 = 全局「默认场景」，与重绘管线用的是同一个来源。
   const intentOf = (v: { redrawIntent?: RedrawIntent }): RedrawIntent =>
-    v.redrawIntent ?? config.defaultRedrawIntent ?? 'translate';
+    clampRedrawIntent(v.redrawIntent, config.enableMangaMode, config.defaultRedrawIntent ?? 'translate');
   const regionNeedsTranslation = (r: UploadedImage['regions'][number]) =>
     isGenPaintable(r) && intentOf(r) === 'translate';
   const translationReady = scopedImages.some(img =>
@@ -79,7 +79,9 @@ export const useRunGating = ({
     // 必须翻译 on but nothing translated yet: generating would only skip
     // everything, so point the user at the translate stage instead. Moot while
     // 重绘前翻译 fills missing translations inline.
-    if (config.enableTranslationMode && config.requireTranslationForGeneration
+    // 漫画模块关闭 → 「翻译」场景不存在，任何框都不会有译文，这里必须整体放行，
+    // 否则「必须翻译」会把重绘永久卡死在「没有可翻译内容」上。
+    if (config.enableMangaMode && config.enableTranslationMode && config.requireTranslationForGeneration
         && !config.translateBeforeRedraw && !translationReady) {
       return t(lang, 'requireTranslationNone');
     }
@@ -210,7 +212,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
                 <span className="text-[10px] font-bold uppercase tracking-wider text-skin-muted">{t(lang, 'runTitle')}</span>
                 {/* The two-stage explainer used to be a 3-line paragraph under
                     the buttons; it now lives behind this "?". */}
-                {config.enableTranslationMode && !config.translateBeforeRedraw && (
+                {config.enableMangaMode && config.enableTranslationMode && !config.translateBeforeRedraw && (
                   <HelpTip text={t(lang, 'translateStageHint')} />
                 )}
               </div>
@@ -230,15 +232,19 @@ export const DockActions: React.FC<DockActionsProps> = ({
                 </div>
               </div>
 
-              <button
-                onClick={() => onTranslate?.(processAll)}
-                disabled={!!translateReason}
-                title={translateReason || t(lang, 'translateStageHint')}
-                className="w-full h-9 rounded-lg border border-sky-500/50 bg-sky-500/5 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 hover:border-sky-500 text-[11px] font-bold transition-colors disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:bg-sky-500/5 disabled:hover:border-sky-500/50 flex items-center justify-center gap-1.5"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-                {t(lang, processAll ? 'translateAll' : 'translate')}
-              </button>
+              {/* 「翻译」是漫画场景的动作：漫画模块关闭时整段隐藏（场景里已没有
+                  「翻译」，还留一个按钮只会永远点不动）。 */}
+              {config.enableMangaMode && (
+                <button
+                  onClick={() => onTranslate?.(processAll)}
+                  disabled={!!translateReason}
+                  title={translateReason || t(lang, 'translateStageHint')}
+                  className="w-full h-9 rounded-lg border border-sky-500/50 bg-sky-500/5 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 hover:border-sky-500 text-[11px] font-bold transition-colors disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:bg-sky-500/5 disabled:hover:border-sky-500/50 flex items-center justify-center gap-1.5"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+                  {t(lang, processAll ? 'translateAll' : 'translate')}
+                </button>
+              )}
 
               {showGenerate && (
                 <>
@@ -257,7 +263,7 @@ export const DockActions: React.FC<DockActionsProps> = ({
                   {generateReason && (
                     <p className="text-[10px] text-center text-skin-muted leading-tight">{generateReason}</p>
                   )}
-                  {config.enableTranslationMode && config.requireTranslationForGeneration
+                  {config.enableMangaMode && config.enableTranslationMode && config.requireTranslationForGeneration
                     && !config.translateBeforeRedraw && (
                     <p className="flex items-start justify-center gap-1 text-[10px] leading-tight text-amber-600 dark:text-amber-400">
                       <svg className="w-3 h-3 shrink-0 mt-px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"></path></svg>

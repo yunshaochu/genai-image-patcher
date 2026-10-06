@@ -1,6 +1,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent } from '../types';
 import { t } from '../services/translations';
 import { fetchOpenAIModels } from '../services/aiService';
 import { Section } from './sidebar/Section';
@@ -39,6 +39,14 @@ const intentSlot = (
   !v ? '' : (tab === 'erase' ? v.customPromptErase
     : tab === 'custom' ? v.customPromptFree
       : v.customPrompt) ?? '';
+
+/**
+ * 场景 → 提示词槽字段。写入和读取必须成对：`intentSlot` 把「自定义」场景读成
+ * `customPromptFree`，所以写入也要落到 'free' —— 两套名字不同（RedrawIntent
+ * 'custom' vs PromptField 'free'），写混了输入框会"打字打不进去"。
+ */
+const slotFieldOf = (intent: RedrawIntent): PromptField =>
+  intent === 'erase' ? 'erase' : intent === 'custom' ? 'free' : 'translate';
 
 interface WorkflowDockProps {
   config: AppConfig;
@@ -158,14 +166,19 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   // 默认场景持久化在 config：所有**没被单独改过**的切片都走它。
   // 选中框的 tab 显示它的**有效场景**（自己的覆盖 ?? 默认场景）；改 tab = 只给
   // 这一个框加覆盖，其他框不受影响。
-  const defaultIntent: RedrawIntent = config.defaultRedrawIntent ?? 'translate';
+  // 当前开关下可选的场景：漫画模块关闭后只剩「自定义」（翻译 / 擦除属于漫画）。
+  const intents = availableRedrawIntents(config.enableMangaMode);
+  const showScenePicker = intents.length > 1;
+  const defaultIntent: RedrawIntent = clampRedrawIntent(config.defaultRedrawIntent, config.enableMangaMode);
   // 有没有"正在编辑的目标"：选中了框，或全图模式下的当前图片。没有 → 只给用户
   // 设置「默认场景」；有 → 给这个目标设置覆盖。
   const hasTarget = !!currentImage && (showFullImagePrompt || !!selectedRegion);
   const targetIntent: RedrawIntent | undefined = showFullImagePrompt
     ? currentImage?.redrawIntent
     : selectedRegion?.redrawIntent;
-  const activeIntent: RedrawIntent = targetIntent ?? defaultIntent;
+  // 历史遗留的翻译 / 擦除覆盖在漫画模块关闭时也要规整回「自定义」，否则界面
+  // 显示的场景与管线实际跑的场景会错位。
+  const activeIntent: RedrawIntent = clampRedrawIntent(targetIntent, config.enableMangaMode, defaultIntent);
   const hasOverride = targetIntent !== undefined;
   const sceneLabel = (v: RedrawIntent) =>
     t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
@@ -200,8 +213,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
 
   const handleSlotChange = (value: string) => {
     if (!currentImage) return;
-    if (showFullImagePrompt) onUpdateImagePrompt?.(currentImage.id, value, activeIntent);
-    else if (selectedRegion) onUpdateRegionPrompt(currentImage.id, selectedRegion.id, value, activeIntent);
+    const field = slotFieldOf(activeIntent);
+    if (showFullImagePrompt) onUpdateImagePrompt?.(currentImage.id, value, field);
+    else if (selectedRegion) onUpdateRegionPrompt(currentImage.id, selectedRegion.id, value, field);
   };
   const handleTranslationChange = (value: string) => {
     if (!currentImage) return;
@@ -236,14 +250,17 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
             </button>
           ) : (
             <>
-              <button
-                onClick={() => onTranslate(processAll)}
-                disabled={!!gating.translateReason}
-                title={gating.translateReason || t(lang, processAll ? 'translateAll' : 'translate')}
-                className="w-6 h-6 rounded-md border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-              </button>
+              {/* 「翻译」属于漫画场景：模块关闭时和上面一样隐藏。 */}
+              {config.enableMangaMode && (
+                <button
+                  onClick={() => onTranslate(processAll)}
+                  disabled={!!gating.translateReason}
+                  title={gating.translateReason || t(lang, processAll ? 'translateAll' : 'translate')}
+                  className="w-6 h-6 rounded-md border border-sky-500/50 text-sky-600 dark:text-sky-400 hover:bg-sky-500/15 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
+                </button>
+              )}
               {/* 补丁工坊 composites its patches locally — no API run to start. */}
               {!isManualMode && (
                 <button
@@ -391,7 +408,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                 {/* 场景选择器**二选一**，避免两个分段控件堆在一起：
                     - 没选中任何框 → 「默认场景」（写 config，所有未覆盖的切片都走它）；
                     - 选中了框 / 全图模式 → 「此框场景 / 此图场景」（写该切片的覆盖）。
-                    三套提示词槽并存，切场景不丢数据。 */}
+                    三套提示词槽并存，切场景不丢数据。
+                    漫画模块关闭后只剩「自定义」一个场景 → 整套选择器直接藏起来。 */}
+                {(hasTarget || showScenePicker) && (
                 <div className="pt-2 border-t border-skin-border border-dashed transition-all space-y-2">
                   {!hasTarget ? (
                     <div>
@@ -399,7 +418,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                         {t(lang, 'promptDefaultScene')}
                       </label>
                       <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
-                        {(['translate', 'erase', 'custom'] as const).map(v => (
+                        {intents.map(v => (
                           <button
                             key={v}
                             onClick={() => onConfigChange('defaultRedrawIntent', v)}
@@ -413,6 +432,8 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                     </div>
                   ) : (
                     <>
+                      {/* 漫画模块关闭时只剩「自定义」一个场景 → 此框 / 此图场景选择器隐藏。 */}
+                      {showScenePicker && (
                       <div>
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center justify-between">
                           <span className="flex items-center gap-2">
@@ -440,7 +461,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                           )}
                         </label>
                         <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
-                          {(['translate', 'erase', 'custom'] as const).map(v => (
+                          {intents.map(v => (
                             <button
                               key={v}
                               onClick={() => handleTargetIntentChange(v)}
@@ -451,6 +472,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                           ))}
                         </div>
                       </div>
+                      )}
 
                       <label className="text-[10px] uppercase font-bold text-skin-muted flex items-center justify-between">
                         <span className="flex items-center gap-2">
@@ -517,6 +539,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                     </>
                   )}
                 </div>
+                )}
               </div>
             </Section>
 
