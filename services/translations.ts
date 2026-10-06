@@ -71,11 +71,6 @@ export const translations = {
     detectInflation: "气泡膨胀率",
     detectOffset: "位置偏移 (X / Y)",
     detectConfidence: "置信度阈值",
-    genSourceLabel: "AI 重绘区域",
-    genSourceText: "文字框",
-    genSourceBubble: "气泡框",
-    genSourceHintText: "text_bubble + text_free 精准擦字，banana 系模型效果最佳",
-    genSourceHintBubble: "整颗气泡重绘 + text_free，各模型表现更稳定",
     
     // OCR
     ocrBtn: "OCR 识别",
@@ -656,11 +651,6 @@ export const translations = {
     detectInflation: "Inflation Rate",
     detectOffset: "Position Offset (X / Y)",
     detectConfidence: "Confidence Threshold",
-    genSourceLabel: "AI Redraw Regions",
-    genSourceText: "Text Boxes",
-    genSourceBubble: "Bubble Outlines",
-    genSourceHintText: "text_bubble + text_free — precise text redraw, best with banana-class models",
-    genSourceHintBubble: "Whole-bubble redraw + text_free — steadier across models",
     
     // OCR
     ocrBtn: "OCR",

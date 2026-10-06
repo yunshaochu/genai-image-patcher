@@ -105,6 +105,48 @@ export const recognizeText = async (
 };
 
 /**
+ * 丢弃「完全被另一个框包围」的外层框。
+ *
+ * 检测器经常吐出一颗松散的"外层框"套住一个或多个紧凑的"内层框"（典型是
+ * `bubble` 气泡轮廓把它的 `text_bubble` 文字框整个包住）。外层框覆盖的是
+ * 完全相同的内容、但边界更粗；一旦内部存在更精确的框，外层框就是冗余的；
+ * 若它套住了两个以上内层框，那更说明它只是一个粗略的分组框，而不是一块独立
+ * 的内容区域。因此这里只保留处于最内层的框。
+ *
+ * ⚠ 关键结论（改检测相关逻辑前先看这里）：**`bubble` 气泡框就是被这里当作
+ * "外框"过滤掉的**。所以正常情况下带文字的 `bubble` 根本不会出现在结果里，
+ * 也就永远不可能是 AI 重绘单元（见 types.ts 的 isRegionPaintable）——只有
+ * "空气泡"（没套住任何文字框）才会残留下来，作为 contextOnly 上下文标记。
+ * 这也正是当初去掉「AI 重绘区域 = 气泡框 / 文字框」选择器的原因：气泡框没有
+ * 被画的余地。
+ *
+ * 检测坐标是近似值，所以判定"包围"时允许内层框最多探出外层框尺寸的一小部分；
+ * 同时要求外层框面积严格更大，避免两个几乎重合的框（真正的重复框）被同时删掉。
+ */
+const dropEnclosingBoxes = (detections: ApiDetection[]): ApiDetection[] => {
+  const TOLERANCE = 0.02; // 内层框允许探出外层框尺寸的 2%
+  const area = (d: ApiDetection) => (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]);
+  const contains = (outer: ApiDetection, inner: ApiDetection): boolean => {
+    const [ox1, oy1, ox2, oy2] = outer.bbox;
+    const [ix1, iy1, ix2, iy2] = inner.bbox;
+    const tolX = Math.max(2, (ox2 - ox1) * TOLERANCE);
+    const tolY = Math.max(2, (oy2 - oy1) * TOLERANCE);
+    return ix1 >= ox1 - tolX && iy1 >= oy1 - tolY &&
+           ix2 <= ox2 + tolX && iy2 <= oy2 + tolY;
+  };
+  return detections.filter((outer) => {
+    const outerArea = area(outer);
+    if (outerArea <= 0) return true;
+    return !detections.some((inner) =>
+      inner !== outer &&
+      area(inner) > 0 &&
+      area(inner) < outerArea &&
+      contains(outer, inner)
+    );
+  });
+};
+
+/**
  * Calls the Python backend to detect text bubbles in the image.
  * Uses standard Multipart/FormData upload (Method 1 in API docs).
  */
@@ -170,16 +212,20 @@ export const detectBubbles = async (
     const offX = (config.detectionOffsetXPercent ?? 0) / 100;
     const offY = (config.detectionOffsetYPercent ?? 0) / 100;
 
+    // 1. Check Confidence (safety net — the server already filtered at
+    // conf_threshold, but a custom URL may ignore the parameter). Done before
+    // containment so a filtered-out stray box can't suppress a box that would
+    // otherwise survive.
+    const confident = data.detections.filter((det) => det.confidence >= confThreshold);
+
+    // 2. Drop outer boxes fully enclosing inner ones — keeps the precise inner
+    // boxes (see dropEnclosingBoxes).
+    const keptDetections = dropEnclosingBoxes(confident);
+
     // Map API result to internal Region format
     const regions: Region[] = [];
 
-    data.detections.forEach((det) => {
-      // 1. Check Confidence (safety net — the server already filtered
-      // at conf_threshold, but a custom URL may ignore the parameter)
-      if (det.confidence < confThreshold) {
-          return;
-      }
-
+    keptDetections.forEach((det) => {
       // API returns absolute pixel coordinates [left, top, right, bottom]
       const [x1, y1, x2, y2] = det.bbox;
       
@@ -190,12 +236,12 @@ export const detectBubbles = async (
       let cx = x1 + wPx / 2;
       let cy = y1 + hPx / 2;
 
-      // 2. Apply Inflation (Scale width/height)
+      // 3. Apply Inflation (Scale width/height)
       // Inflation applies to the box size relative to its center
       const newWPx = wPx * (1 + inflation);
       const newHPx = hPx * (1 + inflation);
       
-      // 3. Apply Offset (Shift center based on *original* box size percentage)
+      // 4. Apply Offset (Shift center based on *original* box size percentage)
       // Standard practice: offset is percentage of the dimension
       cx = cx + (wPx * offX);
       cy = cy + (hPx * offY);
@@ -230,7 +276,10 @@ export const detectBubbles = async (
             source: 'auto',
             detectedClass: det.class_name,
             // 'bubble' outlines are context-only markers: never sent to the
-            // AI redraw pipeline, not editable text areas (reserved for later).
+            // AI redraw pipeline, not editable text areas.
+            // NOTE: a bubble that ENCLOSED a text box was already dropped above
+            // by dropEnclosingBoxes (it is the redundant "outer box"), so only
+            // empty bubbles ever reach this line.
             contextOnly: det.class_name === 'bubble',
         });
       }

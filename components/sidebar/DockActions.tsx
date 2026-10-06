@@ -54,7 +54,7 @@ export const useRunGating = ({
     ? images.filter(img => !img.isSkipped)
     : (currentImage ? [currentImage] : []);
   const isGenPaintable = (r: UploadedImage['regions'][number]) =>
-    isRegionPaintable(r, config.generationRegionSource ?? 'text');
+    isRegionPaintable(r);
   // 译文只对「翻译」意图有意义：擦除 / 自定义不需要译文（也会跳过翻译阶段）。
   // 兜底 = 全局「默认场景」，与重绘管线用的是同一个来源。
   const intentOf = (v: { redrawIntent?: RedrawIntent }): RedrawIntent =>

@@ -14,7 +14,6 @@ import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 import { TRANSLATION_CACHE_MARKER } from '../services/translationCache';
 import { mergeGlossary } from '../services/glossary';
-import { findContainedTextRegions } from '../services/mangaEditor';
 import { recordPayload, PayloadTransform } from '../services/payloadLog';
 
 /**
@@ -206,11 +205,9 @@ export function useImageProcessor(
     const imagesRef = useRef(images);
     imagesRef.current = images;
 
-    // Which regions the AI redraw pipeline paints, governed by
-    // config.generationRegionSource ('text' = text boxes, 'bubble' = whole
-    // bubble outlines; text_free and manual regions always paint).
-    const paintable = (r: Region): boolean =>
-        isRegionPaintable(r, config.generationRegionSource ?? 'text');
+    // Which regions the AI redraw pipeline paints: text boxes (text_bubble +
+    // text_free) and manual regions. `bubble` outlines are context-only.
+    const paintable = (r: Region): boolean => isRegionPaintable(r);
 
     // Live glossary for the in-flight run. `config.glossaryText` is the
     // persisted copy; a batch must not depend on a React re-render to see the
@@ -355,32 +352,14 @@ export function useImageProcessor(
             }
         };
 
-        // When a whole-bubble region gets AI-redrawn, the original text inside
-        // it is wiped — mark contained text_bubble regions so the editor
-        // typesets onto the AI bubble patch and skips erasure (aiBubbleBase).
-        // NOT for inverted masking (region pixels stay original there), so
-        // only call this on paths that actually replace the region's pixels.
-        const markBubbleContainedTexts = (bubble: Region) => {
-            if (bubble.detectedClass !== 'bubble') return;
-            // Containment is defined once, in the editor's bubble ⇄ text status
-            // sync (services/mangaEditor.findContainedTextRegions) — the two
-            // directions must agree on which text boxes belong to a bubble.
-            const all = Array.from(regionsMap.values());
-            for (const r of findContainedTextRegions(all, bubble)) {
-                if (r.aiBubbleBase) continue;
-                setRegion({ ...r, aiBubbleBase: true });
-            }
-        };
-
         let initialRegions = [...imageSnapshot.regions];
         // An image with no paintable region of its own that gets the synthetic
         // whole-image box ("处理全图") cannot be pre-translated by the translate
         // stage (there is no region to cache against), so 必须翻译 must not
         // block it — otherwise it could never be generated at all.
         const isSyntheticFullImage = !initialRegions.some(paintable) && !!config.processFullImageIfNoRegions;
-        // Regions excluded by the generation source (e.g. bubble outlines in
-        // 'text' mode) don't count as paintable — an image holding ONLY those
-        // is still "empty".
+        // Non-paintable regions (e.g. bubble outlines) don't count — an image
+        // holding ONLY those is still "empty".
         if (isSyntheticFullImage) {
             const fullRegion: Region = {
                 id: crypto.randomUUID(),
@@ -395,8 +374,8 @@ export function useImageProcessor(
         }
 
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
-        // Mask building only covers paintable regions — e.g. in 'text' mode
-        // bubble outlines are visual context, never whited-out for the AI.
+        // Mask building only covers paintable regions — bubble outlines are
+        // visual context, never whited-out for the AI.
         const maskRegions = allActiveRegions.filter(paintable);
         // Cap per-region attempts at (maxRetriesPerRegion + 1). A region that's already
         // burned through its retry budget is skipped here even if its image is
@@ -682,7 +661,6 @@ export function useImageProcessor(
                             ...(imageIntent === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                         };
                         setRegion(completedRegion);
-                        markBubbleContainedTexts(completedRegion);
                     }
 
                     updateImage(imageSnapshot.id, img => {
@@ -943,7 +921,6 @@ export function useImageProcessor(
                     ...(regionIntentValue === 'translate' && translationText ? { editorFrozenText: translationText } : {}),
                 };
                 setRegion(completedRegion);
-                markBubbleContainedTexts(completedRegion);
                 apiResultUrl = undefined; // Ownership transferred to state
 
                 // 只回写本框：同轮的**别的**框可能在这期间已被编辑器接管（自动

@@ -162,11 +162,9 @@ export const FullImageMaskRow: React.FC<{
     const generatePreview = async () => {
       try {
         const imgEl = await loadImage(image.previewUrl);
-        // Only paintable regions (per the configured generation source) are
-        // whited out of the masked copy — everything else stays visible.
-        const maskRegions = image.regions.filter(r =>
-          isRegionPaintable(r, config.generationRegionSource ?? 'text')
-        );
+        // Only paintable regions (text boxes + manual) are whited out of the
+        // masked copy — everything else stays visible.
+        const maskRegions = image.regions.filter(r => isRegionPaintable(r));
         let preview: string;
         if (config.useInvertedMasking) {
             preview = await createInvertedMultiMaskedFullImage(imgEl, maskRegions);
@@ -200,7 +198,7 @@ export const FullImageMaskRow: React.FC<{
     };
     generatePreview();
     return () => { active = false; };
-  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking, config.enableSquareFill, config.squareFillSize, config.generationRegionSource]);
+  }, [image.previewUrl, image.regions, config.useInvertedMasking, config.useFullImageMasking, config.enableSquareFill, config.squareFillSize]);
 
   const handlePaste = async (e: React.ClipboardEvent) => {
     e.stopPropagation();

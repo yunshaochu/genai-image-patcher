@@ -1054,7 +1054,6 @@ export default function App() {
                     onSelectRestoreRegion={setRestoreSelectedRegionId}
                     showRetryDiagnostics={!!config.showRetryDiagnostics}
                     regionDisplay={isEditorMode ? 'editor' : 'generation'}
-                    generationRegionSource={config.generationRegionSource}
                     defaultRedrawIntent={config.defaultRedrawIntent ?? 'translate'}
                     // Typeset overflow stays visible ONLY in the editor workflow;
                     // AI 重绘 / 手动修补工坊 clip patches back to their box.

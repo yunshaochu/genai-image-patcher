@@ -105,7 +105,6 @@ const ENUM_FIELDS: Record<string, readonly string[]> = {
   processingMode: ['api', 'manual', 'editor'],
   performanceMode: ['unlimited', 'balanced'],
   executionMode: ['concurrent', 'serial'],
-  generationRegionSource: ['text', 'bubble'],
   defaultRedrawIntent: ['translate', 'erase', 'custom'],
 };
 

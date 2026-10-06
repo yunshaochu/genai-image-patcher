@@ -331,9 +331,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
 
                 {selectedRegionId ? (() => {
                   const region = currentImage.regions.find(r => r.id === selectedRegionId);
-                  // Regions the pipeline would never paint (per the
-                  // generation source) have no patch zone.
-                  if (!region || !isRegionPaintable(region, config.generationRegionSource ?? 'text')) {
+                  // Regions the pipeline would never paint (bubble outlines)
+                  // have no patch zone.
+                  if (!region || !isRegionPaintable(region)) {
                     return !config.useFullImageMasking ? (
                       <div className="text-center py-8 text-skin-muted italic text-xs">
                         {t(lang, 'noRegions')}

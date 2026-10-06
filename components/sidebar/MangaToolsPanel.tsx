@@ -33,7 +33,7 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
         <>
             {showDetection ? (
                 <>
-                    {/* Row 1: compact scope switch + detect trigger */}
+                    {/* Compact scope switch + detect trigger */}
                     <div className="flex items-stretch gap-1.5 mb-2">
                         <div className="flex bg-skin-fill p-0.5 rounded-md border border-skin-border">
                             <button
@@ -66,28 +66,6 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
                                 </>
                             )}
                         </button>
-                    </div>
-
-                    {/* Row 2: which detected class feeds the AI redraw pipeline */}
-                    <div className="mb-2">
-                        <div className="text-[10px] uppercase font-bold text-skin-muted mb-1">{t(lang, 'genSourceLabel')}</div>
-                        <div className="flex bg-skin-fill p-0.5 rounded-md border border-skin-border">
-                            <button
-                                onClick={() => onChange('generationRegionSource', 'text')}
-                                className={`flex-1 py-1 text-[10px] rounded transition-all ${(config.generationRegionSource ?? 'text') === 'text' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
-                            >
-                                {t(lang, 'genSourceText')}
-                            </button>
-                            <button
-                                onClick={() => onChange('generationRegionSource', 'bubble')}
-                                className={`flex-1 py-1 text-[10px] rounded transition-all ${config.generationRegionSource === 'bubble' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
-                            >
-                                {t(lang, 'genSourceBubble')}
-                            </button>
-                        </div>
-                        <p className="text-[9px] text-skin-muted mt-1 italic leading-snug">
-                            {t(lang, config.generationRegionSource === 'bubble' ? 'genSourceHintBubble' : 'genSourceHintText')}
-                        </p>
                     </div>
 
                     <button

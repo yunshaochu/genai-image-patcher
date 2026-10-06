@@ -8,35 +8,33 @@ export interface RestoreBox {
   inverse: boolean; // true = keep AI result inside box, restore outside
 }
 
-/** Detection classes returned by the comic-detector API (docs/API_RTDTR.md) */
-export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
-
 /**
- * Which detected class the AI redraw pipeline paints.
- * 'text'   — text_bubble + text_free (precise text boxes; best with strong
- *            models like the banana series). Default, historical behavior.
- * 'bubble' — whole bubble outlines + text_free (redrawing the entire bubble
- *            is far more forgiving for weaker models).
- * Manual regions are always paintable regardless of this setting.
+ * Detection classes returned by the comic-detector API (docs/API_RTDTR.md).
+ *
+ * NOTE: a `bubble` outline is an OUTER/grouping box. When it fully encloses a
+ * `text_bubble` (its text), the detection pass drops it as a redundant outer
+ * box (services/detectionService.ts → dropEnclosingBoxes). Only bubbles that
+ * enclose nothing survive, and those stay context-only (see Region.contextOnly)
+ * — a `bubble` is never an AI-redraw unit.
  */
-export type GenerationRegionSource = 'text' | 'bubble';
+export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
 
 /**
  * Decides whether a region enters the AI redraw pipeline (masked + painted)
  * and is shown as a working box in the AI-generation canvas. Editor-mode
  * visibility is NOT governed by this — the editor always works on text
  * regions (see contextOnly).
+ *
+ * Only text regions (text_bubble + text_free) and manual regions paint.
+ * `bubble` outlines are context-only markers, never painted — and a bubble
+ * that encloses text was already dropped by detection before it could become a
+ * region (services/detectionService.ts → dropEnclosingBoxes).
  */
 export const isRegionPaintable = (
-  r: Pick<Region, 'source' | 'detectedClass' | 'contextOnly'>,
-  source: GenerationRegionSource = 'text'
+  r: Pick<Region, 'source' | 'detectedClass' | 'contextOnly'>
 ): boolean => {
   if (r.source === 'auto' && r.detectedClass) {
-    // text_free is a work unit in both modes (no bubble outline covers it).
-    if (r.detectedClass === 'text_free') return true;
-    return source === 'bubble'
-      ? r.detectedClass === 'bubble'
-      : r.detectedClass === 'text_bubble';
+    return r.detectedClass === 'text_bubble' || r.detectedClass === 'text_free';
   }
   // Manual / legacy regions keep the historical contextOnly semantics.
   return !r.contextOnly;
@@ -137,7 +135,11 @@ export interface Region {
   /** 译文（独立字段，不再塞进提示词里的 marker 块）。翻译阶段写入；
    *  仅当 redrawIntent='translate' 时作为上下文拼进重绘 payload。 */
   customTranslation?: string;
-  contextOnly?: boolean; // If true, region is visible context only — not translated or painted
+  /** Visible context only — not translated or painted. Set for `bubble`
+   *  outlines: a bubble is the redundant OUTER box around a `text_bubble` and
+   *  is dropped by detection whenever it encloses text (see DetectedClass), so
+   *  only empty bubbles reach here. */
+  contextOnly?: boolean;
   ocrText?: string; // Detected text from OCR
   isOcrLoading?: boolean; // Loading state for OCR
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
@@ -161,9 +163,11 @@ export interface Region {
    *  「涂白 text_free 并解冻」action, which is what makes its reverse
    *  (「再次冻结」) able to recognise its own output. */
   editorWhitedOut?: boolean;
-  /** Set when a completed AI-redrawn bubble (generationRegionSource='bubble')
-   *  fully contains this text region: the bubble's patch already wiped the
-   *  original text, so the region's base is clean. Effects:
+  /** LEGACY: set when a completed AI-redrawn bubble fully contains this text
+   *  region (the bubble's patch already wiped the original text, so the
+   *  region's base is clean). Bubble-outline redraw has been removed, so no
+   *  new region gets this flag — kept only so old persisted sessions still
+   *  composite correctly. Effects:
    *  - editor composites text ON TOP of the AI bubble patch (not the
    *    original crop) and skips erasure;
    *  - batch erase skips it; batch translation still runs but holds the
@@ -395,7 +399,6 @@ export interface AppConfig {
   detectionOffsetXPercent: number; // e.g. 0
   detectionOffsetYPercent: number; // e.g. 0
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
-  generationRegionSource: GenerationRegionSource; // Which detected class the AI redraw pipeline paints (default 'text')
   
   // Manga Module Settings (New Structure)
   enableMangaMode: boolean;        // Master switch

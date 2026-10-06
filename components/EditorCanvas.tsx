@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, Language, RestoreBox, GenerationRegionSource, RedrawIntent, ViewMode, isRegionPaintable, isWorkView } from '../types';
+import { UploadedImage, Region, Language, RestoreBox, RedrawIntent, ViewMode, isRegionPaintable, isWorkView } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
@@ -38,10 +38,9 @@ interface EditorCanvasProps {
   onSelectRestoreRegion?: (regionId: string | null) => void;
   showRetryDiagnostics?: boolean;
   /** Editor workflow shows text regions (contextOnly bubbles hidden);
-   *  generation workflows show the paintable classes selected by
-   *  generationRegionSource. Default 'editor' preserves historical behavior. */
+   *  generation workflows show the paintable (text) regions.
+   *  Default 'editor' preserves historical behavior. */
   regionDisplay?: 'editor' | 'generation';
-  generationRegionSource?: GenerationRegionSource;
   /** 全局默认重绘场景：框没单独设过场景时，编辑器的显示态（已冻结/已擦除）按它判定。 */
   defaultRedrawIntent?: RedrawIntent;
   /**
@@ -106,7 +105,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     onSelectRestoreRegion,
     showRetryDiagnostics = false,
     regionDisplay = 'editor',
-    generationRegionSource = 'text',
     defaultRedrawIntent = 'translate',
     onStepSelectedFontSize,
     allowPatchOverflow = false,
@@ -756,12 +754,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
 
   // Which region boxes are drawn at all. Editor workflow: text regions
   // (bubble outlines stay hidden visual context). Generation workflows:
-  // only the paintable classes for the configured source — e.g. 'bubble'
-  // mode shows whole-bubble boxes as the working units and hides text boxes.
+  // only paintable regions (text boxes + manual).
   const isRegionVisible = (region: Region): boolean =>
     regionDisplay === 'editor'
       ? !region.contextOnly
-      : isRegionPaintable(region, generationRegionSource);
+      : isRegionPaintable(region);
 
   const imgW = image.originalWidth || 800;
   const imgH = image.originalHeight || 600;

@@ -137,7 +137,6 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
   detectionConfidenceThreshold: 30,
-  generationRegionSource: 'text', // 'text' = text_bubble+text_free; 'bubble' = whole bubble outlines+text_free
   
   // Manga Module Defaults
   enableMangaMode: false,
@@ -211,6 +210,10 @@ export function useConfig() {
         // The Enable Stream (Beta) switch is gone: chat/completions is always
         // requested non-streaming. Drop the dead key from stored configs.
         delete (migratedConfig as any).openaiStream;
+
+        // 「AI 重绘区域」（气泡框 / 文字框）选择器已移除：重绘管线固定只画
+        // 文字框（text_bubble + text_free）。丢弃存储里的死键。
+        delete (migratedConfig as any).generationRegionSource;
 
         
         // Ensure the OpenAI-compatible image endpoint mode exists.

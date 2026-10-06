@@ -243,10 +243,8 @@ export const findCoveringCompletedBubble = (
 /**
  * The `text_bubble` regions that sit inside `bubble`'s box (centre containment,
  * measurements taken from the bubble's anchor box when it has one — the anchor
- * is the geometry its patch was generated from). This is the reverse direction
- * of the AI pipeline's markBubbleContainedTexts (hooks/useImageProcessor.ts),
- * which walks bubble → children; both must agree on what "inside" means, so the
- * rule lives here once.
+ * is the geometry its patch was generated from). Shared by the editor's
+ * bubble ⇄ text status sync and reset, so they agree on what "inside" means.
  */
 export const findContainedTextRegions = (
   regions: readonly Region[],
@@ -268,19 +266,17 @@ export const findContainedTextRegions = (
 };
 
 /**
- * 气泡框 ⇄ 文字框共享完成状态 —— the two workflows edit DIFFERENT regions for
- * the same artwork (the editor typesets `text_bubble`, the AI-redraw pipeline
- * paints whole `bubble` outlines, see isRegionPaintable), so their `status`
- * fields used to disagree: a bubble read 未完成 while the text box inside it was
- * already typeset. The bubble therefore now DERIVES its completion from its
- * children: 'completed' only when EVERY contained `text_bubble` is completed
- * ("全部完成才算完成"), back to 'pending' when one is reset. Because this is the
- * real field, the AI-redraw pipeline skips a bubble whose text is done instead
- * of repainting it.
+ * 气泡框 ⇄ 文字框共享完成状态 —— the editor typesets `text_bubble`, while a
+ * surviving `bubble` outline is a context-only marker for the same artwork, so
+ * their `status` fields used to disagree: a bubble read 未完成 while the text
+ * box inside it was already typeset. The bubble therefore now DERIVES its
+ * completion from its children: 'completed' only when EVERY contained
+ * `text_bubble` is completed ("全部完成才算完成"), back to 'pending' when one is
+ * reset.
  *
  * Deliberately conservative in three places:
  *  - a bubble holding NO detected text box is left untouched (nothing to share
- *    a state with — an empty bubble stays an ordinary AI-redraw target);
+ *    a state with);
  *  - a 'processing' bubble belongs to an in-flight run and is never touched;
  *  - a revert only applies to a DERIVED completion (no processedImageUrl of its
  *    own). A bubble carrying its real AI patch is never downgraded by a later
