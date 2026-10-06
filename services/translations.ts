@@ -196,6 +196,11 @@ export const translations = {
     editorRotationReset: "旋转归零",
     editorRotationMeasureTip: "两点测角：切到原图，沿文字阅读方向按住拖一条线（横排沿基线、竖排沿列），松手把角度填入旋转（Esc 取消）",
     editorRotationMeasuring: "测角中：沿文字阅读方向按住拖一条线（横排沿基线、竖排沿列），松手填入角度，Esc 取消",
+    editorRotationWheelHint: "悬停在这个框上：Shift+滚轮 微调角度（±5°，加 Alt 更精细）。",
+    editorFontSizeWheelHint: "悬停在这个框上：Ctrl+滚轮 直接调字号（±5）。",
+    editorWheelHintManual: "更多快捷键见",
+    editorWheelHintManualLink: "使用手册",
+    editorHintDismiss: "知道了，不再提示",
     editorTextColor: "字色",
     editorColorBlack: "黑字",
     editorColorWhite: "白字",
@@ -482,15 +487,17 @@ export const translations = {
     // --- HELP CONTENT ---
     helpTitle: "使用手册 & 技巧",
     helpSubtitle: "AI 重绘 · 手动修补工坊",
-    helpMoreSoon: "本期只收录「AI 重绘」与「手动修补工坊」两条主流程，编辑器与漫画工具稍后补齐。",
+    helpMoreSoon: "本期收录「AI 重绘」「手动修补工坊」两条主流程，外加「快捷键」一页；编辑器的完整教程稍后补齐。",
 
     // Tabs
     help_tab_ai: "AI 重绘",
     help_tab_wb: "手动修补工坊",
+    help_tab_keys: "快捷键",
 
     // Leads
     help_lead_ai: "把选区交给生图接口重画，AI 直接产出成品图。适合接口可用、想批量出图的场景。",
     help_lead_wb: "不接生图接口，改用外部 AI（网页版 Gemini、任意生图站）出图：工坊负责切片、补方、复制与回填。",
+    help_lead_keys: "键盘与鼠标手势一览。带「仅编辑器」的几条只在编辑器工作流生效，且多数要求光标正悬停在选中的框上。",
 
     // Group labels
     help_group_flow: "从零到一张成品",
@@ -498,6 +505,9 @@ export const translations = {
     help_group_wbFlow: "工作流程",
     help_group_wbParts: "面板上的每个东西",
     help_group_tips: "小技巧",
+    help_group_keysGeneral: "图片与图库",
+    help_group_keysCanvas: "画布",
+    help_group_keysEditor: "编辑器（嵌字）",
 
     // Content - AI Redraw
     help_ai_1_title: "导入图片",
@@ -576,6 +586,33 @@ export const translations = {
     help_wb_16_desc: "Firefox 或较老的浏览器会拒绝图文一起写剪贴板，此时会自动退化成只复制图片 —— 文字用旁边的「提示词」按钮单独复制。",
     help_wb_17_title: "整页一次处理更快",
     help_wb_17_desc: "要一次处理整页，就用「全图遮罩模式」：复制遮罩全图 → 外部出图 → 回来贴在「AI 全图结果」，所有框一起回填。",
+    // Content - Shortcuts
+    help_k1_keys: "↑ ↓ ← →",
+    help_k1_title: "切换图片",
+    help_k1_desc: "按图库顺序切到上一张 / 下一张，到头即止（不回绕）。",
+    help_k2_keys: "Ctrl + V",
+    help_k2_title: "把剪贴板里的图片加进来",
+    help_k2_desc: "在画布或侧栏按一次即可导入；在工坊的「回填区」聚焦后按，则是把外部 AI 出的图贴回那一格。",
+    help_k3_keys: "Delete / Backspace",
+    help_k3_title: "删除当前选中的框",
+    help_k3_desc: "光标不在输入框里时生效。",
+    help_k4_keys: "Ctrl + 滚轮",
+    help_k4_title: "缩放画布",
+    help_k4_desc: "以光标位置为中心缩放，不改动图片本身。编辑器里若光标正悬停在选中的框上，这个手势会变成「调字号」（见下）。",
+    help_k5_keys: "Alt / 中键 / 空格 + 拖",
+    help_k5_title: "平移画布",
+    help_k5_desc: "三种方式任选：Alt + 左键拖、鼠标中键拖、按住空格再左键拖（按住时空格光标变抓手）。",
+    help_k6_keys: "Esc",
+    help_k6_title: "取消 / 关闭",
+    help_k6_desc: "关闭使用手册与各类弹窗；「测角」进行中也可以按它退出。",
+    help_k7_keys: "Ctrl + 滚轮",
+    help_k7_title: "调字号（仅编辑器）",
+    help_k7_desc: "光标悬停在「当前选中的框」上时：一档滚轮 = ±5px，与右栏字号框的 ± 按钮同一步进。",
+    help_k8_keys: "Shift + 滚轮",
+    help_k8_title: "微调旋转角（仅编辑器）",
+    help_k8_desc: "光标悬停在「当前选中的框」上时：一档滚轮 = ±5°；同时按住 Alt = ±1°，用来精修。",
+    help_k9_title: "两点测角（仅编辑器）",
+    help_k9_desc: "右栏「旋转」一行点 ⌖ 后，沿原文字方向拖一条线，松手自动把角度填进旋转框；拖得太短视为误点，不会写入。",
   },
   en: {
     appTitle: "GenAI Patcher Pro",
@@ -771,6 +808,11 @@ export const translations = {
     editorRotationReset: "Reset rotation",
     editorRotationMeasureTip: "Measure angle: switches to the original view — drag a line along the reading direction (baseline for horizontal text, column for vertical), release to fill rotation (Esc to cancel)",
     editorRotationMeasuring: "Measuring: drag along the reading direction (baseline for horizontal, column for vertical), release to apply, Esc to cancel",
+    editorRotationWheelHint: "Hover this box: Shift+wheel fine-tunes the angle (±5°, hold Alt for finer steps).",
+    editorFontSizeWheelHint: "Hover this box: Ctrl+wheel steps the font size (±5).",
+    editorWheelHintManual: "More shortcuts in the",
+    editorWheelHintManualLink: "Guide",
+    editorHintDismiss: "Got it — don't show again",
     editorTextColor: "Color",
     editorColorBlack: "Black",
     editorColorWhite: "White",
@@ -1056,15 +1098,17 @@ export const translations = {
     // --- HELP CONTENT ---
     helpTitle: "Guide & Tricks",
     helpSubtitle: "AI Redraw · Patch Workbench",
-    helpMoreSoon: "This edition covers the two main flows — AI Redraw and the Patch Workbench. The editor and the manga toolbox will follow.",
+    helpMoreSoon: "This edition covers the two main flows — AI Redraw and the Patch Workbench — plus a Shortcuts page. The editor's full walkthrough will follow.",
 
     // Tabs
     help_tab_ai: "AI Redraw",
     help_tab_wb: "Patch Workbench",
+    help_tab_keys: "Shortcuts",
 
     // Leads
     help_lead_ai: "Hand your selections to a generation endpoint and let it paint the finished image. Best when the API works and you want batches.",
     help_lead_wb: "No generation API needed — draw with an external AI (web Gemini, any image site) while the workbench crops, pads, copies and pastes the pixels.",
+    help_lead_keys: "Keyboard and mouse gestures in one place. The rows marked \"editor only\" apply to the editor workflow, and most of them need the cursor over the selected box.",
 
     // Group labels
     help_group_flow: "From zero to a finished image",
@@ -1072,6 +1116,9 @@ export const translations = {
     help_group_wbFlow: "The flow",
     help_group_wbParts: "Every part of the panel",
     help_group_tips: "Tips",
+    help_group_keysGeneral: "Images & gallery",
+    help_group_keysCanvas: "Canvas",
+    help_group_keysEditor: "Editor (typesetting)",
 
     // Content - AI Redraw
     help_ai_1_title: "Upload",
@@ -1150,6 +1197,33 @@ export const translations = {
     help_wb_16_desc: "Firefox and older browsers reject combined clipboard writes; the app then falls back to image only — copy the text with the neighbouring 'Prompt' button.",
     help_wb_17_title: "Batch pasting is faster",
     help_wb_17_desc: "To handle a whole page at once, enable Full-image masking: copy the masked page, generate outside, then paste into 'AI full-image result' to fill every box in one go.",
+    // Content - Shortcuts
+    help_k1_keys: "↑ ↓ ← →",
+    help_k1_title: "Change image",
+    help_k1_desc: "Previous / next in gallery order — stops at the ends.",
+    help_k2_keys: "Ctrl + V",
+    help_k2_title: "Add an image from the clipboard",
+    help_k2_desc: "Press on the canvas or the sidebar to import; with the workbench's paste zone focused it pastes the external AI result back into that crop instead.",
+    help_k3_keys: "Delete / Backspace",
+    help_k3_title: "Delete the selected box",
+    help_k3_desc: "Works as long as the focus is not inside a text field.",
+    help_k4_keys: "Ctrl + Wheel",
+    help_k4_title: "Zoom the canvas",
+    help_k4_desc: "Zooms around the cursor without touching the image itself. In the editor, if the cursor is over the selected box this gesture becomes Font size instead (see below).",
+    help_k5_keys: "Alt / Middle / Space + drag",
+    help_k5_title: "Pan the canvas",
+    help_k5_desc: "Any of the three: Alt + left-drag, middle-button drag, or hold Space and left-drag (holding Space turns the cursor into a grab hand).",
+    help_k6_keys: "Esc",
+    help_k6_title: "Cancel / close",
+    help_k6_desc: "Closes the guide and the dialogs; also leaves the angle-measuring mode.",
+    help_k7_keys: "Ctrl + Wheel",
+    help_k7_title: "Font size (editor only)",
+    help_k7_desc: "With the cursor over the selected box: one wheel notch = ±5px — the same step as the dock's ± buttons.",
+    help_k8_keys: "Shift + Wheel",
+    help_k8_title: "Fine-tune the angle (editor only)",
+    help_k8_desc: "With the cursor over the selected box: one wheel notch = ±5°; hold Alt as well for ±1°.",
+    help_k9_title: "Measure an angle from two points (editor only)",
+    help_k9_desc: "Click ⌖ in the dock's Rotate row, then drag a line along the original lettering — releasing fills the angle in. Too short a drag counts as a mis-click.",
   }
 };
 

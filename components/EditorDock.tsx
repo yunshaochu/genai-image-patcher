@@ -81,6 +81,8 @@ interface EditorDockProps {
   /** 两点测角模式：true = 画布正在等用户沿原文斜字拖线（见 EditorCanvas）。 */
   angleMeasureArmed?: boolean;
   onToggleAngleMeasure?: (armed: boolean) => void;
+  /** 打开使用手册（一次性手势提示里的「使用手册」链接用）。 */
+  onOpenHelp?: () => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -115,6 +117,63 @@ const loadBrushColor = (): string => {
     return BRUSH_COLOR_DEFAULT;
   }
 };
+
+// 悬停选中框 + Shift/Ctrl + 滚轮 这两条手势没有任何可点的入口，只靠 tooltip
+// 基本不会被看见。做法：用户**第一次真用"笨办法"改了这个样式**（转角 / 定字号）
+// 时，在那一行下面冒出一条一次性提示（此时他正需要它），点 × 后跨会话记住，永不
+// 再出现 —— 既不长期占版面，也不会错过需要它的那一刻。
+const ROTATION_HINT_STORAGE_KEY = 'genai_patcher_editor_rotation_hint_v1';
+const FONT_SIZE_HINT_STORAGE_KEY = 'genai_patcher_editor_fontsize_hint_v1';
+
+/** 一次性提示是否已被关掉（缺失 / 读不到一律按"还要显示"处理）。 */
+const loadHintDismissed = (key: string): boolean => {
+  try { return localStorage.getItem(key) === '1'; } catch { return false; }
+};
+
+const persistHintDismissed = (key: string) => {
+  try { localStorage.setItem(key, '1'); } catch { /* ignore — private mode */ }
+};
+
+/**
+ * 一次性手势提示块：主文案 + 一条指向使用手册的链接 + ×。
+ * 就地出现在刚被"手工"改过的那一行下面（见 ROTATION_/FONT_SIZE_HINT_ 两个键），
+ * 关掉后由调用方落盘，永不再出现。
+ */
+const GestureHint: React.FC<{
+  lang: 'zh' | 'en';
+  /** 主文案，调用方传已翻译好的串。 */
+  text: string;
+  onDismiss: () => void;
+  /** 打开使用手册的「快捷键」一页；不给则只显示文字。 */
+  onOpenManual?: () => void;
+}> = ({ lang, text, onDismiss, onOpenManual }) => (
+  <div className="flex items-start gap-1.5 p-1.5 rounded-lg bg-skin-primary/10 border border-skin-primary/30 text-[9px] leading-snug text-skin-text">
+    <svg className="w-3 h-3 shrink-0 mt-px text-skin-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <rect x="7" y="2" width="10" height="20" rx="5" strokeWidth="2" />
+      <path strokeLinecap="round" strokeWidth="2" d="M12 6.5v3.5" />
+    </svg>
+    <span className="flex-1">
+      {text}{' '}
+      {t(lang, 'editorWheelHintManual')}{' '}
+      <button
+        type="button"
+        onClick={onOpenManual}
+        disabled={!onOpenManual}
+        className="underline decoration-dotted underline-offset-2 hover:text-skin-primary disabled:no-underline disabled:opacity-60"
+      >
+        {t(lang, 'editorWheelHintManualLink')}
+      </button>
+    </span>
+    <button
+      onClick={onDismiss}
+      title={t(lang, 'editorHintDismiss')}
+      aria-label={t(lang, 'editorHintDismiss')}
+      className="shrink-0 -my-0.5 -mr-0.5 p-0.5 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 6l12 12M18 6L6 18" /></svg>
+    </button>
+  </div>
+);
 
 const classBadge = (region: Region, lang: 'zh' | 'en'): string => {
   if (region.detectedClass === 'text_bubble') return t(lang, 'editorClassBubble');
@@ -718,7 +777,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
   onUndoFreezeFix, freezeUndoDepth, onRevealAiBase,
   onDownload, onApplyAsOriginal, onReorderRegion,
-  angleMeasureArmed = false, onToggleAngleMeasure,
+  angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -739,6 +798,17 @@ const EditorDock: React.FC<EditorDockProps> = ({
    *  — same guard as the gallery's 清空 button, since a mis-click there rewrites
    *  every page at once. */
   const [whitenConfirm, setWhitenConfirm] = useState(false);
+  /** 滚轮微调手势的一次性提示是否已被关掉（跨会话记住，两条手势各自独立）。 */
+  const [rotationHintDismissed, setRotationHintDismissed] = useState(() => loadHintDismissed(ROTATION_HINT_STORAGE_KEY));
+  const [fontSizeHintDismissed, setFontSizeHintDismissed] = useState(() => loadHintDismissed(FONT_SIZE_HINT_STORAGE_KEY));
+  const dismissRotationHint = useCallback(() => {
+    setRotationHintDismissed(true);
+    persistHintDismissed(ROTATION_HINT_STORAGE_KEY);
+  }, []);
+  const dismissFontSizeHint = useCallback(() => {
+    setFontSizeHintDismissed(true);
+    persistHintDismissed(FONT_SIZE_HINT_STORAGE_KEY);
+  }, []);
 
   useEffect(() => {
     try { localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? '1' : '0'); } catch { /* ignore */ }
@@ -1285,6 +1355,17 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         </div>
 
+        {/* 字号手势的一次性提示：用户第一次把字号改成了显式值（= 他接管了字号）
+            才出现 —— 与「转过角度才提示旋转」同一条规则。 */}
+        {!regionEditLocked && !fontSizeHintDismissed && region.editorStyle?.fontSize !== undefined && (
+          <GestureHint
+            lang={lang}
+            text={t(lang, 'editorFontSizeWheelHint')}
+            onDismiss={dismissFontSizeHint}
+            onOpenManual={onOpenHelp}
+          />
+        )}
+
         {/* Rotation: 整块文字绕框中心旋转。滑块只做 ±45°（斜排原文/艺术字的常见
             角度都在这区间内，1px≈0.7° 才拖得准）；更大的角度用数字框输（±180°）。
             0 = 不旋转，行为与以前完全一致。 */}
@@ -1356,6 +1437,15 @@ const EditorDock: React.FC<EditorDockProps> = ({
         </div>
         {angleMeasureArmed && (
           <div className="text-[9px] text-skin-primary leading-snug">{t(lang, 'editorRotationMeasuring')}</div>
+        )}
+        {/* 旋转手势的一次性提示：用户第一次真的转了角度才出现（此时他正需要它）。 */}
+        {!angleMeasureArmed && !regionEditLocked && !rotationHintDismissed && rotation !== 0 && (
+          <GestureHint
+            lang={lang}
+            text={t(lang, 'editorRotationWheelHint')}
+            onDismiss={dismissRotationHint}
+            onOpenManual={onOpenHelp}
+          />
         )}
 
         {/* Text colour: auto (AI-chosen / measured ink) or manual override.

@@ -13,6 +13,9 @@ type TKey = keyof typeof translations['en'];
 interface HelpItem {
     step?: number;
     icon?: string;
+    /** 快捷键组合（翻译键：中文写「滚轮」、英文写 Wheel）。渲染成 kbd 徽标，
+     *  代替左侧的序号/图标徽标 —— 快捷键一页要读起来像一张速查表。 */
+    keysKey?: TKey;
     titleKey: TKey;
     descKey: TKey;
 }
@@ -31,9 +34,12 @@ interface HelpTopic {
 }
 
 /**
- * Only the two flows that exist as first-class workflows are documented here:
- * AI Redraw (mode 'api') and the Patch Workbench (mode 'manual'). The editor
- * and the manga toolbox are deliberately out of scope for this edition.
+ * Documented here: the two flows that exist as first-class workflows — AI
+ * Redraw (mode 'api') and the Patch Workbench (mode 'manual') — plus a
+ * shortcuts sheet. The editor gets no walkthrough of its own yet, but its
+ * gestures DO belong to the shortcuts page: Ctrl/Shift+wheel have no visible
+ * entry point anywhere else, so this is the only place they are written down.
+ * The manga toolbox stays out of scope for this edition.
  */
 const TOPICS: HelpTopic[] = [
     {
@@ -115,15 +121,52 @@ const TOPICS: HelpTopic[] = [
             },
         ],
     },
+    {
+        id: 'shortcuts',
+        icon: '⌨️',
+        labelKey: 'help_tab_keys',
+        leadKey: 'help_lead_keys',
+        groups: [
+            {
+                labelKey: 'help_group_keysGeneral',
+                items: [
+                    { keysKey: 'help_k1_keys', titleKey: 'help_k1_title', descKey: 'help_k1_desc' },
+                    { keysKey: 'help_k2_keys', titleKey: 'help_k2_title', descKey: 'help_k2_desc' },
+                    { keysKey: 'help_k3_keys', titleKey: 'help_k3_title', descKey: 'help_k3_desc' },
+                ],
+            },
+            {
+                labelKey: 'help_group_keysCanvas',
+                items: [
+                    { keysKey: 'help_k4_keys', titleKey: 'help_k4_title', descKey: 'help_k4_desc' },
+                    { keysKey: 'help_k5_keys', titleKey: 'help_k5_title', descKey: 'help_k5_desc' },
+                    { keysKey: 'help_k6_keys', titleKey: 'help_k6_title', descKey: 'help_k6_desc' },
+                ],
+            },
+            {
+                labelKey: 'help_group_keysEditor',
+                items: [
+                    { keysKey: 'help_k7_keys', titleKey: 'help_k7_title', descKey: 'help_k7_desc' },
+                    { keysKey: 'help_k8_keys', titleKey: 'help_k8_title', descKey: 'help_k8_desc' },
+                    { icon: '📐', titleKey: 'help_k9_title', descKey: 'help_k9_desc' },
+                ],
+            },
+        ],
+    },
 ];
 
 interface HelpModalProps {
     onClose: () => void;
     language: Language;
+    /** 打开的初始页（编辑器里的「使用手册」链接直接落到「快捷键」一页）。
+     *  不给 / 给了不存在的 id 就停在第一页。 */
+    initialTopicId?: string;
 }
 
-const HelpModal: React.FC<HelpModalProps> = ({ onClose, language }) => {
-    const [activeId, setActiveId] = useState(TOPICS[0].id);
+const HelpModal: React.FC<HelpModalProps> = ({ onClose, language, initialTopicId }) => {
+    const [activeId, setActiveId] = useState(
+        () => (initialTopicId && TOPICS.some(topic => topic.id === initialTopicId) ? initialTopicId : TOPICS[0].id)
+    );
     const active = TOPICS.find(topic => topic.id === activeId) ?? TOPICS[0];
 
     // Esc closes the sheet — the panel is tall enough that hunting for the
@@ -215,11 +258,19 @@ const HelpModal: React.FC<HelpModalProps> = ({ onClose, language }) => {
                                             key={item.titleKey}
                                             className="flex gap-3 rounded-xl border border-skin-border/60 bg-skin-fill/25 p-3 transition-colors hover:border-skin-primary/40 hover:bg-skin-fill/60"
                                         >
-                                            <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center text-xs leading-none font-bold ${
-                                                item.step ? 'bg-skin-primary text-skin-primary-fg' : 'bg-skin-primary/10 text-skin-primary'
-                                            }`}>
-                                                {item.step ?? item.icon}
-                                            </span>
+                                            {item.keysKey ? (
+                                                // Shortcut rows lead with the key combo instead of a
+                                                // number/emoji badge, so the column reads as a cheat sheet.
+                                                <kbd className="shrink-0 self-start px-2 py-1 rounded-lg border border-skin-border bg-skin-surface font-mono text-[10px] font-bold text-skin-primary whitespace-nowrap">
+                                                    {t(language, item.keysKey)}
+                                                </kbd>
+                                            ) : (
+                                                <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center text-xs leading-none font-bold ${
+                                                    item.step ? 'bg-skin-primary text-skin-primary-fg' : 'bg-skin-primary/10 text-skin-primary'
+                                                }`}>
+                                                    {item.step ?? item.icon}
+                                                </span>
+                                            )}
                                             <div className="min-w-0">
                                                 <h5 className="text-xs font-bold text-skin-text leading-snug">{t(language, item.titleKey)}</h5>
                                                 <p className="mt-1 text-[11px] leading-relaxed text-skin-muted whitespace-pre-line">

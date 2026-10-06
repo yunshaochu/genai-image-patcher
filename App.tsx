@@ -136,6 +136,8 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  /** 使用手册打开的页；undefined = 第一页（侧栏的 ? 按钮不做深链）。 */
+  const [helpTopic, setHelpTopic] = useState<string | undefined>(undefined);
   const [showPayloadInspector, setShowPayloadInspector] = useState(false);
   const [restoreMode, setRestoreMode] = useState(false);
   const [restoreBrushMode, setRestoreBrushMode] = useState(false);
@@ -864,7 +866,9 @@ export default function App() {
 
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
-  const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
+  const sidebarOnOpenHelp = useCallback(() => { setHelpTopic(undefined); setShowHelp(true); }, []);
+  /** 编辑器里的一次性手势提示 → 直接翻到「快捷键」一页（它就是为这个入口写的）。 */
+  const editorOnOpenHelp = useCallback(() => { setHelpTopic('shortcuts'); setShowHelp(true); }, []);
   const sidebarOnOpenPayloadInspector = useCallback(() => setShowPayloadInspector(true), []);
 
   // Temporary (companion to the editorPerf pipeline timing): attributes the
@@ -1160,6 +1164,7 @@ export default function App() {
             onReorderRegion={(regionId, dir) => editorOnReorderRegion(regionId, dir)}
             angleMeasureArmed={angleMeasureArmed}
             onToggleAngleMeasure={handleArmAngleMeasure}
+            onOpenHelp={editorOnOpenHelp}
           />
         )}
 
@@ -1209,7 +1214,7 @@ export default function App() {
       )}
       {showHelp && (
           <Suspense fallback={null}>
-              <HelpModal onClose={() => setShowHelp(false)} language={config.language} />
+              <HelpModal onClose={() => setShowHelp(false)} language={config.language} initialTopicId={helpTopic} />
           </Suspense>
       )}
       {showPayloadInspector && (
