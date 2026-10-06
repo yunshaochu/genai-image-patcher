@@ -17,6 +17,22 @@ const canvasToObjectURL = (canvas: HTMLCanvasElement, type: string = 'image/png'
     });
 };
 
+/**
+ * 拖线测角：线段 (ax,ay)→(bx,by) 对应的 rotation（度，顺时针为正 —— 图像坐标
+ * y 向下，atan2 天然匹配 rotation 定义）。用户沿文字的**阅读方向**拖线：
+ * 横排沿线 ≈ 基线（≈0°），竖排沿线 ≈ 列方向（≈90°）；rotation 是相对文字
+ * 固有方向的倾角，所以竖排要减 90°（不减的话字跟线正好垂直）。
+ * 归一化到 (-90, 90]：反方向拖得到 +180° 的等效角（字倒过来），几乎从来不是
+ * 意图；真有 >90° 的需求可以在面板上手输。返回 0.1° 取整。
+ */
+const measureLineAngle = (ax: number, ay: number, bx: number, by: number, verticalText = false): number => {
+    let deg = (Math.atan2(by - ay, bx - ax) * 180) / Math.PI;
+    if (verticalText) deg -= 90;
+    if (deg > 90) deg -= 180;
+    else if (deg <= -90) deg += 180;
+    return Math.round(deg * 10) / 10;
+};
+
 interface EditorCanvasProps {
   image: UploadedImage;
   onUpdateRegions: (imageId: string, regions: Region[]) => void;
@@ -55,6 +71,19 @@ interface EditorCanvasProps {
    * steps. Undefined in the other workflows.
    */
   onStepSelectedRotation?: (delta: number) => void;
+  /**
+   * Editor workflow only. 两点（拖线）测角模式：armed 时框层不再响应鼠标
+   * （框仍可看见，但拖拽/缩放/选中全部让位），用户在画布上按住左键沿原文
+   * 斜字拖出一条线，松手时把线的角度（度，顺时针为正，归一化到 (-90, 90]）
+   * 经 onAngleMeasureComplete 提交给 SELECTED 框；Esc 取消。拖得太短
+   * （<6 屏幕 px）视为误点：不提交、保持 armed 让用户重拖。
+   */
+  angleMeasureMode?: boolean;
+  onAngleMeasureComplete?: (angle: number) => void;
+  onAngleMeasureCancel?: () => void;
+  /** 全局「默认竖排」设置 —— 测角时解析选中框的实际排版方向要用（与
+   *  textLayout.resolveStyle 的自动规则同一来源）。 */
+  preferVerticalDefault?: boolean;
   /**
    * Editor workflow only. When true, patch overlays may carry an overflow
    * margin (typeset text spilling out of the box) drawn UNCLIPPED so the
@@ -111,6 +140,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     defaultRedrawIntent = 'translate',
     onStepSelectedFontSize,
     onStepSelectedRotation,
+    angleMeasureMode = false,
+    onAngleMeasureComplete,
+    onAngleMeasureCancel,
+    preferVerticalDefault = false,
     allowPatchOverflow = false,
     onResetRegion,
 }: EditorCanvasProps) => {
@@ -569,6 +602,79 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     return { x: Math.max(0, Math.min(100, rx)), y: Math.max(0, Math.min(100, ry)) };
   }, [getRelativeCoords]);
 
+  // --- 拖线测角（两点测角）：沿原文斜字拖一条线，线的角度 = rotation ---
+  const imgW = image.originalWidth || 800;
+  const imgH = image.originalHeight || 600;
+
+  /** 进行中的拖线（图像像素坐标；null = 还没按下）。 */
+  const [angleDrag, setAngleDrag] = useState<{ ax: number; ay: number; bx: number; by: number } | null>(null);
+
+  const toImagePx = useCallback((clientX: number, clientY: number) => {
+    // getRelativeCoords 走 getBoundingClientRect，缩放免疫；角度必须在
+    // 图像像素空间算（% 空间 x/y 不同刻度，atan2 会歪）。
+    const c = getRelativeCoords(clientX, clientY);
+    return { x: (c.x / 100) * imgW, y: (c.y / 100) * imgH };
+  }, [getRelativeCoords, imgW, imgH]);
+
+  const handleAngleMeasureMouseDown = (e: React.MouseEvent) => {
+    if (!angleMeasureMode) return;
+    // Alt / Space 按住 = 平移画布，让位给 viewport 层的 pan。
+    if (e.button !== 0 || e.altKey || spaceHeldRef.current) return;
+    e.preventDefault();
+    const p = toImagePx(e.clientX, e.clientY);
+    setAngleDrag({ ax: p.x, ay: p.y, bx: p.x, by: p.y });
+  };
+
+  // 测角提交对象（选中框）实际采用的排版方向：显式 isVertical 优先，否则按
+  // textLayout.resolveStyle 的自动规则（全局默认竖排，或框高 > 框宽 × 1.5）。
+  // 竖排时拖线沿的是列方向（≈90°），rotation 要减 90°（见 measureLineAngle）。
+  const measureRegion = angleMeasureMode
+    ? image.regions.find(r => r.id === selectedRegionId)
+    : undefined;
+  const measureVertical = !!measureRegion && (
+    measureRegion.editorStyle?.isVertical ??
+    (preferVerticalDefault || ((measureRegion.height / 100) * imgH) > ((measureRegion.width / 100) * imgW) * 1.5)
+  );
+
+  // 拖动 / 松手走 window 监听（指针可能甩出画布）—— 与 restore 框拉拽同一模式。
+  useEffect(() => {
+    if (!angleMeasureMode || !angleDrag) return;
+    const handleMove = (e: MouseEvent) => {
+      const p = toImagePx(e.clientX, e.clientY);
+      setAngleDrag(d => (d ? { ...d, bx: p.x, by: p.y } : d));
+    };
+    const handleUp = (e: MouseEvent) => {
+      const p = toImagePx(e.clientX, e.clientY);
+      // 太短 = 误点：不提交、保持 armed（用户在原位置重拖即可）。
+      if (Math.hypot(p.x - angleDrag.ax, p.y - angleDrag.ay) * zoom >= 6) {
+        onAngleMeasureComplete?.(measureLineAngle(angleDrag.ax, angleDrag.ay, p.x, p.y, measureVertical));
+      }
+      setAngleDrag(null);
+    };
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+    };
+  }, [angleMeasureMode, angleDrag, toImagePx, zoom, onAngleMeasureComplete, measureVertical]);
+
+  // Esc 取消测角（输入框里的 Esc 不抢）。
+  useEffect(() => {
+    if (!angleMeasureMode) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      onAngleMeasureCancel?.();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [angleMeasureMode, onAngleMeasureCancel]);
+
+  // 解除 armed 时清掉半截拖拽（Esc、切视图、换图等外部路径都会走这里）。
+  useEffect(() => { if (!angleMeasureMode) setAngleDrag(null); }, [angleMeasureMode]);
+
   // --- Region actions ---
   const removeRegion = (regionId: string) => {
     if (disabled) return;
@@ -782,9 +888,6 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
       ? !region.contextOnly
       : isRegionPaintable(region);
 
-  const imgW = image.originalWidth || 800;
-  const imgH = image.originalHeight || 600;
-
   // Zoom compensation: inverse scale factor so overlay UI elements maintain
   // consistent screen-pixel size regardless of zoom level.
   const invZoom = 1 / zoom;
@@ -814,17 +917,21 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
         <div
           ref={containerRef}
           className={`absolute shadow-xl ${boxesInteractive && !restoreMode ? '' : 'cursor-default'}`}
-          onMouseDown={isRestoreActive ? handleRestoreContainerMouseDown : (e) => {
-            // Block left-click background interaction when panning with space or alt
-            if (e.button === 0 && (e.altKey || spaceHeldRef.current)) return;
-            handleBackgroundMouseDown(e);
-          }}
+          onMouseDown={
+            isRestoreActive ? handleRestoreContainerMouseDown
+            : angleMeasureMode ? handleAngleMeasureMouseDown
+            : (e) => {
+              // Block left-click background interaction when panning with space or alt
+              if (e.button === 0 && (e.altKey || spaceHeldRef.current)) return;
+              handleBackgroundMouseDown(e);
+            }
+          }
           style={{
             width: imgW,
             height: imgH,
             transformOrigin: '0 0',
             transform: `translate(${(vpW - imgW * zoom) / 2 + panX}px, ${(vpH - imgH * zoom) / 2 + panY}px) scale(${zoom})`,
-            cursor: isRestoreActive ? 'crosshair' : (boxesInteractive && interaction.type === 'drawing' ? 'crosshair' : 'default'),
+            cursor: isRestoreActive || angleMeasureMode ? 'crosshair' : (boxesInteractive && interaction.type === 'drawing' ? 'crosshair' : 'default'),
             visibility: isZoomReady ? 'visible' : 'hidden',
           }}
         >
@@ -1053,7 +1160,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                   height: `${height}%`,
                   transition: isManipulating ? 'none' : undefined,
                   cursor: boxesInteractive || isRestoreActive ? cursorStyle : 'default',
-                  overflow: (isRestoreActive || !boxesInteractive) ? 'hidden' : 'visible'
+                  overflow: (isRestoreActive || !boxesInteractive) ? 'hidden' : 'visible',
+                  // 测角模式：框仍可见，但拖拽/缩放/选中全部让位给拖线（mousedown
+                  // 穿透到容器，由测角手势接管；提交对象在 armed 时就已锁定）。
+                  pointerEvents: angleMeasureMode ? 'none' : undefined,
                 }}
               >
                 {/* RESTORE MODE: Overlay on selected region */}
@@ -1238,6 +1348,31 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               </div>
             );
           })}
+
+          {/* 拖线测角 overlay：A·B 两点 + 虚线 + 实时角度。线宽/字号按 1/zoom
+              补偿，屏幕上保持恒定粗细；角度显示的就是松手会提交的归一化值。 */}
+          {angleMeasureMode && angleDrag && (
+            <svg
+              className="absolute inset-0 w-full h-full pointer-events-none z-50 text-skin-primary"
+              viewBox={`0 0 ${imgW} ${imgH}`}
+              style={{ overflow: 'visible' }}
+            >
+              <line
+                x1={angleDrag.ax} y1={angleDrag.ay} x2={angleDrag.bx} y2={angleDrag.by}
+                stroke="currentColor" strokeWidth={2 * invZoom}
+                strokeDasharray={`${7 * invZoom} ${5 * invZoom}`} strokeLinecap="round"
+              />
+              <circle cx={angleDrag.ax} cy={angleDrag.ay} r={3.5 * invZoom} fill="currentColor" />
+              <circle cx={angleDrag.bx} cy={angleDrag.by} r={3.5 * invZoom} fill="currentColor" />
+              <text
+                x={angleDrag.bx + 10 * invZoom} y={angleDrag.by - 8 * invZoom}
+                fontSize={13 * invZoom} fontWeight={700} fill="currentColor"
+                stroke="#ffffff" strokeWidth={3 * invZoom} style={{ paintOrder: 'stroke' }}
+              >
+                {measureLineAngle(angleDrag.ax, angleDrag.ay, angleDrag.bx, angleDrag.by, measureVertical)}°
+              </text>
+            </svg>
+          )}
 
           {/* Drawing preview rectangle */}
           {boxesInteractive && interaction.type === 'drawing' && interaction.currentRect && !restoreMode && (

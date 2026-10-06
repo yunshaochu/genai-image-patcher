@@ -78,6 +78,9 @@ interface EditorDockProps {
    * 贴图部分重叠时才看得出差别：编辑画布与拼接都按数组顺序绘制。
    */
   onReorderRegion: (regionId: string, dir: LayerDirection) => void;
+  /** 两点测角模式：true = 画布正在等用户沿原文斜字拖线（见 EditorCanvas）。 */
+  angleMeasureArmed?: boolean;
+  onToggleAngleMeasure?: (armed: boolean) => void;
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -715,6 +718,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
   onUndoFreezeFix, freezeUndoDepth, onRevealAiBase,
   onDownload, onApplyAsOriginal, onReorderRegion,
+  angleMeasureArmed = false, onToggleAngleMeasure,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -1340,7 +1344,19 @@ const EditorDock: React.FC<EditorDockProps> = ({
           >
             <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
           </button>
+          {/* 两点测角：armed 时画布等用户沿原文斜字拖线（原图视图，Esc 取消）。 */}
+          <button
+            onClick={() => onToggleAngleMeasure?.(!angleMeasureArmed)}
+            disabled={regionEditLocked}
+            title={t(lang, 'editorRotationMeasureTip')}
+            className={`shrink-0 p-1 rounded transition-colors disabled:opacity-30 ${angleMeasureArmed ? 'bg-skin-primary text-skin-primary-fg' : 'text-skin-muted hover:text-skin-primary hover:bg-skin-fill'}`}
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth="2" d="M4 20L20 4"/><circle cx="4" cy="20" r="2.2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2.2" fill="currentColor" stroke="none"/></svg>
+          </button>
         </div>
+        {angleMeasureArmed && (
+          <div className="text-[9px] text-skin-primary leading-snug">{t(lang, 'editorRotationMeasuring')}</div>
+        )}
 
         {/* Text colour: auto (AI-chosen / measured ink) or manual override.
             The outline auto-derives as the opposite colour and its width

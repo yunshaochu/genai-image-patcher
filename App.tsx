@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, workViewOf, clampRedrawIntent, effectiveIntentOf } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, ViewMode, workViewOf, clampRedrawIntent, effectiveIntentOf } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
@@ -820,6 +820,48 @@ export default function App() {
       );
   }, [selectedImage, selectedRegionId, updateEditorRegion]);
 
+  // 两点（拖线）测角：armed 时画布进入测角模式，沿原文斜字拖一条线定 rotation
+  // （交互细节见 EditorCanvas 的 angleMeasureMode）。
+  const [angleMeasureArmed, setAngleMeasureArmed] = useState(false);
+  /** 进入测角前的视图 —— armed 时强制切到原图视图，退出后恢复。 */
+  const angleMeasurePrevViewRef = useRef<ViewMode | null>(null);
+
+  // 进入/退出测角模式。原文字在嵌字视图已被擦除，测角必须对着原图，所以进入
+  // 时切到「原图」、退出后切回用户之前的视图（本来就是原图则不折腾）。
+  const handleArmAngleMeasure = useCallback((armed: boolean) => {
+      if (armed) {
+          angleMeasurePrevViewRef.current = viewMode;
+          if (viewMode !== 'original') setViewMode('original');
+      } else {
+          const prev = angleMeasurePrevViewRef.current;
+          angleMeasurePrevViewRef.current = null;
+          if (prev && prev !== 'original') setViewMode(prev);
+      }
+      setAngleMeasureArmed(armed);
+  }, [viewMode, setViewMode]);
+
+  const handleAngleMeasureComplete = useCallback((angle: number) => {
+      if (selectedImage && selectedRegionId) {
+          updateEditorRegion(
+              selectedImage.id,
+              selectedRegionId,
+              { editorStyle: { rotation: angle } },
+              { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+          );
+      }
+      handleArmAngleMeasure(false);
+  }, [selectedImage, selectedRegionId, updateEditorRegion, handleArmAngleMeasure]);
+
+  const handleAngleMeasureCancel = useCallback(() => handleArmAngleMeasure(false), [handleArmAngleMeasure]);
+
+  // 测角只在「原图视图 + 选中框仍存在」时成立；用户中途切视图 / 换图 / 丢选中
+  // → 自动取消（armed 时视图已被我们锁在 original，这里的偏离一定是用户主动的）。
+  useEffect(() => {
+      if (!angleMeasureArmed) return;
+      const regionExists = selectedImage?.regions.some(r => r.id === selectedRegionId);
+      if (viewMode !== 'original' || !regionExists) handleArmAngleMeasure(false);
+  }, [angleMeasureArmed, viewMode, selectedImage, selectedRegionId, handleArmAngleMeasure]);
+
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
@@ -1048,6 +1090,11 @@ export default function App() {
                     // Shift+wheel = 旋转 ±5°（Alt 加持 = ±1°）。
                     onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
                     onStepSelectedRotation={isEditorMode && viewMode === 'edit' ? editorOnStepRotation : undefined}
+                    // 两点测角：仅编辑器工作流；armed 时强制在原图视图（handleArmAngleMeasure 保证）。
+                    angleMeasureMode={isEditorMode && angleMeasureArmed}
+                    onAngleMeasureComplete={handleAngleMeasureComplete}
+                    onAngleMeasureCancel={handleAngleMeasureCancel}
+                    preferVerticalDefault={isEditorMode ? !!config.enableVerticalTextDefault : undefined}
                 />
                 </Profiler>
               )}
@@ -1111,6 +1158,8 @@ export default function App() {
             onDownload={handleDownload}
             onApplyAsOriginal={handleApplyAsOriginalWrapper}
             onReorderRegion={(regionId, dir) => editorOnReorderRegion(regionId, dir)}
+            angleMeasureArmed={angleMeasureArmed}
+            onToggleAngleMeasure={handleArmAngleMeasure}
           />
         )}
 
