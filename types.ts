@@ -44,7 +44,7 @@ export const isRegionPaintable = (
  * Per-region text style used by the in-place manga text editor.
  * color/outline are written by the AI colour module (translation) and the
  * dock 字色 toggle; fontFamily is the dock 字体 override (see
- * services/fontService.ts); rotation remains reserved for a future UI.
+ * services/fontService.ts); rotation is the dock 旋转 control (degrees, CW).
  */
 export interface EditorTextStyle {
   fontSize?: number;      // px; undefined = auto-fit to the region box
@@ -60,7 +60,10 @@ export interface EditorTextStyle {
   outlineWidth?: number;  // default: auto (fontSize×0.12) when color is explicit, else 0
   isBold?: boolean;       // reserved, default true
   fontFamily?: string;    // this region's font stack; undefined = AppConfig.editorFontFamily (global default)
-  rotation?: number;      // reserved, default 0
+  /** 整块文字的旋转角度（度，顺时针为正）。0/undefined = 不旋转。
+   *  非 0 时文字块以框中心为轴旋转，并改为在框内双向居中（横排平时是靠左的），
+   *  这样旋转后溢出是对称的，合成器的对称留白（见 compositeRegionPatch）才成立。 */
+  rotation?: number;
 }
 
 /**

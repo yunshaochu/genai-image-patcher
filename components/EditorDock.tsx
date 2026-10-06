@@ -1056,6 +1056,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
     aiLocked || translatingImageId === image.id || (busy && !translating);
   const text = region.editorText ?? '';
   const vertical = region.editorStyle?.isVertical;
+  /** 整块文字的旋转角（度，顺时针为正）。0 = 不旋转。 */
+  const rotation = region.editorStyle?.rotation ?? 0;
 
   // Auto-fit size, resolved on the spot when neither an explicit size nor the
   // compositor-published one exists — after a reload `computedFontSizes`
@@ -1270,6 +1272,61 @@ const EditorDock: React.FC<EditorDockProps> = ({
               </button>
             </div>
           </div>
+        </div>
+
+        {/* Rotation: 整块文字绕框中心旋转（-180..180°，顺时针为正）。
+            斜排原文 / 艺术字用它对位；0 = 不旋转，行为与以前完全一致。 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorRotation')}</span>
+          <input
+            type="range"
+            min={-180}
+            max={180}
+            step={1}
+            value={rotation}
+            disabled={regionEditLocked}
+            // 拖动要能即时看到效果 —— 传 0 走"立即合成"：防抖层只在合成器忙时
+            // 排队，并按最新值合并，不会积压出一串合成。
+            onChange={(e) => onUpdateRegion(region.id, { editorStyle: { rotation: Number(e.target.value) } }, { debounceMs: 0 })}
+            title={t(lang, 'editorRotationTip')}
+            className="flex-1 min-w-0 accent-skin-primary disabled:opacity-50"
+          />
+          <input
+            type="number"
+            min={-180}
+            max={180}
+            value={rotation}
+            disabled={regionEditLocked}
+            onChange={(e) => {
+              // 同字号输入框：打字时不夹取、不改写，否则 "-" 和首位数字会被吃掉。
+              const raw = e.target.value;
+              if (raw === '' || raw === '-') return;
+              const n = Number(raw);
+              if (Number.isFinite(n)) onUpdateRegion(region.id, { editorStyle: { rotation: n } });
+            }}
+            onBlur={(e) => {
+              // 空值 / 非法值归零，其余夹到 ±180 并取整；结果与当前值不同才写回，
+              // 顺带把输入框里的 "-" / 空串纠正成规范值。
+              const n = Number(e.target.value);
+              const clamped = e.target.value.trim() === '' || !Number.isFinite(n)
+                ? 0
+                : Math.max(-180, Math.min(180, Math.round(n)));
+              if (clamped !== rotation) {
+                onUpdateRegion(region.id, { editorStyle: { rotation: clamped } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS });
+              }
+            }}
+            title={t(lang, 'editorRotationTip')}
+            className="w-11 shrink-0 px-1 py-0.5 text-[10px] text-center border border-skin-border rounded bg-skin-surface disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden"
+          />
+          <span className="text-[9px] text-skin-muted shrink-0">°</span>
+          <button
+            onClick={() => onUpdateRegion(region.id, { editorStyle: { rotation: 0 } }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
+            disabled={regionEditLocked || !rotation}
+            title={t(lang, 'editorRotationReset')}
+            className="shrink-0 p-1 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill disabled:opacity-30 transition-colors"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
         </div>
 
         {/* Text colour: auto (AI-chosen / measured ink) or manual override.

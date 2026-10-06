@@ -28,6 +28,8 @@ export interface ResolvedTextStyle {
   isBold: boolean;
   fontFamily: string;
   padding: number;
+  /** 整块文字的旋转角（度，顺时针为正）；0 = 不旋转。 */
+  rotation: number;
 }
 
 // Punctuation that must NOT appear at the start of a line/column (行首禁则)
@@ -201,6 +203,8 @@ const resolveStyle = (
     // 区域显式指定优先，否则跟随「编辑器字体」全局设置。
     fontFamily: style?.fontFamily ?? defaultFontFamily,
     padding,
+    // NaN 视为「不旋转」（`if (rotation)` 会把它当假值，两条路径一致）。
+    rotation: style?.rotation ?? 0,
   };
 };
 
@@ -214,17 +218,37 @@ export interface TextLayout {
  * drawTextLayout. Used by the compositor to size the overflow margin when
  * the block doesn't fit its box (manual font size / pathological input).
  * For horizontal layouts blockW is 0 — wrapping guarantees lines fit innerW.
+ *
+ * 旋转后返回的是**旋转后的轴对齐包围盒**：合成器把文字块当"框内居中、溢出
+ * 上下左右对称"来留白（见 compositeRegionPatch），不把宽高一起转过去的话，
+ * 转出去的字会被贴图边界裁掉。
  */
 export const measureLayoutBlock = (layout: TextLayout): { blockW: number; blockH: number } => {
   const { lines, style } = layout;
-  const { fontSize, isVertical } = style;
-  if (isVertical) {
-    return {
-      blockW: lines.length * fontSize * LINE_HEIGHT_RATIO,
-      blockH: Math.max(0, ...lines.map(l => l.length * fontSize)),
-    };
+  const { fontSize, isVertical, rotation } = style;
+  // Unrotated content bounds (unchanged behaviour when rotation is 0).
+  const contentW = isVertical
+    ? lines.length * fontSize * LINE_HEIGHT_RATIO
+    : 0;
+  const contentH = isVertical
+    ? Math.max(0, ...lines.map(l => l.length * fontSize))
+    : lines.length * fontSize * LINE_HEIGHT_RATIO;
+  if (!rotation) {
+    return { blockW: contentW, blockH: contentH };
   }
-  return { blockW: 0, blockH: lines.length * fontSize * LINE_HEIGHT_RATIO };
+  // Rotated: 横排的真实行宽这时才有意义（未旋转时换行保证它 ≤ innerW）。
+  const ctx = getMeasureCtx();
+  ctx.font = buildFont(fontSize, style);
+  const w = isVertical
+    ? contentW
+    : Math.max(0, ...lines.map(l => ctx.measureText(l).width));
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  return {
+    blockW: w * cos + contentH * sin,
+    blockH: w * sin + contentH * cos,
+  };
 };
 
 /**
@@ -320,7 +344,7 @@ export const drawTextLayout = (
   boxH: number
 ): void => {
   const { lines, style } = layout;
-  const { fontSize, isVertical, color, outlineColor, outlineWidth, padding } = style;
+  const { fontSize, isVertical, color, outlineColor, outlineWidth, padding, rotation } = style;
   ctx.save();
   ctx.font = buildFont(fontSize, style);
   ctx.fillStyle = color;
@@ -333,6 +357,15 @@ export const drawTextLayout = (
   }
   const innerW = Math.max(8, boxW - padding * 2);
   const innerH = Math.max(8, boxH - padding * 2);
+
+  // 旋转：绕**框中心**转整块文字（不是绕文字块中心 —— 合成器按"块在框内居中、
+  // 溢出对称"留白，绕框心转才能保证这个前提）。旋转时横排也改成整行水平居中：
+  // 否则靠左排的块绕框心一转就整行甩到框外去了。
+  if (rotation) {
+    ctx.translate(boxW / 2, boxH / 2);
+    ctx.rotate((rotation * Math.PI) / 180);
+    ctx.translate(-boxW / 2, -boxH / 2);
+  }
 
   const drawLine = (line: string, x: number, y: number) => {
     if (outlineWidth > 0) ctx.strokeText(line, x, y);
@@ -352,11 +385,12 @@ export const drawTextLayout = (
     const blockH = lines.length * lineH;
     let y = padding + (innerH - blockH) / 2;
     for (const line of lines) {
-      // 横排靠左：每行贴框的左内边起排（块本身仍然垂直居中）。
+      // 横排靠左：每行贴框的左内边起排（块本身仍然垂直居中）。旋转时改为居中
+      // （见上面的 transform 注释）。
       // 只有"整行宽度超出框"的极端情况（无法断行的超长串）会往右溢出 —— 横排
       // 的溢出边距由 measureLayoutBlock 的 blockW 决定，这里保持不夹取，行为
       // 与居中时一致（贴边绘制，多余部分同样被画布裁掉）。
-      drawLine(line, padding, y);
+      drawLine(line, rotation ? (boxW - ctx.measureText(line).width) / 2 : padding, y);
       y += lineH;
     }
   } else {
