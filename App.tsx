@@ -801,6 +801,25 @@ export default function App() {
       );
   }, [selectedImage, selectedRegionId, computedFontSizes, config.enableVerticalTextDefault, updateEditorRegion]);
 
+  // Shift+wheel over the SELECTED box steps its text rotation（±5°，Alt 加持 =
+  // ±1°）—— 与字号手势同一约定（EditorCanvas 的 onStepSelectedRotation）。
+  // 夹到 ±180，保留 0.1° 精度（wheel 微调可能带浮点尾巴，顺手取齐）。
+  const editorOnStepRotation = useCallback((delta: number) => {
+      if (!selectedImage || !selectedRegionId) return;
+      const region = selectedImage.regions.find(r => r.id === selectedRegionId);
+      if (!region) return;
+      const base = region.editorStyle?.rotation ?? 0;
+      const next = Math.max(-180, Math.min(180, Math.round((base + delta) * 10) / 10));
+      if (next === base) return;
+      // 与字号步进同理：离散动作用短防抖，连续手势合并成一次合成。
+      updateEditorRegion(
+          selectedImage.id,
+          region.id,
+          { editorStyle: { rotation: next } },
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionId, updateEditorRegion]);
+
   // Stable adapters for Sidebar.
   const sidebarOnOpenGlobalSettings = useCallback(() => setShowGlobalSettings(true), []);
   const sidebarOnOpenHelp = useCallback(() => setShowHelp(true), []);
@@ -1025,8 +1044,10 @@ export default function App() {
                     // Typeset overflow stays visible ONLY in the editor workflow;
                     // AI 重绘 / 手动修补工坊 clip patches back to their box.
                     allowPatchOverflow={isEditorMode}
-                    // Editor tab only: Ctrl+wheel over the selected box = 字号 ±5.
+                    // Editor tab only: Ctrl+wheel over the selected box = 字号 ±5;
+                    // Shift+wheel = 旋转 ±5°（Alt 加持 = ±1°）。
                     onStepSelectedFontSize={isEditorMode && viewMode === 'edit' ? editorOnStepFontSize : undefined}
+                    onStepSelectedRotation={isEditorMode && viewMode === 'edit' ? editorOnStepRotation : undefined}
                 />
                 </Profiler>
               )}

@@ -758,6 +758,13 @@ const EditorDock: React.FC<EditorDockProps> = ({
   // 吸管是「这一个框」的工具：换框就收起，免得在上一个框的原图裁剪上取色。
   useEffect(() => { setPickColorOpen(false); setBrushPickOpen(false); }, [selectedRegionId, image.id]);
 
+  /** 旋转数字框的本地草稿：非 null 时输入框显示草稿而不是规范值，这样 "-"
+   *  等中间态不会被受控组件打回（见属性面板的旋转输入框）。 */
+  const [rotationDraft, setRotationDraft] = useState<string | null>(null);
+  // 换框 / 换图时丢掉未提交的草稿（正常路径 blur 已清；这是无 blur 路径的兜底，
+  // 与上面收吸取色器同一个时机）。
+  useEffect(() => setRotationDraft(null), [selectedRegionId, image.id]);
+
   // Result gating for the collapsed rail (same rule as the pinned footer, so the
   // icon rail and the footer can never disagree about what is available).
   const gating = useRunGating({
@@ -1274,19 +1281,21 @@ const EditorDock: React.FC<EditorDockProps> = ({
           </div>
         </div>
 
-        {/* Rotation: 整块文字绕框中心旋转（-180..180°，顺时针为正）。
-            斜排原文 / 艺术字用它对位；0 = 不旋转，行为与以前完全一致。 */}
+        {/* Rotation: 整块文字绕框中心旋转。滑块只做 ±45°（斜排原文/艺术字的常见
+            角度都在这区间内，1px≈0.7° 才拖得准）；更大的角度用数字框输（±180°）。
+            0 = 不旋转，行为与以前完全一致。 */}
         <div className="flex items-center gap-1.5">
           <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorRotation')}</span>
           <input
             type="range"
-            min={-180}
-            max={180}
+            min={-45}
+            max={45}
             step={1}
             value={rotation}
             disabled={regionEditLocked}
             // 拖动要能即时看到效果 —— 传 0 走"立即合成"：防抖层只在合成器忙时
             // 排队，并按最新值合并，不会积压出一串合成。
+            // |rotation| > 45（数字框输的大角度）时拇指钉在端点，属正常。
             onChange={(e) => onUpdateRegion(region.id, { editorStyle: { rotation: Number(e.target.value) } }, { debounceMs: 0 })}
             title={t(lang, 'editorRotationTip')}
             className="flex-1 min-w-0 accent-skin-primary disabled:opacity-50"
@@ -1295,18 +1304,22 @@ const EditorDock: React.FC<EditorDockProps> = ({
             type="number"
             min={-180}
             max={180}
-            value={rotation}
+            value={rotationDraft ?? rotation}
             disabled={regionEditLocked}
             onChange={(e) => {
-              // 同字号输入框：打字时不夹取、不改写，否则 "-" 和首位数字会被吃掉。
+              // 原始输入进本地草稿，能解析成数字才即时提交（不夹取、不改写）。
+              // 受控值直接绑 rotation 的话，全选后敲 "-" 会被 React 打回旧值，
+              // 负数根本输不进来；"" / "-" 这类中间态只留在草稿里。
               const raw = e.target.value;
-              if (raw === '' || raw === '-') return;
+              setRotationDraft(raw);
               const n = Number(raw);
-              if (Number.isFinite(n)) onUpdateRegion(region.id, { editorStyle: { rotation: n } });
+              if (raw.trim() !== '' && Number.isFinite(n)) {
+                onUpdateRegion(region.id, { editorStyle: { rotation: n } });
+              }
             }}
             onBlur={(e) => {
-              // 空值 / 非法值归零，其余夹到 ±180 并取整；结果与当前值不同才写回，
-              // 顺带把输入框里的 "-" / 空串纠正成规范值。
+              setRotationDraft(null);
+              // 空值 / 非法值归零，其余夹到 ±180 并取整；结果与当前值不同才写回。
               const n = Number(e.target.value);
               const clamped = e.target.value.trim() === '' || !Number.isFinite(n)
                 ? 0

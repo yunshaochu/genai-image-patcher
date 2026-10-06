@@ -49,6 +49,13 @@ interface EditorCanvasProps {
    */
   onStepSelectedFontSize?: (delta: number) => void;
   /**
+   * Editor workflow only. Same gesture convention as onStepSelectedFontSize:
+   * Shift+wheel with the cursor over the SELECTED box steps its text rotation
+   * (degrees, CW) instead of scrolling; Alt additionally held = fine 1°
+   * steps. Undefined in the other workflows.
+   */
+  onStepSelectedRotation?: (delta: number) => void;
+  /**
    * Editor workflow only. When true, patch overlays may carry an overflow
    * margin (typeset text spilling out of the box) drawn UNCLIPPED so the
    * overflowing translation stays visible while typesetting. Default false:
@@ -103,6 +110,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     regionDisplay = 'editor',
     defaultRedrawIntent = 'translate',
     onStepSelectedFontSize,
+    onStepSelectedRotation,
     allowPatchOverflow = false,
     onResetRegion,
 }: EditorCanvasProps) => {
@@ -207,8 +215,11 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   // --- Ctrl+Wheel zoom (zoom towards cursor) ---
   // In the editor workflow the same gesture over the SELECTED box steps its
   // font size instead (see onStepSelectedFontSize); everywhere else it zooms.
+  // Shift+wheel over the selected box steps its text rotation (±5°, Alt = ±1°).
   /** Fractional wheel delta accumulated for font-size stepping. */
   const fontSizeWheelAccumRef = useRef(0);
+  /** Same accumulator for rotation stepping. */
+  const rotationWheelAccumRef = useRef(0);
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || restoreMode) return;
@@ -285,12 +296,27 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
         });
 
         userZoomedRef.current = true;
+      } else if (e.shiftKey && onStepSelectedRotation && selectedRegionId && regionIdAt(e.clientX, e.clientY) === selectedRegionId) {
+        // Shift+wheel 悬停选中框 = 旋转 ±5°（Alt 加持 = ±1° 微调）。与字号
+        // 同一套"一档滚轮 = 一步"的累积逻辑；滚轮向上 = 角度增大（与"上=大"一致）。
+        // 不在选中框上时保持默认（viewport overflow:hidden，本就不会滚动）。
+        e.preventDefault();
+        e.stopPropagation();
+        const unit = e.deltaMode === 1 ? 34 : e.deltaMode === 2 ? 100 : 1;
+        rotationWheelAccumRef.current += e.deltaY * unit;
+        const STEP_UNITS = 100;
+        const stepDeg = e.altKey ? 1 : 5;
+        while (Math.abs(rotationWheelAccumRef.current) >= STEP_UNITS) {
+          const up = rotationWheelAccumRef.current < 0;
+          rotationWheelAccumRef.current -= up ? -STEP_UNITS : STEP_UNITS;
+          onStepSelectedRotation(up ? stepDeg : -stepDeg);
+        }
       }
     };
 
     viewport.addEventListener('wheel', handleWheel, { passive: false });
     return () => viewport.removeEventListener('wheel', handleWheel);
-  }, [restoreMode, image.originalWidth, image.originalHeight, onStepSelectedFontSize, selectedRegionId]);
+  }, [restoreMode, image.originalWidth, image.originalHeight, onStepSelectedFontSize, onStepSelectedRotation, selectedRegionId]);
 
   // Ref for wheel zoom adjustment data
   const wheelAdjustRef = useRef<{
