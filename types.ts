@@ -183,10 +183,10 @@ export interface Region {
    *  editorText and typesets it. */
   editorFrozenText?: string;
   /** Brute-force whiteout: the compositor fills the whole crop white (after
-   *  erasure, before text) — the no-redraw-model fallback for frozen
-   *  text_free on complex backgrounds. Only ever set by the batch
-   *  「涂白 text_free 并解冻」action, which is what makes its reverse
-   *  (「再次冻结」) able to recognise its own output. */
+   *  erasure, before text) — the crude "先让我看一眼译文" preview for frozen
+   *  boxes sitting on complex backgrounds the editor can't erase. Only ever
+   *  set by the batch 「临时预览译文」action, which is what makes its reverse
+   *  (「结束预览」) able to recognise its own output. */
   editorWhitedOut?: boolean;
   /** LEGACY: set when a completed AI-redrawn bubble fully contains this text
    *  region (the bubble's patch already wiped the original text, so the

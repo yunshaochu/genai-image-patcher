@@ -5,9 +5,10 @@ import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils'
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
 import { getRegionEditorText, resolveAutoFontSize, editorRegionDisplay, LayerDirection } from '../services/mangaEditor';
 import { EDITOR_FONTS, SYSTEM_FONT_STACK, editorFontStack, ensureEditorFontLoaded } from '../services/fontService';
-import { EraseScope, RestoreScope, isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
+import { isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 import { DockActions, useRunGating } from './sidebar/DockActions';
 import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
+import { HelpTip } from './sidebar/HelpTip';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -41,11 +42,6 @@ interface EditorDockProps {
   }, opts?: { debounceMs?: number }) => void;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
-  onErase: (scope: EraseScope) => void;
-  /** Batch variants: apply the same operation to every loaded image. */
-  onEraseAllImages: (scope: EraseScope) => void;
-  onRestoreErase: (scope: RestoreScope) => void;
-  onRestoreEraseAllImages: (scope: RestoreScope) => void;
   onTranslate: () => void;
   onTranslateAll: () => void;
   /** True while an auto-translate run is in flight — shows the stop button. */
@@ -57,19 +53,14 @@ interface EditorDockProps {
   onStopTranslate: () => void;
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
-  /** Batch quick-fix for frozen text_free: whiten the box + typeset. */
-  onWhitenFrozenTextFree: () => void;
-  /** Scope「所有图片」variant: same whiten over every loaded image. */
-  onWhitenFrozenTextFreeAll: () => void;
-  /** Its reverse: re-freeze the boxes that quick-fix whitened. */
-  onRefreezeWhitedTextFree: () => void;
-  /** Scope「所有图片」variant of the reverse. */
-  onRefreezeWhitedTextFreeAll: () => void;
-  /** Roll the most recent whiten / re-freeze quick-fix back (0 = nothing to undo). */
-  onUndoFreezeFix: () => void;
-  freezeUndoDepth: number;
-  /** One-click reveal of every frozen translation sitting on an AI bubble base. */
-  onRevealAiBase: () => void;
+  /** 临时预览：把被 AI 冻结的框涂白 + 排上译文（只为先看一眼）。 */
+  onPreviewFrozenText: () => void;
+  /** Scope「所有图片」variant: same preview over every loaded image. */
+  onPreviewFrozenTextAll: () => void;
+  /** 结束预览：把预览时涂白的框还原（撤白底 + 撤文字，译文重新挂起）。 */
+  onEndPreview: () => void;
+  /** Scope「所有图片」variant of 结束预览. */
+  onEndPreviewAll: () => void;
   /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
   onDownload: (processAll: boolean) => void;
   onApplyAsOriginal: (processAll: boolean) => void;
@@ -770,12 +761,10 @@ const RegionFontPicker: React.FC<{
 const EditorDock: React.FC<EditorDockProps> = ({
   image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
-  onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
   onTranslate, onTranslateAll,
   translating, translatingImageId, onStopTranslate,
-  onUnfreeze, onFreeze, onWhitenFrozenTextFree, onWhitenFrozenTextFreeAll,
-  onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
-  onUndoFreezeFix, freezeUndoDepth, onRevealAiBase,
+  onUnfreeze, onFreeze, onPreviewFrozenText, onPreviewFrozenTextAll,
+  onEndPreview, onEndPreviewAll,
   onDownload, onApplyAsOriginal, onReorderRegion,
   angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp,
 }) => {
@@ -792,12 +781,12 @@ const EditorDock: React.FC<EditorDockProps> = ({
   /** 原图吸管面板是否展开（选中的框一变就收起）。 */
   const [pickColorOpen, setPickColorOpen] = useState(false);
   /** Batch scope of the no-selection actions: the current image only, or every
-   *  loaded image (erase / restore / translate / 涂白 all respect it). */
+   *  loaded image (translate / 临时预览 both respect it). */
   const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
-  /** Two-click arm for the 涂白 / 再次冻结 quick-fix when 作用范围 is 「所有图片」
-   *  — same guard as the gallery's 清空 button, since a mis-click there rewrites
-   *  every page at once. */
-  const [whitenConfirm, setWhitenConfirm] = useState(false);
+  /** Two-click arm for the 临时预览 group when 作用范围 is 「所有图片」— same guard
+   *  as the gallery's 清空 button, since a mis-click there rewrites every page at
+   *  once. Holds which of the two buttons is armed (each carries its own label). */
+  const [confirmDir, setConfirmDir] = useState<null | 'preview' | 'end'>(null);
   /** 滚轮微调手势的一次性提示是否已被关掉（跨会话记住，两条手势各自独立）。 */
   const [rotationHintDismissed, setRotationHintDismissed] = useState(() => loadHintDismissed(ROTATION_HINT_STORAGE_KEY));
   const [fontSizeHintDismissed, setFontSizeHintDismissed] = useState(() => loadHintDismissed(FONT_SIZE_HINT_STORAGE_KEY));
@@ -823,7 +812,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   }, [brushColor]);
 
   // Switching scope re-arms the confirmation: 「所有图片」must be confirmed again.
-  useEffect(() => { setWhitenConfirm(false); }, [imageScope]);
+  useEffect(() => { setConfirmDir(null); }, [imageScope]);
 
   const editableRegions = image.regions.filter(r => !r.contextOnly);
   const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
@@ -898,56 +887,39 @@ const EditorDock: React.FC<EditorDockProps> = ({
     // Editable but untranslatable → everything is already translated/frozen.
     const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
     const allTranslated = editableCount > 0 && translateTargetCount === 0;
-    // Whiten quick-fix scope: the current image, or every loaded image when 作用
+    // 临时预览 group scope: the current image, or every loaded image when 作用
     // 范围 is 「所有图片」. Counts cover the SAME set the button will rewrite, so
     // the (n) badge never lies.
     const scopedImages = imageScope === 'all' ? images : [image];
-    // Frozen text_free awaiting AI redraw — the whiten quick-fix targets these.
-    // Boxes the user froze / unfroze by hand are included: the quick fix is a
-    // page-wide batch (the undo button below is the safety net).
-    const frozenFreeCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) &&
-      r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
+    // 可预览 = 被 AI（或手动）冻结、还挂着译文的框。不限定 text_free：气泡内的
+    // 复杂文字同样会被判定为冻结。底图已由 AI 擦干净的（aiErasedBase）不涂白，
+    // 与 whitenInImage 的过滤条件保持一致。
+    const previewCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase && !!r.editorFrozenText?.trim()
     ).length, 0);
-    // The reverse direction: text_free boxes this quick-fix whitened and
-    // unfroze earlier (editorWhitedOut is only ever set by it).
-    const whitedFreeCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) &&
-      r.detectedClass === 'text_free' && !!r.editorWhitedOut && !!r.editorText?.trim()
+    // 反向：被「临时预览译文」涂白过、已经排上文字的框（editorWhitedOut 只有它会设）。
+    const endPreviewCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
+      !r.contextOnly && !isAiOwned(r) && !!r.editorWhitedOut && !!r.editorText?.trim()
     ).length, 0);
-    // One button, two directions: 涂白解冻 when there is anything still frozen,
-    // otherwise 再次冻结 undoes what the button did before. The direction is
-    // decided over the WHOLE scope, so a batch run never mixes directions.
-    const whitenDirection = frozenFreeCount > 0;
-    const whitenCount = whitenDirection ? frozenFreeCount : whitedFreeCount;
-    // Frozen translations held back on AI-redrawn bubble bases — the
-    // one-click reveal typesets them all without any erasure.
-    const aiBaseFrozenCount = image.regions.filter(r =>
-      r.aiBubbleBase && !isAiOwned(r) && !!r.editorFrozenText?.trim()
-    ).length;
 
-    // Scope-aware dispatchers: '所有图片' routes to the batch variants.
-    const runErase = (scope: EraseScope) =>
-      imageScope === 'all' ? onEraseAllImages(scope) : onErase(scope);
-    const runRestore = (scope: RestoreScope) =>
-      imageScope === 'all' ? onRestoreEraseAllImages(scope) : onRestoreErase(scope);
     const runTranslate = () => (imageScope === 'all' ? onTranslateAll() : onTranslate());
-    // 涂白 / 再次冻结 over the whole scope. On 「所有图片」it is destructive and
-    // hard to eyeball, so it arms first and runs on the second click (3 s
-    // window) — same guard as the gallery's 清空 button.
-    const runWhiten = () => {
-      const isAll = imageScope === 'all';
-      if (isAll && !whitenConfirm) {
-        setWhitenConfirm(true);
-        setTimeout(() => setWhitenConfirm(false), 3000);
+    /** 两个预览按钮共用的二次确认：作用范围是「所有图片」时先 arm 再执行。 */
+    const armOrRun = (dir: 'preview' | 'end', run: () => void) => {
+      if (imageScope === 'all' && confirmDir !== dir) {
+        setConfirmDir(dir);
+        window.setTimeout(() => setConfirmDir(d => (d === dir ? null : d)), 3000);
         return;
       }
-      setWhitenConfirm(false);
-      if (whitenDirection) {
-        isAll ? onWhitenFrozenTextFreeAll() : onWhitenFrozenTextFree();
-      } else {
-        isAll ? onRefreezeWhitedTextFreeAll() : onRefreezeWhitedTextFree();
-      }
+      setConfirmDir(null);
+      run();
+    };
+    const runPreview = () => {
+      const isAll = imageScope === 'all';
+      armOrRun('preview', () => (isAll ? onPreviewFrozenTextAll() : onPreviewFrozenText()));
+    };
+    const runEndPreview = () => {
+      const isAll = imageScope === 'all';
+      armOrRun('end', () => (isAll ? onEndPreviewAll() : onEndPreview()));
     };
 
     return (
@@ -966,8 +938,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
-          {/* Batch scope: erase / restore / translate below apply to the
-              current image only, or to every loaded image. */}
+          {/* Batch scope: translate / 临时预览 below apply to the current image
+              only, or to every loaded image. 擦除不在这里 —— 翻译阶段会自己
+              擦，单个框也能在属性面板里擦。 */}
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-skin-muted whitespace-nowrap">{t(lang, 'editorScope')}</span>
             <div className="flex-1 flex bg-skin-fill p-0.5 rounded border border-skin-border">
@@ -986,41 +959,6 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 {t(lang, 'editorScopeAll')}
               </button>
             </div>
-          </div>
-
-          {/* Erasure batch actions */}
-          <div className="grid grid-cols-2 gap-1.5">
-            <button
-              onClick={() => runErase('bubbleOnly')}
-              disabled={busy}
-              className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
-              title={t(lang, 'editorEraseBubbleTip')}
-            >
-              {t(lang, 'editorEraseBubble')}
-            </button>
-            <button
-              onClick={() => runErase('all')}
-              disabled={busy}
-              className="px-2 py-1.5 text-[10px] font-bold bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 disabled:opacity-50 transition-colors"
-              title={t(lang, 'editorEraseAllTip')}
-            >
-              {t(lang, 'editorEraseAll')}
-            </button>
-            <button
-              onClick={() => runRestore('textFree')}
-              disabled={busy}
-              className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
-              title={t(lang, 'editorRestoreFreeTip')}
-            >
-              {t(lang, 'editorRestoreFree')}
-            </button>
-            <button
-              onClick={() => runRestore('all')}
-              disabled={busy}
-              className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-text hover:bg-skin-fill disabled:opacity-50 transition-colors"
-            >
-              {t(lang, 'editorRestoreAll')}
-            </button>
           </div>
 
           {config.enableTranslationMode && (
@@ -1048,44 +986,49 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   {t(lang, 'editorTranslateAll')}
                 </button>
               )}
+            </div>
+          )}
+
+          {/* 冻结译文的临时预览。和上面的「作用范围 / 翻译」用分隔线拉开距离：
+              这两个按钮动的是画面（涂白 + 排字），和"只是跑一次翻译"混在一起
+              误点代价太高。 */}
+          {config.enableTranslationMode && (
+            <div className="pt-2.5 mt-1 border-t border-skin-border/60 space-y-1.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-skin-muted">{t(lang, 'editorPreviewGroup')}</span>
+                <HelpTip text={t(lang, 'editorPreviewGroupTip')} />
+              </div>
               <button
-                onClick={runWhiten}
-                disabled={busy || whitenCount === 0}
+                onClick={runPreview}
+                disabled={busy || previewCount === 0}
                 className={`w-full px-2 py-1.5 text-[10px] font-bold rounded transition-colors disabled:opacity-50 ${
-                  whitenConfirm
+                  confirmDir === 'preview'
                     ? 'border border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
                     : 'border border-violet-300 text-violet-600 bg-violet-500/10 hover:bg-violet-500/20'
                 }`}
                 title={
-                  whitenConfirm
-                    ? t(lang, 'editorWhitenConfirmTip')
-                    : imageScope === 'all'
-                      ? t(lang, 'editorWhitenFreeAllTip')
-                      : whitenDirection ? t(lang, 'editorWhitenFreeTip') : t(lang, 'editorRefreezeFreeTip')
+                  confirmDir === 'preview'
+                    ? t(lang, 'editorPreviewConfirmTip')
+                    : imageScope === 'all' ? t(lang, 'editorPreviewTextAllTip') : t(lang, 'editorPreviewTextTip')
                 }
               >
-                {whitenConfirm
+                {confirmDir === 'preview'
                   ? t(lang, 'editorConfirmTwice')
-                  : <>{t(lang, whitenDirection ? 'editorWhitenFree' : 'editorRefreezeFree')}{whitenCount > 0 ? ` (${whitenCount})` : ''}</>}
+                  : <>{t(lang, 'editorPreviewText')}{previewCount > 0 ? ` (${previewCount})` : ''}</>}
               </button>
-              {freezeUndoDepth > 0 && (
-                <button
-                  onClick={onUndoFreezeFix}
-                  disabled={busy}
-                  className="w-full px-2 py-1.5 text-[10px] font-bold border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
-                  title={t(lang, 'editorUndoFreezeTip')}
-                >
-                  <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
-                  {t(lang, 'editorUndoFreeze')}
-                </button>
-              )}
               <button
-                onClick={onRevealAiBase}
-                disabled={busy || aiBaseFrozenCount === 0}
-                className="w-full px-2 py-1.5 text-[10px] font-bold border border-teal-300 text-teal-600 bg-teal-500/10 rounded hover:bg-teal-500/20 disabled:opacity-50 transition-colors"
-                title={t(lang, 'editorRevealAiBaseTip')}
+                onClick={runEndPreview}
+                disabled={busy || endPreviewCount === 0}
+                className={`w-full px-2 py-1.5 text-[10px] font-bold rounded transition-colors disabled:opacity-50 ${
+                  confirmDir === 'end'
+                    ? 'border border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
+                    : 'border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill'
+                }`}
+                title={confirmDir === 'end' ? t(lang, 'editorPreviewConfirmTip') : t(lang, 'editorEndPreviewTip')}
               >
-                {t(lang, 'editorRevealAiBase')}{aiBaseFrozenCount > 0 ? ` (${aiBaseFrozenCount})` : ''}
+                {confirmDir === 'end'
+                  ? t(lang, 'editorConfirmTwice')
+                  : <>{t(lang, 'editorEndPreview')}{endPreviewCount > 0 ? ` (${endPreviewCount})` : ''}</>}
               </button>
             </div>
           )}

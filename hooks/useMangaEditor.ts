@@ -13,8 +13,6 @@ import {
 } from '../services/mangaEditor';
 import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
 
-export type EraseScope = 'all' | 'bubbleOnly' | 'selected';
-export type RestoreScope = 'all' | 'textFree' | 'selected';
 
 /**
  * 「跑完再回头重试」轮数的兜底默认值（编辑器批量翻译）。
@@ -148,16 +146,6 @@ const editorPerfMark = (name: string) => {
 /** 0.1 ms resolution — keeps the console lines short. */
 const perfMs = (v: number) => Math.round(v * 10) / 10;
 
-/** One region captured before a 涂白 / 再次冻结 quick-fix, for the batch undo. */
-interface FreezeUndoEntry {
-  imageId: string;
-  regionId: string;
-  before: Region;
-}
-
-/** How many quick-fix batches the undo stack keeps (most recent first). */
-const FREEZE_UNDO_LIMIT = 5;
-
 /** Editor fields a caller may merge into a region. */
 type EditorFieldUpdates =
   Partial<Pick<Region, 'editorText' | 'editorErased' | 'editorBrushUrl'>> & { editorStyle?: Region['editorStyle'] };
@@ -206,13 +194,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
   const [translatingImageId, setTranslatingImageId] = useState<string | null>(null);
   // regionId → last resolved font size (auto-fit or manual), for panel display.
   const [computedFontSizes, setComputedFontSizes] = useState<Record<string, number>>({});
-  // Undo stack for the 涂白 text_free / 再次冻结 quick-fixes: one entry per run,
-  // holding every region it rewrote (across images for a 作用范围「所有图片」
-  // batch), so a mis-click can be rolled back in a single step. The array
-  // itself lives in a ref (the Region snapshots are heavy and never rendered);
-  // `freezeUndoDepth` mirrors its length so the dock's undo button re-renders.
-  const freezeUndoStackRef = useRef<FreezeUndoEntry[][]>([]);
-  const [freezeUndoDepth, setFreezeUndoDepth] = useState(0);
   const imagesRef = useRef(images);
   imagesRef.current = images;
   const configRef = useRef(config);
@@ -705,141 +686,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     await recompositeRegion(imageId, regionId, next);
   }, [getImage, updateImage, recompositeRegion]);
 
-  const pickEraseTargets = useCallback((
-    img: UploadedImage,
-    scope: EraseScope,
-    selectedRegionId?: string | null
-  ): Region[] => {
-    if (scope === 'selected') {
-      const r = img.regions.find(r => r.id === selectedRegionId);
-      // aiErasedBase 同样排除：AI「擦除」产物的底图已经是干净的，编辑器不得再擦
-      // （AI 产物绝对优先；单选也不开后门）。aiBubbleBase 只排除 batch，见下。
-      return r && !r.editorErased && !isAiOwned(r) && !r.aiErasedBase ? [r] : [];
-    }
-    return img.regions.filter(r => {
-      if (r.contextOnly || r.editorErased || isAiOwned(r)) return false;
-      // aiBubbleBase / aiErasedBase regions already sit on an AI-redrawn
-      // (text-free) base — batch erasure would burn the flood fill for nothing.
-      if (r.aiBubbleBase || r.aiErasedBase) return false;
-      if (scope === 'bubbleOnly') return r.detectedClass === 'text_bubble';
-      return true; // 'all' — manual boxes + text_bubble + text_free
-    });
-  }, []);
-
-  /** Erase the original text inside one image (flood-fill, frontend-only).
-   *  Busy bookkeeping is owned by the public wrappers below. */
-  const eraseInImage = useCallback(async (
-    imageId: string,
-    scope: EraseScope,
-    selectedRegionId?: string | null
-  ) => {
-    const img = getImage(imageId);
-    if (!img) return;
-    const targets = pickEraseTargets(img, scope, selectedRegionId);
-    if (targets.length === 0) return;
-
-    // Flag first so recomposite reads consistent state.
-    const ids = new Set(targets.map(t => t.id));
-    updateImage(imageId, current => ({
-      ...current,
-      regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: true } : r),
-    }));
-    // Recomposite sequentially (erasure is CPU-bound per region). Pass the
-    // flipped region explicitly — the store commit lags behind updateImage.
-    for (const t of targets) {
-      await recompositeRegion(imageId, t.id, { ...t, editorErased: true });
-    }
-  }, [getImage, pickEraseTargets, recompositeRegion, updateImage]);
-
-  /** Erase regions of the current image. */
-  const eraseRegions = useCallback(async (
-    imageId: string,
-    scope: EraseScope,
-    selectedRegionId?: string | null
-  ) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await eraseInImage(imageId, scope, selectedRegionId);
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, eraseInImage]);
-
-  /** Batch: same erasure over every loaded image, in gallery order. */
-  const eraseAllImages = useCallback(async (scope: EraseScope) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      for (const img of imagesRef.current) {
-        await eraseInImage(img.id, scope, null);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, eraseInImage]);
-
-  /** Restore erasure inside one image ('all' / 'textFree' / 'selected').
-   *  Typeset text is kept. Busy bookkeeping is owned by the wrappers. */
-  const restoreEraseInImage = useCallback(async (
-    imageId: string,
-    scope: RestoreScope,
-    selectedRegionId?: string | null
-  ) => {
-    const img = getImage(imageId);
-    if (!img) return;
-    const targets = img.regions.filter(r => {
-      if (!r.editorErased || isAiOwned(r)) return false;
-      if (scope === 'selected') return r.id === selectedRegionId;
-      if (scope === 'textFree') return r.detectedClass === 'text_free';
-      return true;
-    });
-    if (targets.length === 0) return;
-
-    // 撤回擦除 = 这份结果不要了，缓存一并丢弃（见 dropErasedCache）：
-    // 之后再点擦除会重新请求后端，而不是复用旧结果。
-    targets.forEach(t => dropErasedCache(t.id));
-
-    const ids = new Set(targets.map(t => t.id));
-    updateImage(imageId, current => ({
-      ...current,
-      regions: current.regions.map(r => ids.has(r.id) ? { ...r, editorErased: false } : r),
-    }));
-    // Pass the flipped region explicitly — the store commit lags behind
-    // updateImage, so reading it here would see the pre-restore state.
-    for (const t of targets) {
-      await recompositeRegion(imageId, t.id, { ...t, editorErased: false });
-    }
-  }, [getImage, recompositeRegion, updateImage, dropErasedCache]);
-
-  /** Undo erasure on the current image. */
-  const restoreErase = useCallback(async (
-    imageId: string,
-    scope: RestoreScope,
-    selectedRegionId?: string | null
-  ) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await restoreEraseInImage(imageId, scope, selectedRegionId);
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, restoreEraseInImage]);
-
-  /** Batch: undo erasure on every loaded image. */
-  const restoreEraseAllImages = useCallback(async (scope: RestoreScope) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      for (const img of imagesRef.current) {
-        await restoreEraseInImage(img.id, scope, null);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, restoreEraseInImage]);
-
   /** Drop the per-region erase cache + any pending composite (region deleted). */
   const dropRegionCache = useCallback((imageId: string, regionId: string) => {
     dropErasedCache(regionId);
@@ -887,7 +733,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    *  - Frozen (sfx / stylized lettering / text_free on complex backgrounds):
    *    translation → editorFrozenText only; the original artwork stays
    *    untouched and the region keeps pending status so the AI redraw
-   *    pipeline can still pick it up. Manual unfreeze / the whiten quick-fix
+   *    pipeline can still pick it up. Manual unfreeze / the 临时预览译文 batch
    *    promote the frozen text into a real typeset patch later.
    * Regions the AI reports as empty (misdetections) are skipped.
    *
@@ -1180,36 +1026,26 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }));
   }, [getImage, updateImage, dropErasedCache]);
 
-  /** Push a quick-fix snapshot onto the undo stack (bounded), exposing depth. */
-  const pushFreezeUndo = useCallback((entries: FreezeUndoEntry[]) => {
-    if (entries.length === 0) return;
-    const stack = freezeUndoStackRef.current;
-    stack.push(entries);
-    while (stack.length > FREEZE_UNDO_LIMIT) stack.shift();
-    setFreezeUndoDepth(stack.length);
-  }, []);
-
   /**
-   * No-redraw-model fallback for frozen text_free: brute-force whiten the
-   * whole box (editorWhitedOut — flood-fill erasure can't handle complex
-   * backgrounds) and fill in the frozen translation, all in one click.
+   * 「临时预览译文」：把被 AI 标记为冻结的框粗暴涂白（editorWhitedOut —— 泛洪擦除
+   * 啃不动的复杂背景就靠这张白底）再把译文排上去，只为先看一眼前译文。
    *
-   * Rewrites EVERY frozen text_free box in the image — including boxes the user
-   * froze / unfroze by hand from the dock, so the quick fix is a true page-wide
-   * batch. Records what it touched in `undo` so `undoFreezeFix` can roll it
-   * back. The reverse direction lives in refreezeWhitedTextFree.
+   * Rewrites EVERY frozen box in the image — 气泡内的复杂文字同样会被 AI 标记为
+   * 冻结，所以这里**不再限定 text_free** —— including boxes the user froze by
+   * hand from the dock, so the preview is a true page-wide batch. 反向就是
+   * `refreezeInImage`（「结束预览」），两者互为精确逆操作，所以不需要撤销栈。
    */
-  const whitenInImage = useCallback(async (imageId: string, undo: FreezeUndoEntry[]) => {
+  const whitenInImage = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img) return;
     const targets = img.regions.filter(r =>
       !r.contextOnly && !isAiOwned(r) &&
-      // aiErasedBase 是 AI「擦除」的产物，涂白会盖掉这张干净底图 —— 跳过。
+      // aiErasedBase 是 AI「擦除」的产物：底图已经是干净图，涂白反而盖掉它 ——
+      // 跳过（这类框用逐框「解冻填入」直接排字更合适）。
       !r.aiErasedBase &&
-      r.detectedClass === 'text_free' && !!r.editorFrozenText?.trim()
+      !!r.editorFrozenText?.trim()
     );
     if (targets.length === 0) return;
-    for (const t of targets) undo.push({ imageId, regionId: t.id, before: t });
 
     const nextList = targets.map(r => ({
       ...r,
@@ -1230,53 +1066,48 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [getImage, recompositeRegion, updateImage]);
 
-  /** 涂白 text_free 并解冻 on the current image (undoable). */
-  const whitenFrozenTextFree = useCallback(async (imageId: string) => {
+  /** 临时预览译文 on the current image. */
+  const previewFrozenText = useCallback(async (imageId: string) => {
     if (busy) return;
     setBusy(true);
     try {
-      const undo: FreezeUndoEntry[] = [];
-      await whitenInImage(imageId, undo);
-      pushFreezeUndo(undo);
+      await whitenInImage(imageId);
     } finally {
       setBusy(false);
     }
-  }, [busy, whitenInImage, pushFreezeUndo]);
+  }, [busy, whitenInImage]);
 
-  /** Batch variant: the same whiten over every loaded image (one undo step). */
-  const whitenFrozenTextFreeAllImages = useCallback(async () => {
+  /** Batch variant: the same 临时预览 over every loaded image. */
+  const previewFrozenTextAllImages = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const undo: FreezeUndoEntry[] = [];
       for (const img of imagesRef.current) {
-        await whitenInImage(img.id, undo);
+        await whitenInImage(img.id);
       }
-      pushFreezeUndo(undo);
     } finally {
       setBusy(false);
     }
-  }, [busy, whitenInImage, pushFreezeUndo]);
+  }, [busy, whitenInImage]);
 
   /**
-   * Reverse of the whiten quick-fix: freeze the text_free boxes that
-   * 「涂白并解冻」whitened back up — the whiteout and the typeset text are
-   * removed (the original artwork comes back) and the translation is held in
-   * editorFrozenText again, ready for the AI redraw pipeline.
+   * Reverse of the preview: freeze the boxes that 「临时预览译文」whitened back
+   * up — the whiteout and the typeset text are removed (the original artwork
+   * comes back) and the translation is held in editorFrozenText again, ready for
+   * the AI redraw pipeline.
    *
-   * Recognition is state-based, not remembered: editorWhitedOut is only ever
-   * set by the whiten quick-fix, so "whited out + has text" is exactly its
-   * output.
+   * Recognition is state-based, not remembered: editorWhitedOut is only ever set
+   * by the preview, so "whited out + has text" is exactly its output. 这里也**不
+   * 限定 text_free** —— 识别靠的是 editorWhitedOut，与检测类别无关。
    */
-  const refreezeInImage = useCallback(async (imageId: string, undo: FreezeUndoEntry[]) => {
+  const refreezeInImage = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img) return;
     const targets = img.regions.filter(r =>
       !r.contextOnly && !isAiOwned(r) &&
-      r.detectedClass === 'text_free' && !!r.editorWhitedOut && !!r.editorText?.trim()
+      !!r.editorWhitedOut && !!r.editorText?.trim()
     );
     if (targets.length === 0) return;
-    for (const t of targets) undo.push({ imageId, regionId: t.id, before: t });
 
     const nextList = targets.map(r => ({
       ...r,
@@ -1296,118 +1127,29 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [getImage, recompositeRegion, updateImage]);
 
-  /** 再次冻结 text_free on the current image (undoable). */
-  const refreezeWhitedTextFree = useCallback(async (imageId: string) => {
+  /** 结束预览 on the current image. */
+  const endPreview = useCallback(async (imageId: string) => {
     if (busy) return;
     setBusy(true);
     try {
-      const undo: FreezeUndoEntry[] = [];
-      await refreezeInImage(imageId, undo);
-      pushFreezeUndo(undo);
+      await refreezeInImage(imageId);
     } finally {
       setBusy(false);
     }
-  }, [busy, refreezeInImage, pushFreezeUndo]);
+  }, [busy, refreezeInImage]);
 
-  /** Batch variant: the same re-freeze over every loaded image (one undo step). */
-  const refreezeWhitedTextFreeAllImages = useCallback(async () => {
+  /** Batch variant: the same 结束预览 over every loaded image. */
+  const endPreviewAllImages = useCallback(async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const undo: FreezeUndoEntry[] = [];
       for (const img of imagesRef.current) {
-        await refreezeInImage(img.id, undo);
-      }
-      pushFreezeUndo(undo);
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, refreezeInImage, pushFreezeUndo]);
-
-  /**
-   * Roll the most recent 涂白 / 再次冻结 quick-fix back in one step — the safety
-   * net for a mis-click with 作用范围 set to 「所有图片」. Restores each touched
-   * region's editor fields and recomposites it; the patch is always rebuilt
-   * from the restored fields, never from the captured blob URL (which the
-   * forward action may already have revoked).
-   */
-  const undoFreezeFix = useCallback(async () => {
-    const stack = freezeUndoStackRef.current;
-    const entries = stack.pop();
-    if (!entries || entries.length === 0) return;
-    setFreezeUndoDepth(stack.length);
-    setBusy(true);
-    try {
-      const byImage = new Map<string, FreezeUndoEntry[]>();
-      for (const e of entries) {
-        const list = byImage.get(e.imageId);
-        if (list) list.push(e);
-        else byImage.set(e.imageId, [e]);
-      }
-      for (const [imageId, list] of byImage) {
-        const img = getImage(imageId);
-        if (!img) continue;
-        const restored = new Map<string, Region>();
-        for (const e of list) {
-          const current = img.regions.find(r => r.id === e.regionId);
-          if (!current) continue;
-          restored.set(e.regionId, {
-            ...current,
-            editorText: e.before.editorText,
-            editorFrozenText: e.before.editorFrozenText,
-            editorErased: e.before.editorErased,
-            editorWhitedOut: e.before.editorWhitedOut,
-            editorBrushUrl: e.before.editorBrushUrl,
-            editorStyle: e.before.editorStyle,
-          });
-        }
-        if (restored.size === 0) continue;
-        updateImage(imageId, current => ({
-          ...current,
-          regions: current.regions.map(r => restored.get(r.id) ?? r),
-        }));
-        for (const r of restored.values()) {
-          await recompositeRegion(imageId, r.id, r);
-        }
+        await refreezeInImage(img.id);
       }
     } finally {
       setBusy(false);
     }
-  }, [getImage, recompositeRegion, updateImage]);
-
-  /**
-   * One-click reveal of every held-back translation on aiBubbleBase regions:
-   * typeset all frozen translations onto their (already text-free) AI bubble
-   * base — no erasure anywhere.
-   */
-  const unfreezeAiBubbleRegions = useCallback(async (imageId: string) => {
-    const img = getImage(imageId);
-    if (!img || busy) return;
-    const targets = img.regions.filter(r =>
-      r.aiBubbleBase && !isAiOwned(r) && !!r.editorFrozenText?.trim()
-    );
-    if (targets.length === 0) return;
-
-    setBusy(true);
-    try {
-      const nextList = targets.map(r => ({
-        ...r,
-        editorText: r.editorFrozenText,
-        editorFrozenText: undefined,
-        editorErased: false,
-      }));
-      const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
-      updateImage(imageId, current => ({
-        ...current,
-        regions: current.regions.map(r => byId.get(r.id) ?? r),
-      }));
-      for (const nr of nextList) {
-        await recompositeRegion(imageId, nr.id, nr);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, getImage, recompositeRegion, updateImage]);
+  }, [busy, refreezeInImage]);
 
   /**
    * Shared driver for one translate run: sweep `pickIds()` and, when the sweep
@@ -1571,8 +1313,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     compositedAtRef.current.clear();
     aiBaseRebasedRef.current.clear();
     erasedBaseCompositedRef.current.clear();
-    freezeUndoStackRef.current = [];
-    setFreezeUndoDepth(0);
     setComputedFontSizes(prev => (Object.keys(prev).length === 0 ? prev : {}));
   }, []);
 
@@ -1583,10 +1323,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     computedFontSizes,
     updateEditorRegion,
     setBrushLayer,
-    eraseRegions,
-    eraseAllImages,
-    restoreErase,
-    restoreEraseAllImages,
     dropRegionCache,
     translateImageRegions,
     translateAllImages,
@@ -1595,13 +1331,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     unfreezeTranslation,
     freezeTranslation,
     resetRegion,
-    whitenFrozenTextFree,
-    whitenFrozenTextFreeAllImages,
-    refreezeWhitedTextFree,
-    refreezeWhitedTextFreeAllImages,
-    undoFreezeFix,
-    freezeUndoDepth,
-    unfreezeAiBubbleRegions,
+    previewFrozenText,
+    previewFrozenTextAllImages,
+    endPreview,
+    endPreviewAllImages,
     resyncEditedRegions,
     refreshEditorPatches,
     buildBrushBase,

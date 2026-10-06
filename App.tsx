@@ -108,10 +108,6 @@ export default function App() {
       computedFontSizes,
       updateEditorRegion,
       setBrushLayer,
-      eraseRegions,
-      eraseAllImages,
-      restoreErase,
-      restoreEraseAllImages,
       dropRegionCache,
       translateImageRegions,
       translateAllImages,
@@ -120,13 +116,10 @@ export default function App() {
       unfreezeTranslation,
       freezeTranslation,
       resetRegion,
-      whitenFrozenTextFree,
-      whitenFrozenTextFreeAllImages,
-      refreezeWhitedTextFree,
-      refreezeWhitedTextFreeAllImages,
-      undoFreezeFix,
-      freezeUndoDepth,
-      unfreezeAiBubbleRegions,
+      previewFrozenText,
+      previewFrozenTextAllImages,
+      endPreview,
+      endPreviewAllImages,
       resyncEditedRegions,
       refreshEditorPatches,
       buildBrushBase,
@@ -1125,8 +1118,8 @@ export default function App() {
         </div>
 
         {/* Editor dock (editor workflow, '编辑' tab) — always present there:
-            no box selected → global batch ops (erase/translate); box
-            selected → that box's text/direction/font-size/erase/brush.
+            no box selected → global batch ops (translate / frozen-preview);
+            box selected → that box's text/direction/font-size/erase/brush.
             AI-owned boxes render read-only inside the dock. */}
         {isEditorMode && viewMode === 'edit' && selectedImage && (
           <EditorDock
@@ -1141,10 +1134,6 @@ export default function App() {
             onUpdateRegion={(regionId, updates, opts) => updateEditorRegion(selectedImage.id, regionId, updates, opts)}
             buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
             onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
-            onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
-            onEraseAllImages={(scope) => eraseAllImages(scope)}
-            onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
-            onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
             onTranslate={() => translateSingleImage(selectedImage.id)}
             onTranslateAll={() => translateAllImages()}
             translating={editorTranslating}
@@ -1152,13 +1141,10 @@ export default function App() {
             onStopTranslate={stopTranslation}
             onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
             onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
-            onWhitenFrozenTextFree={() => whitenFrozenTextFree(selectedImage.id)}
-            onWhitenFrozenTextFreeAll={whitenFrozenTextFreeAllImages}
-            onRefreezeWhitedTextFree={() => refreezeWhitedTextFree(selectedImage.id)}
-            onRefreezeWhitedTextFreeAll={refreezeWhitedTextFreeAllImages}
-            onUndoFreezeFix={undoFreezeFix}
-            freezeUndoDepth={freezeUndoDepth}
-            onRevealAiBase={() => unfreezeAiBubbleRegions(selectedImage.id)}
+            onPreviewFrozenText={() => previewFrozenText(selectedImage.id)}
+            onPreviewFrozenTextAll={previewFrozenTextAllImages}
+            onEndPreview={() => endPreview(selectedImage.id)}
+            onEndPreviewAll={endPreviewAllImages}
             onDownload={handleDownload}
             onApplyAsOriginal={handleApplyAsOriginalWrapper}
             onReorderRegion={(regionId, dir) => editorOnReorderRegion(regionId, dir)}
