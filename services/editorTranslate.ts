@@ -10,14 +10,14 @@ import { buildFontChoicePrompt, resolveFontIdFromAi } from './fontService';
  * The full image is annotated with numbered boxes — one per editable editor
  * region (contextOnly bubbles excluded) — and sent to the configured
  * OpenAI-compatible vision endpoint together with a JSON skeleton. The model
- * returns per-region source text (doubles as OCR) + Simplified Chinese
- * translation for EVERY text-bearing region; regions flagged freeze (sfx /
+ * returns per-region source text (the recognized original) + Simplified
+ * Chinese translation for EVERY text-bearing region; regions flagged freeze (sfx /
  * stylized lettering / text over complex backgrounds) get their translation
  * stored as frozen text instead of being typeset into the image.
  */
 
 export interface RegionTranslation {
-  /** Recognized original text (used as OCR). */
+  /** Recognized original text. */
   source?: string;
   /** Simplified Chinese translation. */
   zh?: string;

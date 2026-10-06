@@ -26,7 +26,6 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
     const lang = config.language;
     const [showDetectTuning, setShowDetectTuning] = useState(false);
     const showDetection = config.enableBubbleDetection;
-    const showOCR = config.enableOCR;
     const showEditor = config.enableManualEditor;
 
     return (
@@ -135,19 +134,6 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
             ) : (
                 <div className="text-xs text-skin-muted italic text-center py-2">
                     Enable "Bubble Detection" in Global Settings to see tools.
-                </div>
-            )}
-
-            {showOCR && (
-                <div className="pt-2">
-                    <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'ocrApiLabel')}</label>
-                    <input
-                        type="text"
-                        value={config.ocrApiUrl}
-                        onChange={(e) => onChange('ocrApiUrl', e.target.value)}
-                        className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:border-skin-primary transition-colors focus:ring-1 focus:ring-skin-primary/50"
-                        placeholder="http://localhost:5000/ocr"
-                    />
                 </div>
             )}
 

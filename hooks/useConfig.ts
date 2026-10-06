@@ -130,7 +130,6 @@ const DEFAULT_CONFIG: AppConfig = {
   // Default to localhost for Python backend development
   // Unified backend (server/, see docs/API_RTDTR.md) listens on 5001
   pythonBackendUrl: 'http://localhost:5001',
-  ocrApiUrl: 'http://localhost:5000/ocr',
   
   // Detection Tuning Defaults
   detectionInflationPercent: 5,
@@ -141,7 +140,6 @@ const DEFAULT_CONFIG: AppConfig = {
   // Manga Module Defaults
   enableMangaMode: false,
   enableBubbleDetection: true,
-  enableOCR: true,
   enableManualEditor: true,
   enableVerticalTextDefault: false,
   editorFontFamily: '', // '' = 系统默认字体；其余 id 见 services/fontService.ts
@@ -214,6 +212,10 @@ export function useConfig() {
         // 「AI 重绘区域」（气泡框 / 文字框）选择器已移除：重绘管线固定只画
         // 文字框（text_bubble + text_free）。丢弃存储里的死键。
         delete (migratedConfig as any).generationRegionSource;
+
+        // OCR 功能已移除（开关 + 独立 OCR 接口）：丢弃存储里的死键。
+        delete (migratedConfig as any).enableOCR;
+        delete (migratedConfig as any).ocrApiUrl;
 
         
         // Ensure the OpenAI-compatible image endpoint mode exists.

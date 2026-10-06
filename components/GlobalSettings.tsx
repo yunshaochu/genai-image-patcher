@@ -371,11 +371,6 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             control={<Toggle size="sm" checked={config.enableBubbleDetection} onChange={(v) => updateConfig('enableBubbleDetection', v)} />}
                                         />
                                         <SubRow
-                                            title={t(lang, 'enableOCR')}
-                                            desc={t(lang, 'enableOCRDesc')}
-                                            control={<Toggle size="sm" checked={config.enableOCR} onChange={(v) => updateConfig('enableOCR', v)} />}
-                                        />
-                                        <SubRow
                                             title={t(lang, 'enableManualEditor')}
                                             help={t(lang, 'enableManualEditorDesc')}
                                             control={<Toggle size="sm" checked={config.enableManualEditor} onChange={(v) => updateConfig('enableManualEditor', v)} />}

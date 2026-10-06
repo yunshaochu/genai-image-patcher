@@ -13,10 +13,10 @@ import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
  *
  * The dock is always present on the edit tab and is context-sensitive:
- *  - No box selected → global batch operations (erase / restore / OCR /
- *    translate) plus a hint to click a box.
+ *  - No box selected → global batch operations (erase / restore / translate)
+ *    plus a hint to click a box.
  *  - Box selected → that region's editable properties (text, direction,
- *    font size, erase toggle, OCR, brush touch-up) with prev/next cycling.
+ *    font size, erase toggle, brush touch-up) with prev/next cycling.
  *
  * AI-owned regions (completed by the image-generation pipeline) are shown
  * read-only: the AI patch is final and the editor must not overwrite it.
@@ -39,7 +39,6 @@ interface EditorDockProps {
     editorErased?: boolean;
     editorStyle?: Region['editorStyle'];
   }, opts?: { debounceMs?: number }) => void;
-  onOcrRegion: (regionId: string) => Promise<void>;
   buildBrushBase: (regionId: string) => Promise<string | null>;
   onBrushChange: (regionId: string, url: string | null) => void;
   onErase: (scope: EraseScope) => void;
@@ -47,7 +46,6 @@ interface EditorDockProps {
   onEraseAllImages: (scope: EraseScope) => void;
   onRestoreErase: (scope: RestoreScope) => void;
   onRestoreEraseAllImages: (scope: RestoreScope) => void;
-  onOcrAll: () => void;
   onTranslate: () => void;
   onTranslateAll: () => void;
   /** True while an auto-translate run is in flight — shows the stop button. */
@@ -239,7 +237,7 @@ const BrushPainter: React.FC<{
   const geomKey = `${region.x},${region.y},${region.width},${region.height}`;
   // Rebuild the base whenever editor content/geometry changes — but NOT on
   // brush strokes (the base excludes the brush layer by design).
-  const baseDepsKey = `${region.id}|${geomKey}|${region.editorErased}|${region.editorText}|${region.ocrText}|${JSON.stringify(region.editorStyle)}`;
+  const baseDepsKey = `${region.id}|${geomKey}|${region.editorErased}|${region.editorText}|${JSON.stringify(region.editorStyle)}`;
 
   const redraw = useCallback(() => {
     const display = displayRef.current;
@@ -326,7 +324,7 @@ const BrushPainter: React.FC<{
       : null;
     redraw();
   }, [
-    region.editorText, region.ocrText, region.editorStyle, region.editorWhitedOut,
+    region.editorText, region.editorStyle, region.editorWhitedOut,
     ready, preferVerticalDefault, redraw,
   ]);
 
@@ -709,9 +707,9 @@ const RegionFontPicker: React.FC<{
 // ---------------------------------------------------------------------------
 const EditorDock: React.FC<EditorDockProps> = ({
   image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
-  onConfigChange, onUpdateRegion, onOcrRegion, buildBrushBase, onBrushChange,
+  onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
   onErase, onEraseAllImages, onRestoreErase, onRestoreEraseAllImages,
-  onOcrAll, onTranslate, onTranslateAll,
+  onTranslate, onTranslateAll,
   translating, translatingImageId, onStopTranslate,
   onUnfreeze, onFreeze, onWhitenFrozenTextFree, onWhitenFrozenTextFreeAll,
   onRefreezeWhitedTextFree, onRefreezeWhitedTextFreeAll,
@@ -944,17 +942,6 @@ const EditorDock: React.FC<EditorDockProps> = ({
             </button>
           </div>
 
-          {config.enableOCR && (
-            <button
-              onClick={onOcrAll}
-              disabled={busy}
-              className="w-full px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
-            >
-              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
-              {t(lang, 'editorOcrAll')}
-            </button>
-          )}
-
           {config.enableTranslationMode && (
             <div className="space-y-1.5">
               {translating ? (
@@ -1062,12 +1049,12 @@ const EditorDock: React.FC<EditorDockProps> = ({
    * actually being translated must be frozen (the AI is about to overwrite its
    * regions), while the pages already finished — or not started yet — stay
    * editable, so the user can keep polishing a completed box (字色 / 字体 / 字号
-   * …) while the next page renders. Non-translation work (erase / OCR) still
+   * …) while the next page renders. Non-translation work (erase) still
    * locks globally through `busy`.
    */
   const regionEditLocked =
     aiLocked || translatingImageId === image.id || (busy && !translating);
-  const text = region.editorText ?? region.ocrText ?? '';
+  const text = region.editorText ?? '';
   const vertical = region.editorStyle?.isVertical;
 
   // Auto-fit size, resolved on the spot when neither an explicit size nor the
@@ -1203,6 +1190,21 @@ const EditorDock: React.FC<EditorDockProps> = ({
           placeholder={t(lang, 'editorTextPlaceholder')}
           className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
         />
+
+        {/* 整页 AI 翻译一并识别出的原文 —— 只读参考，不参与排版 */}
+        {region.sourceText?.trim() && (
+          <div className="flex items-start gap-1.5">
+            <span className="text-[9px] font-bold text-skin-muted shrink-0 mt-0.5">{t(lang, 'editorSourceLabel')}</span>
+            <span className="text-[10px] text-skin-muted whitespace-pre-wrap break-words leading-snug flex-1">{region.sourceText}</span>
+            <button
+              onClick={() => navigator.clipboard.writeText(region.sourceText || '')}
+              className="text-skin-muted hover:text-skin-primary shrink-0 mt-0.5"
+              title={t(lang, 'copyCrop')}
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+            </button>
+          </div>
+        )}
 
         {/* Direction + font size */}
         <div className="flex items-center gap-1.5">
@@ -1354,37 +1356,21 @@ const EditorDock: React.FC<EditorDockProps> = ({
           onUpdateRegion={onUpdateRegion}
         />
 
-        {/* Erase toggle + per-region OCR */}
-        <div className="grid grid-cols-2 gap-1.5">
-          <button
-            onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
-            // aiErasedBase = 本框贴图就是 AI「擦除」产出的干净底图：编辑器不许再擦
-            // （AI 产物绝对优先），按钮直接锁掉。
-            disabled={regionEditLocked || !!region.aiErasedBase}
-            title={region.aiErasedBase ? t(lang, 'editorEraseLockedByAi') : undefined}
-            className={`px-2 py-1.5 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
-              region.editorErased
-                ? 'border-sky-300 text-sky-600 bg-sky-500/10 hover:bg-sky-500/20'
-                : 'bg-skin-primary/10 text-skin-primary border-skin-primary/20 hover:bg-skin-primary/20'
-            }`}
-          >
-            {region.editorErased ? t(lang, 'editorRestoreRegion') : t(lang, 'editorEraseRegion')}
-          </button>
-          {config.enableOCR ? (
-            <button
-              onClick={async () => {
-                await onOcrRegion(region.id);
-                onUpdateRegion(region.id, {}, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS });
-              }}
-              disabled={busy || aiLocked || region.isOcrLoading}
-              className="px-2 py-1.5 text-[10px] border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-50 transition-colors flex items-center justify-center gap-1"
-            >
-              {region.isOcrLoading ? (
-                <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-              ) : 'OCR'}
-            </button>
-          ) : <span />}
-        </div>
+        {/* Erase toggle */}
+        <button
+          onClick={() => onUpdateRegion(region.id, { editorErased: !region.editorErased }, { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS })}
+          // aiErasedBase = 本框贴图就是 AI「擦除」产出的干净底图：编辑器不许再擦
+          // （AI 产物绝对优先），按钮直接锁掉。
+          disabled={regionEditLocked || !!region.aiErasedBase}
+          title={region.aiErasedBase ? t(lang, 'editorEraseLockedByAi') : undefined}
+          className={`w-full px-2 py-1.5 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
+            region.editorErased
+              ? 'border-sky-300 text-sky-600 bg-sky-500/10 hover:bg-sky-500/20'
+              : 'bg-skin-primary/10 text-skin-primary border-skin-primary/20 hover:bg-skin-primary/20'
+          }`}
+        >
+          {region.editorErased ? t(lang, 'editorRestoreRegion') : t(lang, 'editorEraseRegion')}
+        </button>
 
         {/* Freeze-state slot: frozen → held-back translation + unfreeze;
             otherwise → manual freeze (pull typeset text out of the image,

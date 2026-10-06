@@ -164,11 +164,11 @@ export const resolveEraseRect = (
   };
 };
 
-/** Effective text for a region: user edit wins, OCR text is the fallback.
- *  Frozen regions (translation held back) suppress the OCR fallback — they
- *  must render the untouched original, not a typeset preview. */
+/** Effective text to typeset for a region. Frozen regions (translation held
+ *  back) render the untouched original — their translation stays in
+ *  editorFrozenText and never reaches the compositor. */
 export const getRegionEditorText = (region: Region): string =>
-  region.editorText ?? (region.editorFrozenText?.trim() ? '' : region.ocrText ?? '');
+  region.editorText ?? '';
 
 /**
  * AI「擦除」产物的干净底图 URL —— 编辑器每次重建贴图都从它出发。

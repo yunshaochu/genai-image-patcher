@@ -163,7 +163,7 @@ const selectedImage = useMemo(
 
 ### 3.3 App.tsx 大量 handler 未 memo 🟠
 
-`App.tsx` 仅 4 个 `useCallback`（186/382/389/438 行），其余像 `handleManualPatchUpdate`、`onRegionsChanged`、`handleUpload`、`handleEditorSave`、`handleOcrRegion`、`handleDownload`、`handleApplyAsOriginalWrapper`、`updateConfig`、`fetchTransModels` 等全是裸函数。这些函数每次 App 重渲染都新建引用 → 传给 Sidebar/EditorCanvas 后让 `React.memo` 失效。
+`App.tsx` 仅 4 个 `useCallback`（186/382/389/438 行），其余像 `handleManualPatchUpdate`、`onRegionsChanged`、`handleUpload`、`handleEditorSave`、`handleDownload`、`handleApplyAsOriginalWrapper`、`updateConfig`、`fetchTransModels` 等全是裸函数。这些函数每次 App 重渲染都新建引用 → 传给 Sidebar/EditorCanvas 后让 `React.memo` 失效。
 
 `components/EditorCanvas.tsx:48` 用了 `React.memo`，但 `App.tsx:651` 传入的 `onUpdateRegions={(imageId, newRegions) => onRegionsChanged(imageId, newRegions)}` 是 inline 箭头函数，memo 直接被打穿。
 
@@ -199,7 +199,6 @@ const operationVersionRef = useRef<number>(0);
 
 - 用户拖框（region.x/y/width/height 变）触发
 - 改 prompt 文本（region.customPrompt）触发
-- OCR loading 状态变化触发
 - 选中状态完全无关，但也会因 regions 数组引用变化而触发
 
 每次触发都对所有 completed region 重新跑 `renderRegionWithRestore`（含 Canvas drawImage + toBlob）。

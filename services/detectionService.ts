@@ -20,12 +20,6 @@ interface ApiDetectionResponse {
   error?: string;
 }
 
-interface ApiOcrResponse {
-    text: string;
-    success: boolean;
-    error?: string;
-}
-
 /**
  * Resizes an image (from Base64/URL) to a target maximum dimension and returns a Blob.
  * Client-side optimization: Reduces network payload and server processing time.
@@ -64,44 +58,6 @@ const prepareImageForUpload = async (imageUrl: string, maxDimension: number = 15
       else reject(new Error("Failed to create image blob"));
     }, 'image/jpeg', 0.85);
   });
-};
-
-/**
- * Calls the Python backend to recognize text in a cropped region.
- */
-export const recognizeText = async (
-    imageBase64: string,
-    config: AppConfig
-): Promise<string> => {
-    const apiUrl = config.ocrApiUrl;
-    if (!apiUrl) throw new Error("OCR API URL is not configured.");
-
-    // 1. Prepare Image
-    // Use smaller max dimension for OCR crops usually
-    const imageBlob = await prepareImageForUpload(imageBase64, 1024);
-
-    // 2. Build FormData
-    const formData = new FormData();
-    formData.append('image', imageBlob, 'crop.jpg');
-
-    // 3. Send Request
-    const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json' },
-        body: formData,
-        mode: 'cors'
-    });
-
-    if (!response.ok) {
-        throw new Error(`OCR API Error: ${response.statusText}`);
-    }
-
-    const data: ApiOcrResponse = await response.json();
-    if (!data.success) {
-        throw new Error(data.error || "OCR failed");
-    }
-
-    return data.text;
 };
 
 /**

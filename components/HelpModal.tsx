@@ -102,7 +102,6 @@ const TOPICS: HelpTopic[] = [
                     { icon: '🗂️', titleKey: 'help_wb_10_title', descKey: 'help_wb_10_desc' },
                     { icon: '🔲', titleKey: 'help_wb_11_title', descKey: 'help_wb_11_desc' },
                     { icon: '🔁', titleKey: 'help_wb_12_title', descKey: 'help_wb_12_desc' },
-                    { icon: '🔤', titleKey: 'help_wb_13_title', descKey: 'help_wb_13_desc' },
                     { icon: '🚫', titleKey: 'help_wb_14_title', descKey: 'help_wb_14_desc' },
                 ],
             },

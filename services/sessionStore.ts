@@ -173,15 +173,20 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
   const fullAiResultUrl = persistableToUrl(rec.fullAi);
   const regions: Region[] = rec.regions.map((r) => {
     const { processed, restoreMask, editorBrush, aiEraseBase, ...scalars } = r;
+    // OCR 功能已移除：老会话里 ocrText 存的是「识别出的原文」，迁到 sourceText
+    // 继续展示；其余 OCR 痕迹（加载态）直接丢弃。
+    const legacyOcrText = (scalars as any).ocrText as string | undefined;
+    delete (scalars as any).ocrText;
+    delete (scalars as any).isOcrLoading;
     // 迁移：把旧版塞在 customPrompt 里的 marker 译文块拆到 customTranslation。
     const trans = migratePromptToTranslation(scalars.customPrompt);
     return {
       ...scalars,
       customPrompt: trans.prompt,
       customTranslation: scalars.customTranslation ?? trans.translation,
+      sourceText: scalars.sourceText ?? legacyOcrText,
       // No API call is in flight after a reload — never restore 'processing'.
       status: scalars.status === 'processing' ? 'pending' : scalars.status,
-      isOcrLoading: false,
       processedImageUrl: persistableToUrl(processed),
       restoreMaskUrl: persistableToUrl(restoreMask),
       editorBrushUrl: persistableToUrl(editorBrush),

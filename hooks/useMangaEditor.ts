@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf } from '../types';
-import { loadImage, cropRegion, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
-import { recognizeText } from '../services/detectionService';
+import { loadImage, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { translateEditorRegions } from '../services/editorTranslate';
 import {
   compositeRegionPatch,
@@ -29,7 +28,7 @@ const DEFAULT_MAX_END_RETRY_ROUNDS = 3;
 
 /**
  * AI-owned region: completed by the image-generation pipeline, not by the
- * editor. Editor operations (erase / text / brush / OCR / translate) must
+ * editor. Editor operations (erase / text / brush / translate) must
  * never touch these — the AI patch always wins. Conversely, editor-completed
  * regions (editorComposited=true) are excluded from AI processing because the
  * AI only picks up pending/failed regions.
@@ -194,7 +193,7 @@ const mergeEditorUpdates = (region: Region, updates: EditorFieldUpdates): Region
 export function useMangaEditor({ images, updateImage, config, setErrorMsg }: UseMangaEditorParams) {
   const [busy, setBusy] = useState(false);
   // True while an auto-translate run (single page or batch) is in flight —
-  // drives the dock's stop button. Distinct from `busy`, which erase/OCR
+  // drives the dock's stop button. Distinct from `busy`, which erase
   // operations also set.
   const [translating, setTranslating] = useState(false);
   // AbortController of the in-flight translation (single-page runs own it;
@@ -223,7 +222,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * Per-image flavour of the global `busy` lock, mirroring the dock's
    * `regionEditLocked`: during a translate run only the page actually being
    * translated is frozen (its regions are about to be overwritten by the AI),
-   * while erase / OCR still lock every page. Used by the region operations the
+   * while erase still locks every page. Used by the region operations the
    * user may run mid-batch (freeze / unfreeze) so a completed page stays
    * editable while the next one renders.
    */
@@ -350,8 +349,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         return next;
       });
 
-      // Only explicitly written text makes the region "final". The OCR
-      // fallback (ocrText) still renders in the editor tab, but the region
+      // Only explicitly written text makes the region "final" — the region
       // stays pending until the user confirms text into editorText.
       const hasWrittenText = !!region.editorText?.trim();
 
@@ -884,8 +882,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
    * Auto-translate one image: a single vision-AI call over all editable
    * regions (annotated full image + numbered skeleton). Every text-bearing
    * region gets a translation; how it lands depends on the AI's freeze flag:
-   *  - Normal: source → ocrText, translation → editorText, region erased and
-   *    typeset (status completed).
+   *  - Normal: source → sourceText (展示用), translation → editorText, region
+   *    erased and typeset (status completed).
    *  - Frozen (sfx / stylized lettering / text_free on complex backgrounds):
    *    translation → editorFrozenText only; the original artwork stays
    *    untouched and the region keeps pending status so the AI redraw
@@ -966,7 +964,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
           // no erasure/whiteout may touch the AI base.
           frozen.push({
             ...r,
-            ocrText: res.source ?? r.ocrText,
+            sourceText: res.source ?? r.sourceText,
             editorFrozenText: res.zh,
             customTranslation: res.zh,
             // Freeze = pull the translation OUT of the image: drop any
@@ -980,7 +978,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         } else {
           translated.push({
             ...r,
-            ocrText: res.source ?? r.ocrText,
+            sourceText: res.source ?? r.sourceText,
             editorText: res.zh,
             customTranslation: res.zh,
             editorFrozenText: undefined,
@@ -1482,47 +1480,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     }
   }, [busy, runTranslateRounds]);
 
-  /** OCR every non-context region that doesn't have text yet. */
-  const ocrAllRegions = useCallback(async (imageId: string) => {
-    const img = getImage(imageId);
-    if (!img || busy) return;
-    const targets = img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) && !(r.editorText ?? r.ocrText)?.trim()
-    );
-    if (targets.length === 0) return;
-
-    setBusy(true);
-    try {
-      const imageEl = await loadImage(img.previewUrl);
-      for (const region of targets) {
-        try {
-          updateImage(imageId, current => ({
-            ...current,
-            regions: current.regions.map(r => r.id === region.id ? { ...r, isOcrLoading: true } : r),
-          }));
-          const cropUrl = await cropRegion(imageEl, region);
-          const text = await recognizeText(cropUrl, configRef.current);
-          releaseObjectURL(cropUrl);
-          updateImage(imageId, current => ({
-            ...current,
-            regions: current.regions.map(r => r.id === region.id ? { ...r, ocrText: text, isOcrLoading: false } : r),
-          }));
-          // OCR text becomes the typeset source — refresh the patch with the
-          // region as it now stands (it was just written to the store).
-          await recompositeRegion(imageId, region.id, { ...region, ocrText: text, isOcrLoading: false });
-        } catch (e: any) {
-          console.error('OCR failed for region', region.id, e);
-          updateImage(imageId, current => ({
-            ...current,
-            regions: current.regions.map(r => r.id === region.id ? { ...r, isOcrLoading: false } : r),
-          }));
-        }
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, getImage, recompositeRegion, updateImage]);
-
   /**
    * Called after regions change on the canvas (drag/resize in editor mode):
    * any region whose editor content exists but whose composite anchor no
@@ -1631,7 +1588,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     restoreErase,
     restoreEraseAllImages,
     dropRegionCache,
-    ocrAllRegions,
     translateImageRegions,
     translateAllImages,
     translateSingleImage,

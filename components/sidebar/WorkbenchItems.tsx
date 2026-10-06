@@ -308,12 +308,10 @@ export const ManualPatchRow: React.FC<{
   config: AppConfig;
   onPatchUpdate: (base64: string) => void;
   lang: 'zh' | 'en';
-  onOcr: () => void;
-  showOcr: boolean;
   showRetryDiagnostics: boolean;
   /** 改这一格的重绘场景覆盖（undefined = 跟随全局默认场景）。 */
   onIntentChange?: (intent: RedrawIntent | undefined) => void;
-}> = ({ region, image, config, onPatchUpdate, lang, onOcr, showOcr, showRetryDiagnostics, onIntentChange }) => {
+}> = ({ region, image, config, onPatchUpdate, lang, showRetryDiagnostics, onIntentChange }) => {
   const [sourceCrop, setSourceCrop] = useState<string | null>(null);
   const [errorHistoryOpen, setErrorHistoryOpen] = useState(false);
   // Padding info of the square-filled copy (null when square fill is off)
@@ -496,34 +494,19 @@ export const ManualPatchRow: React.FC<{
           )}
         </div>
       )}
-      
-      {/* OCR Section - Only if enabled */}
-      {showOcr && (
+
+      {/* 整页 AI 翻译识别出的原文 —— 只读展示，可一键复制 */}
+      {region.sourceText?.trim() && (
         <div className="border-t border-skin-border pt-1.5 flex items-center gap-2">
-           <button 
-              onClick={onOcr}
-              disabled={region.isOcrLoading}
-              className="text-[9px] px-2 py-0.5 bg-skin-primary/10 text-skin-primary border border-skin-primary/20 rounded hover:bg-skin-primary/20 transition-colors flex items-center gap-1"
-           >
-              {region.isOcrLoading ? (
-                   <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-              ) : (
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"></path></svg>
-              )}
-              OCR
-           </button>
-           <span className="text-[9px] text-skin-text truncate flex-1" title={region.ocrText}>
-              {region.ocrText || <span className="text-skin-muted italic">{t(lang, 'ocrPlaceholder')}</span>}
-           </span>
-           {region.ocrText && (
-               <button 
-                 onClick={() => navigator.clipboard.writeText(region.ocrText || '')}
-                 className="text-[9px] text-skin-muted hover:text-skin-primary"
-                 title="Copy Text"
-               >
-                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
-               </button>
-           )}
+          <span className="text-[9px] font-bold text-skin-muted shrink-0">{t(lang, 'editorSourceLabel')}</span>
+          <span className="text-[9px] text-skin-text truncate flex-1" title={region.sourceText}>{region.sourceText}</span>
+          <button
+            onClick={() => navigator.clipboard.writeText(region.sourceText || '')}
+            className="text-[9px] text-skin-muted hover:text-skin-primary shrink-0"
+            title={t(lang, 'copyCrop')}
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+          </button>
         </div>
       )}
     </div>

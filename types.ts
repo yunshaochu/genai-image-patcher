@@ -135,18 +135,19 @@ export interface Region {
   /** 译文（独立字段，不再塞进提示词里的 marker 块）。翻译阶段写入；
    *  仅当 redrawIntent='translate' 时作为上下文拼进重绘 payload。 */
   customTranslation?: string;
+  /** 整页 AI 翻译一并识别出的原文（保留原语言）。仅供展示参考 / 复制，
+   *  永不参与排版，也不进重绘 payload。 */
+  sourceText?: string;
   /** Visible context only — not translated or painted. Set for `bubble`
    *  outlines: a bubble is the redundant OUTER box around a `text_bubble` and
    *  is dropped by detection whenever it encloses text (see DetectedClass), so
    *  only empty bubbles reach here. */
   contextOnly?: boolean;
-  ocrText?: string; // Detected text from OCR
-  isOcrLoading?: boolean; // Loading state for OCR
   restoreBoxes?: RestoreBox[]; // Box-based restore regions (框选还原)
   restoreMaskUrl?: string; // Brush-based restore mask Object URL (涂抹还原), alpha=1=processed, 0=original
 
   // --- In-place manga text editor (editor workflow mode) ---
-  editorText?: string;        // Edited/typeset text (falls back to ocrText when unset)
+  editorText?: string;        // Edited/typeset text
   editorErased?: boolean;     // Original text inside the region has been flood-fill erased
   editorStyle?: EditorTextStyle; // Typeset style overrides
   editorBrushUrl?: string;    // Transparent brush-stroke layer Object URL (region-crop sized)
@@ -392,7 +393,6 @@ export interface AppConfig {
 
   // Backend Detection Settings (Python)
   pythonBackendUrl: string; // Unified Python backend base URL, e.g. http://localhost:5001 (hosts /detect, /erase, /health)
-  ocrApiUrl: string; // e.g. http://localhost:5000/ocr
   
   // Detection Tuning
   detectionInflationPercent: number; // e.g. 10 for 10% expansion
@@ -403,7 +403,6 @@ export interface AppConfig {
   // Manga Module Settings (New Structure)
   enableMangaMode: boolean;        // Master switch
   enableBubbleDetection: boolean;  // Sub switch: Auto-detect regions
-  enableOCR: boolean;              // Sub switch: Text recognition
   enableManualEditor: boolean;     // Sub switch: Brush/Text editor
   enableVerticalTextDefault: boolean; // Sub switch: Default text orientation
   /** 嵌字默认字体：services/fontService.ts 里的字体 id，'' = 系统默认。

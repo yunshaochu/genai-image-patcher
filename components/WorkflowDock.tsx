@@ -54,7 +54,6 @@ interface WorkflowDockProps {
   onUpdateRegionTranslation: (imageId: string, regionId: string, translation: string) => void;
   onUpdateImageTranslation: (imageId: string, translation: string) => void;
   onManualPatchUpdate: (imageId: string, regionId: string, base64: string) => void;
-  onOcrRegion: (imageId: string, regionId: string) => void;
   /**
    * 调整选中格的叠放次序（谁盖谁 = regions 数组下标，下标越大越靠上）。
    * AI 重绘 / 手动修补工坊共用：贴图部分重叠时，↑ 让这一格盖到相邻贴图之上。
@@ -84,7 +83,6 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   onUpdateRegionTranslation,
   onUpdateImageTranslation,
   onManualPatchUpdate,
-  onOcrRegion,
   onReorderRegion,
   images,
   processingState,
@@ -348,8 +346,6 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                       config={config}
                       onPatchUpdate={(base64) => onManualPatchUpdate(currentImage.id, region.id, base64)}
                       lang={lang}
-                      onOcr={() => onOcrRegion(currentImage.id, region.id)}
-                      showOcr={config.enableMangaMode && config.enableOCR}
                       showRetryDiagnostics={!!config.showRetryDiagnostics}
                       onIntentChange={(v) => onUpdateRegionIntent(currentImage.id, region.id, v)}
                     />

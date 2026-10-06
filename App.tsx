@@ -5,14 +5,13 @@ import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
-import { loadImage, cropRegion, stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl } from './services/imageUtils';
+import { stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl } from './services/imageUtils';
 import { downloadImagesAsZip } from './services/downloadZip';
 // Type-only: mixing an interface into a value import makes the dev server emit a
 // runtime import for a name that does not exist ('does not provide an export named …').
 import type { ResolvedResultUrl } from './services/downloadZip';
 import { downloadWorkStateZip, readWorkStateZip } from './services/workStateTransfer';
 import { fetchOpenAIModels } from './services/aiService';
-import { recognizeText } from './services/detectionService';
 import { t } from './services/translations';
 import { resolveAutoFontSize, moveRegionLayer, LayerDirection } from './services/mangaEditor';
 import { setDefaultFontFamily } from './services/textLayout';
@@ -114,7 +113,6 @@ export default function App() {
       restoreErase,
       restoreEraseAllImages,
       dropRegionCache,
-      ocrAllRegions,
       translateImageRegions,
       translateAllImages,
       translateSingleImage,
@@ -481,33 +479,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [images, selectedImageId, handleSelectImage, selectedRegionId, handleDeleteSelectedRegion]);
 
-  const handleOcrRegion = useCallback(async (imageId: string, regionId: string) => {
-     const img = images.find(i => i.id === imageId);
-     const region = img?.regions.find(r => r.id === regionId);
-     if (!img || !region) return;
-     updateImage(imageId, currentImg => ({
-         ...currentImg,
-         regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: true } : r)
-     }));
-     try {
-         const imgEl = await loadImage(img.previewUrl);
-         const cropUrl = await cropRegion(imgEl, region);
-         const text = await recognizeText(cropUrl, config);
-         // Release the temporary crop URL after OCR is done
-         releaseObjectURL(cropUrl);
-         updateImage(imageId, currentImg => ({
-             ...currentImg,
-             regions: currentImg.regions.map(r => r.id === regionId ? { ...r, ocrText: text, isOcrLoading: false } : r)
-         }));
-     } catch (e: any) {
-         setErrorMsg("OCR Error: " + e.message);
-         updateImage(imageId, currentImg => ({
-             ...currentImg,
-             regions: currentImg.regions.map(r => r.id === regionId ? { ...r, isOcrLoading: false } : r)
-         }));
-     }
-  }, [images, config, updateImage, setErrorMsg]);
-
   // --- RESTORE BOXES HANDLER ---
   const handleUpdateRestoreBoxes = useCallback((regionId: string, boxes: RestoreBox[]) => {
       updateAllImages(img => ({
@@ -767,9 +738,6 @@ export default function App() {
   // Stable adapters for EditorCanvas — bind selectedImage.id so the child only sees a regionId arg.
   const selectedImageId_safe = selectedImage?.id;
   const editorOnUpdateRegions = onRegionsChanged;
-  const editorOnOcrRegion = useCallback((regionId: string) => {
-      if (selectedImageId_safe) handleOcrRegion(selectedImageId_safe, regionId);
-  }, [selectedImageId_safe, handleOcrRegion]);
   const editorOnAdjustRegionSize = useCallback((regionId: string, isExpand: boolean) => {
       if (selectedImageId_safe) handleAdjustRegion(selectedImageId_safe, regionId, isExpand);
   }, [selectedImageId_safe, handleAdjustRegion]);
@@ -1040,8 +1008,6 @@ export default function App() {
                     language={config.language}
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={setSelectedRegionId}
-                    onOcrRegion={editorOnOcrRegion}
-                    showOcrButton={config.enableMangaMode && config.enableOCR}
                     onAdjustRegionSize={editorOnAdjustRegionSize}
                     onResetRegion={editorOnResetRegion}
                     onInteractionStart={handleInteractionStart}
@@ -1087,8 +1053,8 @@ export default function App() {
         </div>
 
         {/* Editor dock (editor workflow, '编辑' tab) — always present there:
-            no box selected → global batch ops (erase/OCR/translate); box
-            selected → that box's text/direction/font-size/erase/OCR/brush.
+            no box selected → global batch ops (erase/translate); box
+            selected → that box's text/direction/font-size/erase/brush.
             AI-owned boxes render read-only inside the dock. */}
         {isEditorMode && viewMode === 'edit' && selectedImage && (
           <EditorDock
@@ -1101,14 +1067,12 @@ export default function App() {
             computedFontSizes={computedFontSizes}
             onConfigChange={updateConfig}
             onUpdateRegion={(regionId, updates, opts) => updateEditorRegion(selectedImage.id, regionId, updates, opts)}
-            onOcrRegion={(regionId) => handleOcrRegion(selectedImage.id, regionId)}
             buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
             onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
             onErase={(scope) => eraseRegions(selectedImage.id, scope, selectedRegionId)}
             onEraseAllImages={(scope) => eraseAllImages(scope)}
             onRestoreErase={(scope) => restoreErase(selectedImage.id, scope, selectedRegionId)}
             onRestoreEraseAllImages={(scope) => restoreEraseAllImages(scope)}
-            onOcrAll={() => ocrAllRegions(selectedImage.id)}
             onTranslate={() => translateSingleImage(selectedImage.id)}
             onTranslateAll={() => translateAllImages()}
             translating={editorTranslating}
@@ -1146,7 +1110,6 @@ export default function App() {
             onUpdateRegionTranslation={handleUpdateRegionTranslation}
             onUpdateImageTranslation={handleUpdateImageTranslation}
             onManualPatchUpdate={handleManualPatchUpdate}
-            onOcrRegion={handleOcrRegion}
             onReorderRegion={reorderRegion}
             images={images}
             processingState={processingState}
