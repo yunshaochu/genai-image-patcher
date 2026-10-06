@@ -780,7 +780,8 @@ export default function App() {
   }, [selectedImageId_safe, resetRegion]);
 
   // 叠放次序：贴图部分重叠时谁盖谁 = regions 数组下标（下标越大越靠上）。
-  // ↑ / ↓ 就是和相邻的一项交换位置；没动就不写状态（moveRegionLayer 返回原数组）。
+  // ↑ / ↓ 挪一层（与相邻项交换），⤒ / ⤓ 直接搬到数组末尾 / 开头；
+  // 没动就不写状态（moveRegionLayer 返回原数组）。
   const reorderRegion = useCallback((imageId: string, regionId: string, dir: LayerDirection) => {
       updateImage(imageId, img => {
           const regions = moveRegionLayer(img.regions, regionId, dir);

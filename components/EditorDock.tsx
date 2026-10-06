@@ -1147,7 +1147,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
         })()}
         </div>
         <div className="ml-auto flex items-center gap-0.5 shrink-0">
-          {/* 叠放次序：↑ 上移一层（盖到相邻贴图之上）/ ↓ 下移一层 */}
+          {/* 叠放次序：⤒ 一键到最顶 / ↑ 上移一层 / ↓ 下移一层 / ⤓ 一键到最底 */}
           <LayerOrderButtons
             lang={lang}
             canUp={canLayerUp}

@@ -181,8 +181,9 @@ export const getRegionEditorText = (region: Region): string =>
 export const eraseBaseUrlOf = (r: Region): string | undefined =>
   r.aiEraseBaseUrl ?? (r.editorComposited ? undefined : r.processedImageUrl);
 
-/** 叠放次序调整方向：'up' = 盖到相邻贴图的上面。 */
-export type LayerDirection = 'up' | 'down';
+/** 叠放次序调整方向：'up'/'down' = 挪一层（盖到相邻贴图之上 / 被其盖住），
+ *  'top'/'bottom' = 直接挪到最上层 / 最下层。 */
+export type LayerDirection = 'up' | 'down' | 'top' | 'bottom';
 
 /**
  * 叠放次序（谁盖谁）= regions 数组的下标：下标越大越靠上。
@@ -191,7 +192,10 @@ export type LayerDirection = 'up' | 'down';
  * 个顺序 drawImage —— 所以"上一层"就是往后挪一位。新建的框 append 在末尾，于是
  * 老框天然被新框盖住（看起来像"按时间顺序"，其实是数组顺序）。
  *
- * 返回原数组（同一引用）表示没动 —— 调用方据此跳过一次无意义的 updateImage。
+ * 'top'/'bottom' 是"一键到顶 / 到底"：把该框直接挪到数组末尾 / 开头。
+ *
+ * 返回原数组（同一引用）表示没动（已经在该去的位置）—— 调用方据此跳过一次
+ * 无意义的 updateImage。
  */
 export const moveRegionLayer = (
   regions: Region[],
@@ -200,12 +204,17 @@ export const moveRegionLayer = (
 ): Region[] => {
   const i = regions.findIndex(r => r.id === regionId);
   if (i < 0) return regions;
-  const j = dir === 'up' ? i + 1 : i - 1;
-  if (j < 0 || j >= regions.length) return regions;
+  // 目标下标：up 往后挪一位（更靠上），down 往前；top/bottom 取两端。
+  const j = dir === 'up' ? i + 1
+    : dir === 'down' ? i - 1
+    : dir === 'top' ? regions.length - 1
+    : 0;
+  // 目标越界或原地不动（已是最上 / 最下）：不产生新数组。
+  if (j === i || j < 0 || j >= regions.length) return regions;
+  // 先摘出再插到目标下标 —— 对"挪一层"等价于与相邻项交换，对"到顶/到底"即搬到端点。
   const next = [...regions];
-  const tmp = next[i];
-  next[i] = next[j];
-  next[j] = tmp;
+  const [moved] = next.splice(i, 1);
+  next.splice(j, 0, moved);
   return next;
 };
 
