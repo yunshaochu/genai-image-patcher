@@ -20,7 +20,15 @@ import { GlossaryRef, GlossaryTerm, GlossaryVariant, Region } from '../types';
  * 标准译名时最重要的依据。
  */
 
-/** 每页翻译返回的一条术语（editorTranslate 的 JSON 契约）。 */
+/**
+ * 每页翻译返回的一条术语（editorTranslate 的 JSON 契约）。
+ *
+ * 约定 source / target **都不带敬语称呼后缀**（くん / さん / ちゃん / 様…）：
+ * アキラくん 与 アキラ 是同一条术语（source「アキラ」），译文「彰君」的 target
+ * 是「彰」。这条约定由 editorTranslate 的整页翻译 prompt 约束；这里不去猜——
+ * 模型万一还是把后缀带回来了，锚点的子串匹配仍能命中（见 findAnchors），
+ * 只是会多出一条术语。
+ */
 export interface PageTerm {
   source: string;
   target: string;
@@ -32,6 +40,69 @@ export const termKeyOf = (source: string): string => source.trim().toLowerCase()
 /** 术语 key 的 sanity 上限——超过这个长度的"术语"基本是模型把整句塞进来了。 */
 const MAX_TERM_SOURCE_LEN = 40;
 const MAX_TERM_TARGET_LEN = 60;
+
+// -------------------- 用户自定义译名槽位（每术语最多一个） --------------------
+
+/** 术语的自定义译名槽位下标（没有则 -1）。 */
+export const customVariantIndex = (term: GlossaryTerm): number =>
+  term.variants.findIndex(v => v.custom);
+
+/** 术语里 AI 译出的变体（不含用户自定义槽位）——AI 选择的候选集与统计口径。 */
+export const aiVariants = (term: GlossaryTerm): GlossaryVariant[] =>
+  term.variants.filter(v => !v.custom);
+
+/**
+ * 写入 / 清除术语的用户自定义译名槽位（见 GlossaryVariant.custom），返回新术语；
+ * 无实际变化时返回原引用。
+ *
+ *  - value 去空白后为空 → 删除槽位（若它正是选定项则取消选定，其后变体下标前移）；
+ *  - value 与某个 AI 译名相同 → 不建重复槽位（重复值会打乱锚点与列表 key 的
+ *    唯一性），直接把那个 AI 译名选为标准译名；
+ *  - 否则写入槽位并**立即选它**为标准译名 —— 用户亲手打的译名就是他要的答案，
+ *    省掉「先加再加点选」两步（统一替换随即执行，可改选/可删）。改值时旧值的
+ *    锚点频次自然失效，refs 清空。
+ */
+export const setCustomVariantValue = (term: GlossaryTerm, value: string): GlossaryTerm => {
+  const trimmed = value.trim();
+  const customIdx = customVariantIndex(term);
+
+  // 清空输入 = 删除槽位。
+  if (!trimmed) {
+    if (customIdx === -1) return term;
+    const variants = term.variants.filter((_, i) => i !== customIdx);
+    const selected = term.selected == null
+      ? null
+      : term.selected === customIdx
+        ? null
+        : term.selected > customIdx
+          ? term.selected - 1
+          : term.selected;
+    return { ...term, variants, selected };
+  }
+
+  // 与已有 AI 译名重名：复用那个变体，不新增槽位。
+  if (term.variants.some(v => !v.custom && v.value === trimmed)) {
+    const variants = customIdx === -1 ? term.variants : term.variants.filter((_, i) => i !== customIdx);
+    const target = variants.findIndex(v => !v.custom && v.value === trimmed);
+    if (target === -1) return term;
+    if (variants === term.variants && term.selected === target) return term;
+    return { ...term, variants, selected: target };
+  }
+
+  if (customIdx === -1) {
+    return {
+      ...term,
+      variants: [...term.variants, { value: trimmed, refs: [], custom: true }],
+      selected: term.variants.length,
+    };
+  }
+  if (term.variants[customIdx].value === trimmed) {
+    return term.selected === customIdx ? term : { ...term, selected: customIdx };
+  }
+  const variants = [...term.variants];
+  variants[customIdx] = { value: trimmed, refs: [], custom: true };
+  return { ...term, variants, selected: customIdx };
+};
 
 /** 框当前承载译文的字段（嵌字文本优先，冻结译文其次）。 */
 export const regionTranslationText = (r: Region): string =>
@@ -232,6 +303,10 @@ export const sanitizeBook = (value: unknown): GlossaryTerm[] | null => {
       if (!rawVariant || typeof rawVariant !== 'object') continue;
       const v = String((rawVariant as any).value ?? '').trim();
       if (!v) continue;
+      const custom = (rawVariant as any).custom === true;
+      // 每术语最多一个用户槽位；与 AI 译名重名的槽位直接丢弃（重复值会破坏
+      // 锚点归属与列表 key 的唯一性，见 setCustomVariantValue）。
+      if (custom && (variants.some(x => x.custom) || variants.some(x => !x.custom && x.value === v))) continue;
       const rawRefs = Array.isArray((rawVariant as any).refs) ? (rawVariant as any).refs : [];
       const refs: GlossaryRef[] = [];
       for (const rawRef of rawRefs) {
@@ -241,7 +316,7 @@ export const sanitizeBook = (value: unknown): GlossaryTerm[] | null => {
         if (!imageId || !regionId) continue;
         if (!hasRef(refs, imageId, regionId)) refs.push({ imageId, regionId });
       }
-      variants.push({ value: v, refs });
+      variants.push({ value: v, refs, ...(custom ? { custom: true } : {}) });
     }
     if (variants.length === 0) continue;
     const rawSelected = (rawTerm as any).selected;
@@ -265,9 +340,10 @@ export const sanitizeBook = (value: unknown): GlossaryTerm[] | null => {
 // 例句取锚定框的 sourceText + 当前译文。
 // =====================================================================
 
-/** AI 选择只处理"有多种译名且尚未人工选定"的术语；人工选过的一律尊重。 */
+/** AI 选择只处理"有多种译名且尚未人工选定"的术语；人工选过的一律尊重。
+ *  口径只数 AI 译名（见 aiVariants）：用户自己加的槽位不是模型的候选。 */
 export const aiPickCandidates = (book: GlossaryTerm[]): GlossaryTerm[] =>
-  book.filter(t => t.selected == null && t.variants.length >= 2);
+  book.filter(t => t.selected == null && aiVariants(t).length >= 2);
 
 /** 一次调用最多带多少条术语（控制输出长度，超了分批）。 */
 export const AI_PICK_BATCH_SIZE = 80;

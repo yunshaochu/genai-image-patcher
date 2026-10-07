@@ -10,6 +10,10 @@ import { HelpTip } from './HelpTip';
  * 未选中的暗显；点击变体即选定/改选（本地字符串替换统一，不重翻）。×N 是
  * 该变体的锚点频次，点击逐个跳到涉及的框。
  *
+ * 变体列表末尾还有**用户自定义槽位**：AI 没译出想要的译名时，用户可以直接
+ * 手写一个（每术语一个，可改可删），写入即选定为标准译名并统一替换 —— 见
+ * services/glossaryBook.ts 的 setCustomVariantValue。
+ *
  * 顶部操作：AI 选择（未决术语批量丢给翻译端点挑标准译名）/ 导出 JSON /
  * 清空（两步确认）。底部两个开关：新页自动统一、批后自动 AI 选择。
  */
@@ -25,6 +29,8 @@ export interface GlossarySectionProps {
   notice?: string | null;
   onConfigChange: (key: keyof AppConfig, value: any) => void;
   onSelectVariant: (key: string, variantIndex: number | null) => void;
+  /** 写入 / 删除本术语的用户自定义译名（'' = 删除），写入即选定为标准译名。 */
+  onSetCustomVariant: (key: string, value: string) => void;
   onRunAiSelection: () => void;
   onExport: () => void;
   /** 单独导入 JSON 文件（整本替换）。 */
@@ -51,13 +57,83 @@ const MiniToggle: React.FC<{ checked: boolean; onChange: (value: boolean) => voi
   </label>
 );
 
-/** 未决 = 有多种译名且尚未选定标准译名（AI 选择 / 人工最该先处理的）。 */
+/** 未决 = 有多种 AI 译名且尚未选定标准译名（AI 选择 / 人工最该先处理的）。
+ *  口径只数 AI 变体：用户自己写的那个槽位不算"AI 给了多个译名"。 */
 const isUnresolved = (term: GlossaryTerm): boolean =>
-  term.selected == null && term.variants.length >= 2;
+  term.selected == null && term.variants.filter(v => !v.custom).length >= 2;
 
 const totalRefs = (term: GlossaryTerm): number =>
   term.variants.reduce((n, v) => n + v.refs.length, 0);
 
+/** 变体行（AI 译名 / 用户自定义槽位共用）。 */
+const VariantRow: React.FC<{
+  lang: Language;
+  value: string;
+  refs: GlossaryRef[];
+  selected: boolean;
+  /** 尚未选定时，只有"选中"一种交互；选定时其余行暗显。 */
+  dimmed: boolean;
+  custom?: boolean;
+  onToggleSelect: () => void;
+  onJump: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+}> = ({ lang, value, refs, selected, dimmed, custom, onToggleSelect, onJump, onEdit, onDelete }) => (
+  <div className="flex items-center gap-0.5 px-1.5 py-0.5">
+    <button
+      onClick={onToggleSelect}
+      title={selected ? t(lang, 'glossaryUnselectVariantTip') : t(lang, 'glossarySelectVariantTip')}
+      className={`flex-1 min-w-0 text-left text-[10px] truncate rounded px-1.5 py-0.5 transition-colors ${
+        selected
+          ? 'font-bold text-skin-primary bg-skin-primary/15'
+          : dimmed
+            ? 'text-skin-muted/60 hover:bg-skin-fill'
+            : 'text-skin-text hover:bg-skin-fill'
+      }`}
+    >
+      {value}
+    </button>
+    {custom && (
+      <span className="text-[8px] px-1 py-0.5 rounded bg-skin-fill text-skin-muted shrink-0">
+        {t(lang, 'glossaryCustomTag')}
+      </span>
+    )}
+    <button
+      onClick={onJump}
+      disabled={refs.length === 0}
+      title={t(lang, 'glossaryJumpTip')}
+      className="text-[9px] font-mono px-1 py-0.5 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill disabled:opacity-40 transition-colors shrink-0"
+    >
+      ×{refs.length}
+    </button>
+    {onEdit && (
+      <button
+        onClick={onEdit}
+        title={t(lang, 'glossaryCustomEditTip')}
+        className="text-[9px] px-1 py-0.5 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors shrink-0"
+      >
+        ✎
+      </button>
+    )}
+    {onDelete && (
+      <button
+        onClick={onDelete}
+        title={t(lang, 'glossaryCustomDeleteTip')}
+        className="text-[10px] leading-none px-1 py-0.5 rounded text-skin-muted hover:text-rose-500 hover:bg-rose-500/10 transition-colors shrink-0"
+      >
+        ×
+      </button>
+    )}
+  </div>
+);
+
+/**
+ * 术语行：AI 译名变体列表 + 末尾的用户自定义译名槽位。
+ *
+ * 自定义槽位是就地编辑的：没有槽位时显示一枚虚线「＋ 自定义译名」按钮，点开
+ * 变输入框，Enter 保存（＝选定为标准译名并统一替换），Esc 取消；已有槽位时
+ * 用 ✎ 改值、× 删除。草稿态只活在展开期间（收起即卸载，不落库）。
+ */
 const TermRow: React.FC<{
   lang: Language;
   term: GlossaryTerm;
@@ -65,65 +141,123 @@ const TermRow: React.FC<{
   onToggle: () => void;
   onSelectVariant: (variantIndex: number | null) => void;
   onJump: (value: string, refs: GlossaryRef[]) => void;
-}> = ({ lang, term, expanded, onToggle, onSelectVariant, onJump }) => (
-  <div className="border border-skin-border rounded-lg overflow-hidden">
-    <button
-      onClick={onToggle}
-      className="w-full flex items-center gap-1 px-1.5 py-1 bg-skin-fill/40 hover:bg-skin-fill text-left transition-colors"
-    >
-      <svg
-        className={`w-3 h-3 shrink-0 text-skin-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
-        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+  onSetCustom: (value: string) => void;
+}> = ({ lang, term, expanded, onToggle, onSelectVariant, onJump, onSetCustom }) => {
+  /** null = 不在编辑态；字符串 = 正在编辑的草稿。 */
+  const [draft, setDraft] = useState<string | null>(null);
+  const customIdx = term.variants.findIndex(v => v.custom);
+  const custom = customIdx === -1 ? null : term.variants[customIdx];
+
+  const commit = () => {
+    const value = (draft ?? '').trim();
+    setDraft(null);
+    if (!value && !custom) return; // 空草稿 + 本来没槽位 = 没有变化
+    onSetCustom(value);            // 空值 = 删除槽位
+  };
+
+  return (
+    <div className="border border-skin-border rounded-lg overflow-hidden">
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-1 px-1.5 py-1 bg-skin-fill/40 hover:bg-skin-fill text-left transition-colors"
       >
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-      </svg>
-      <span className="text-[10px] font-bold text-skin-text truncate">{term.key}</span>
-      {isUnresolved(term) && (
-        <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">
-          {t(lang, 'glossaryUnresolved')}
+        <svg
+          className={`w-3 h-3 shrink-0 text-skin-muted transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+        </svg>
+        <span className="text-[10px] font-bold text-skin-text truncate">{term.key}</span>
+        {isUnresolved(term) && (
+          <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">
+            {t(lang, 'glossaryUnresolved')}
+          </span>
+        )}
+        <span className="ml-auto text-[9px] text-skin-muted shrink-0">
+          {t(lang, 'glossaryVariantCount', { count: term.variants.filter(v => !v.custom).length })}
         </span>
-      )}
-      <span className="ml-auto text-[9px] text-skin-muted shrink-0">
-        {t(lang, 'glossaryVariantCount', { count: term.variants.length })}
-      </span>
-    </button>
-    {expanded && (
-      <div className="py-0.5">
-        {term.variants.map((v, vi) => {
-          const selected = term.selected === vi;
-          return (
-            <div key={v.value} className="flex items-center gap-0.5 px-1.5 py-0.5">
+      </button>
+      {expanded && (
+        <div className="py-0.5">
+          {term.variants.map((v, vi) => {
+            if (v.custom) return null; // 自定义槽位固定画在最后一行
+            const selected = term.selected === vi;
+            return (
+              <VariantRow
+                key={v.value}
+                lang={lang}
+                value={v.value}
+                refs={v.refs}
+                selected={selected}
+                dimmed={term.selected != null && !selected}
+                onToggleSelect={() => onSelectVariant(selected ? null : vi)}
+                onJump={() => onJump(v.value, v.refs)}
+              />
+            );
+          })}
+
+          {/* 用户自定义译名槽位 */}
+          {draft !== null ? (
+            <div className="flex items-center gap-0.5 px-1.5 py-0.5">
+              <input
+                autoFocus
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commit();
+                  else if (e.key === 'Escape') setDraft(null);
+                }}
+                placeholder={t(lang, 'glossaryCustomPlaceholder')}
+                className="flex-1 min-w-0 text-[10px] px-1.5 py-0.5 rounded border border-skin-primary/40 bg-skin-fill/30 text-skin-text outline-none focus:border-skin-primary"
+              />
               <button
-                onClick={() => onSelectVariant(selected ? null : vi)}
-                title={selected ? t(lang, 'glossaryUnselectVariantTip') : t(lang, 'glossarySelectVariantTip')}
-                className={`flex-1 min-w-0 text-left text-[10px] truncate rounded px-1.5 py-0.5 transition-colors ${
-                  selected
-                    ? 'font-bold text-skin-primary bg-skin-primary/15'
-                    : term.selected == null
-                      ? 'text-skin-text hover:bg-skin-fill'
-                      : 'text-skin-muted/60 hover:bg-skin-fill'
-                }`}
+                onClick={commit}
+                title={t(lang, 'glossaryCustomSaveTip')}
+                className="text-[10px] leading-none px-1 py-0.5 rounded text-skin-primary hover:bg-skin-primary/15 transition-colors shrink-0"
               >
-                {v.value}
+                ✓
               </button>
               <button
-                onClick={() => onJump(v.value, v.refs)}
-                disabled={v.refs.length === 0}
-                title={t(lang, 'glossaryJumpTip')}
-                className="text-[9px] font-mono px-1 py-0.5 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill disabled:opacity-40 transition-colors shrink-0"
+                onClick={() => setDraft(null)}
+                title={t(lang, 'glossaryCustomCancelTip')}
+                className="text-[10px] leading-none px-1 py-0.5 rounded text-skin-muted hover:bg-skin-fill transition-colors shrink-0"
               >
-                ×{v.refs.length}
+                ×
               </button>
             </div>
-          );
-        })}
-        {term.note && (
-          <div className="px-2 pb-0.5 text-[9px] text-skin-muted/80 leading-tight">{term.note}</div>
-        )}
-      </div>
-    )}
-  </div>
-);
+          ) : custom ? (
+            <VariantRow
+              lang={lang}
+              value={custom.value}
+              refs={custom.refs}
+              selected={term.selected === customIdx}
+              dimmed={term.selected != null && term.selected !== customIdx}
+              custom
+              onToggleSelect={() => onSelectVariant(term.selected === customIdx ? null : customIdx)}
+              onJump={() => onJump(custom.value, custom.refs)}
+              onEdit={() => setDraft(custom.value)}
+              onDelete={() => onSetCustom('')}
+            />
+          ) : (
+            <div className="px-1.5 py-0.5">
+              <button
+                onClick={() => setDraft('')}
+                title={t(lang, 'glossaryAddCustomTip')}
+                className="w-full text-left text-[10px] text-skin-muted border border-dashed border-skin-border rounded px-1.5 py-0.5 hover:border-skin-primary hover:text-skin-primary transition-colors truncate"
+              >
+                {t(lang, 'glossaryAddCustom')}
+              </button>
+            </div>
+          )}
+
+          {term.note && (
+            <div className="px-2 pb-0.5 text-[9px] text-skin-muted/80 leading-tight">{term.note}</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
   lang,
@@ -135,6 +269,7 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
   notice,
   onConfigChange,
   onSelectVariant,
+  onSetCustomVariant,
   onRunAiSelection,
   onExport,
   onImport,
@@ -298,6 +433,7 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
                   onToggle={() => setExpandedKeys(prev => ({ ...prev, [term.key]: !prev[term.key] }))}
                   onSelectVariant={(vi) => onSelectVariant(term.key, vi)}
                   onJump={(value, refs) => jumpToNextAnchor(term.key, value, refs)}
+                  onSetCustom={(value) => onSetCustomVariant(term.key, value)}
                 />
               ))
             )}

@@ -92,6 +92,8 @@ interface EditorDockProps {
     /** 操作结果的一次性提示（AI 选择完成/无可选），几秒后由 App 清掉。 */
     notice?: string | null;
     onSelectVariant: (key: string, variantIndex: number | null) => void;
+    /** 写入 / 删除某术语的用户自定义译名槽位（'' = 删除）。 */
+    onSetCustomVariant: (key: string, value: string) => void;
     onRunAiSelection: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -909,6 +911,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
       autoAiSelect={config.glossaryAutoAiSelect}
       onConfigChange={onConfigChange}
       onSelectVariant={glossary.onSelectVariant}
+      onSetCustomVariant={glossary.onSetCustomVariant}
       onRunAiSelection={glossary.onRunAiSelection}
       onExport={glossary.onExport}
       onImport={glossary.onImport}

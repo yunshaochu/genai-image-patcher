@@ -7,12 +7,14 @@ import {
   AiPickResult,
   PageTerm,
   aiPickCandidates,
+  aiVariants,
   buildAiPickPrompt,
   mergePageTerms as mergeIntoBook,
   parseAiPickResponse,
   regionTranslationText,
   sanitizeBook,
   serializeBook,
+  setCustomVariantValue,
   termAnchors,
   termKeyOf,
   unifyRegionsWithTerm,
@@ -29,6 +31,8 @@ import { generateTextCompletion } from '../services/aiService';
  *    本页框文本按已选标准译名改写并返回改动框（useMangaEditor 在状态提交与
  *    合成之前拿到它们，第一次上屏就是统一后的文本）；
  *  - selectVariant：人工选定标准译名 → 跨图锚点替换 + 逐框 recomposite；
+ *  - setCustomVariant：写入/改/删本术语的用户自定义译名槽位（AI 译名之外的
+ *    手写译名），写入即选定并统一 —— 用户不必先等 AI 译出某个译名才能选它；
  *  - runAiSelection：把未决术语（多变体且未选）分批丢给翻译端点做纯文本
  *    判断（不丢图），选定的译名落地并统一；
  *  - exportJson / restoreBook：单独导出与工作区导出还原。
@@ -57,6 +61,9 @@ export interface GlossaryApi {
   unresolvedCount: number;
   mergePageTerms: (imageId: string, regions: Region[], terms: PageTerm[]) => Region[];
   selectVariant: (key: string, variantIndex: number | null) => void;
+  /** 写入 / 修改 / 删除本术语的用户自定义译名槽位（'' = 删除）。写入即选它
+   *  为标准译名并执行统一替换 —— 见 services/glossaryBook.ts。 */
+  setCustomVariant: (key: string, value: string) => void;
   runAiSelection: () => Promise<AiSelectionSummary>;
   clearBook: () => void;
   exportJson: () => string;
@@ -231,6 +238,21 @@ export function useGlossary({
     if (selected != null) applyUnify(nextTerm);
   }, [applyUnify]);
 
+  // -------------------- 用户自定义译名槽位 --------------------
+
+  const setCustomVariant = useCallback((key: string, value: string) => {
+    const prev = bookRef.current;
+    const idx = prev.findIndex(t => termKeyOf(t.key) === termKeyOf(key));
+    if (idx === -1) return;
+    const nextTerm = setCustomVariantValue(prev[idx], value);
+    if (nextTerm === prev[idx]) return;
+    const next = [...prev];
+    next[idx] = nextTerm;
+    bookRef.current = next;
+    setBook(next);
+    if (nextTerm.selected != null) applyUnify(nextTerm);
+  }, [applyUnify]);
+
   // -------------------- AI 选择 --------------------
 
   const applyAiPick = useCallback((res: AiPickResult): boolean => {
@@ -263,7 +285,8 @@ export function useGlossary({
         const batch = candidates.slice(start, start + AI_PICK_BATCH_SIZE);
         const items: AiPickItem[] = batch.map(term => ({
           key: term.key,
-          variants: term.variants.map(v => ({
+          // 只把模型自己译出的变体丢给它挑：用户手写的槽位不是它的候选。
+          variants: aiVariants(term).map(v => ({
             value: v.value,
             count: v.refs.length,
             examples: v.refs
@@ -345,6 +368,7 @@ export function useGlossary({
     unresolvedCount,
     mergePageTerms,
     selectVariant,
+    setCustomVariant,
     runAiSelection,
     clearBook,
     exportJson,

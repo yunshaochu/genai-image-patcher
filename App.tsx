@@ -1228,6 +1228,7 @@ export default function App() {
               unresolvedCount: glossary.unresolvedCount,
               notice: glossaryNotice,
               onSelectVariant: glossary.selectVariant,
+              onSetCustomVariant: glossary.setCustomVariant,
               onRunAiSelection: handleGlossaryAiSelect,
               onExport: glossary.exportJson,
               onImport: handleGlossaryImport,

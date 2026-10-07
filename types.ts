@@ -590,10 +590,20 @@ export interface GlossaryRef {
 export interface GlossaryVariant {
   value: string;
   refs: GlossaryRef[];
+  /**
+   * 用户自己填的译名槽位（每术语最多一个）：AI 译名之外的手写译名。
+   *
+   * 与 AI 变体走完全相同的选定 / 统一替换路径，但：
+   *  - 不参与 AI 选择的候选（模型只从它自己译出的变体里挑，见 aiVariants）；
+   *  - 不新建统计分支：之后某页的译名恰好等于它时，只往这个槽位叠加锚点，
+   *    不会在同一条术语下出现两个同值变体；
+   *  - 导出 / 导入 / 会话持久化照常保留这个标记。
+   */
+  custom?: boolean;
 }
 
 /**
- * 一条术语：原文 key + 翻译中实际出现过的译名变体。
+ * 一条术语：原文 key + 翻译中实际出现过的译名变体（可含一个用户自定义槽位）。
  * selected = 选定的标准译名下标（variants 内）；null = 尚未统一。
  * note = AI 选择时给的理由（可选，仅展示）。
  */
