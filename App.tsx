@@ -125,6 +125,8 @@ export default function App() {
       previewFrozenTextAllImages,
       endPreview,
       endPreviewAllImages,
+      reeraseImage,
+      reeraseAllImages,
       resyncEditedRegions,
       refreshEditorPatches,
       buildBrushBase,
@@ -1216,6 +1218,8 @@ export default function App() {
             onPreviewFrozenTextAll={previewFrozenTextAllImages}
             onEndPreview={() => endPreview(selectedImage.id)}
             onEndPreviewAll={endPreviewAllImages}
+            onReerase={() => reeraseImage(selectedImage.id)}
+            onReeraseAll={reeraseAllImages}
             onDownload={handleDownload}
             onApplyAsOriginal={handleApplyAsOriginalWrapper}
             onReorderRegion={(regionId, dir) => editorOnReorderRegion(regionId, dir)}

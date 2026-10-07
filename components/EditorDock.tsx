@@ -13,7 +13,7 @@ import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils'
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
 import { getRegionEditorText, resolveAutoFontSize, editorRegionDisplay, LayerDirection } from '../services/mangaEditor';
 import { EDITOR_FONTS, SYSTEM_FONT_STACK, editorFontStack, ensureEditorFontLoaded } from '../services/fontService';
-import { isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
+import { isAiOwned, isReerasableRegion, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../hooks/useMangaEditor';
 import { DockActions, useRunGating } from './sidebar/DockActions';
 import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
 import { HelpTip } from './sidebar/HelpTip';
@@ -71,6 +71,10 @@ interface EditorDockProps {
   onEndPreview: () => void;
   /** Scope「所有图片」variant of 结束预览. */
   onEndPreviewAll: () => void;
+  /** 重新擦除：把本图所有「编辑器擦除」过的框重跑一遍 erase（算法更新后刷新旧结果）。 */
+  onReerase: () => void;
+  /** Scope「所有图片」variant of 重新擦除. */
+  onReeraseAll: () => void;
   /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
   onDownload: (processAll: boolean) => void;
   onApplyAsOriginal: (processAll: boolean) => void;
@@ -790,7 +794,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onTranslate, onTranslateAll,
   translating, translatingImageIds, onStopTranslate,
   onUnfreeze, onFreeze, onPreviewFrozenText, onPreviewFrozenTextAll,
-  onEndPreview, onEndPreviewAll,
+  onEndPreview, onEndPreviewAll, onReerase, onReeraseAll,
   onDownload, onApplyAsOriginal, onReorderRegion,
   angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp, glossary,
 }) => {
@@ -809,10 +813,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
   /** Batch scope of the no-selection actions: the current image only, or every
    *  loaded image (translate / 临时预览 both respect it). */
   const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
-  /** Two-click arm for the 临时预览 group when 作用范围 is 「所有图片」— same guard
-   *  as the gallery's 清空 button, since a mis-click there rewrites every page at
-   *  once. Holds which of the two buttons is armed (each carries its own label). */
-  const [confirmDir, setConfirmDir] = useState<null | 'preview' | 'end'>(null);
+  /** Two-click arm for the 临时预览 / 重新擦除 group when 作用范围 is 「所有图片」
+   *  — same guard as the gallery's 清空 button, since a mis-click there rewrites
+   *  every page at once. Holds which of those buttons is armed (each carries its
+   *  own label). */
+  const [confirmDir, setConfirmDir] = useState<null | 'preview' | 'end' | 'reerase'>(null);
   /** 滚轮微调手势的一次性提示是否已被关掉（跨会话记住，两条手势各自独立）。 */
   const [rotationHintDismissed, setRotationHintDismissed] = useState(() => loadHintDismissed(ROTATION_HINT_STORAGE_KEY));
   const [fontSizeHintDismissed, setFontSizeHintDismissed] = useState(() => loadHintDismissed(FONT_SIZE_HINT_STORAGE_KEY));
@@ -948,10 +953,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const endPreviewCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
       !r.contextOnly && !isAiOwned(r) && !!r.editorWhitedOut && !!r.editorText?.trim()
     ).length, 0);
+    // 重新擦除的目标：编辑器自己泛洪擦除过的框（AI「擦除」产物不算，与
+    // isReerasableRegion 共用同一份判定）。
+    const reeraseCount = scopedImages.reduce((n, img) =>
+      n + img.regions.filter(isReerasableRegion).length, 0);
 
     const runTranslate = () => (imageScope === 'all' ? onTranslateAll() : onTranslate());
-    /** 两个预览按钮共用的二次确认：作用范围是「所有图片」时先 arm 再执行。 */
-    const armOrRun = (dir: 'preview' | 'end', run: () => void) => {
+    /** 三个批量按钮共用的二次确认：作用范围是「所有图片」时先 arm 再执行。 */
+    const armOrRun = (dir: 'preview' | 'end' | 'reerase', run: () => void) => {
       if (imageScope === 'all' && confirmDir !== dir) {
         setConfirmDir(dir);
         window.setTimeout(() => setConfirmDir(d => (d === dir ? null : d)), 3000);
@@ -967,6 +976,10 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const runEndPreview = () => {
       const isAll = imageScope === 'all';
       armOrRun('end', () => (isAll ? onEndPreviewAll() : onEndPreview()));
+    };
+    const runReerase = () => {
+      const isAll = imageScope === 'all';
+      armOrRun('reerase', () => (isAll ? onReeraseAll() : onReerase()));
     };
 
     return (
@@ -1145,6 +1158,36 @@ const EditorDock: React.FC<EditorDockProps> = ({
               </button>
             </div>
           )}
+
+          {/* 重新擦除：把本页（或所有图片）所有「编辑器擦除」过的框重跑一遍 erase。
+              擦除算法更新后用它一次性刷新旧结果，不必逐框「撤回擦除 → 再擦除」。
+              AI 重绘的「擦除」产物不在其中（见 isReerasableRegion）。 */}
+          <div className="pt-2.5 mt-1 border-t border-skin-border/60 space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold text-skin-muted">{t(lang, 'editorReeraseGroup')}</span>
+              <HelpTip text={t(lang, 'editorReeraseGroupTip')} />
+            </div>
+            <button
+              onClick={runReerase}
+              disabled={busy || reeraseCount === 0}
+              className={`w-full px-2 py-1.5 text-[10px] font-bold rounded transition-colors disabled:opacity-50 ${
+                confirmDir === 'reerase'
+                  ? 'border border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
+                  : 'border border-sky-300 text-sky-600 bg-sky-500/10 hover:bg-sky-500/20'
+              }`}
+              title={
+                confirmDir === 'reerase'
+                  ? t(lang, 'editorPreviewConfirmTip')
+                  : imageScope === 'all'
+                    ? t(lang, 'editorReeraseAllTip')
+                    : reeraseCount === 0 ? t(lang, 'editorReeraseNoneTip') : t(lang, 'editorReeraseTip')
+              }
+            >
+              {confirmDir === 'reerase'
+                ? t(lang, 'editorConfirmTwice')
+                : <>{t(lang, 'editorReerase')}{reeraseCount > 0 ? ` (${reeraseCount})` : ''}</>}
+            </button>
+          </div>
 
           {busy && (
             <div className="flex items-center justify-center gap-2 text-[10px] text-skin-primary">

@@ -44,6 +44,15 @@ export const isAiOwned = (r: Region): boolean =>
   r.status === 'completed' && !r.editorComposited && !r.aiErasedBase;
 
 /**
+ * 「编辑器泛洪擦除」过的框 —— 「重新擦除」的作用目标（见 reeraseInImage）。
+ *
+ * 只认 editorErased（编辑器自己擦出来的那层）。AI 重绘的「擦除」产物
+ * （aiErasedBase）不是编辑器擦的，绝不能重做；AI 独占框同理跳过。
+ */
+export const isReerasableRegion = (r: Region): boolean =>
+  !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase && !!r.editorErased;
+
+/**
  * Detected `bubble` boxes of an image (kept as context-only regions). They are
  * handed to the compositor so erasure runs on the whole bubble instead of the
  * bare text box.
@@ -1292,6 +1301,51 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [busy, refreezeInImage]);
 
   /**
+   * 重新擦除（一页）：把这一页所有「编辑器泛洪擦除」过的框的擦除结果作废，重跑
+   * 一遍合成 —— 擦除算法改进后（后端 /erase 或本地兜底），用它一次性刷新已有的
+   * 旧结果，不必逐框点「撤回擦除 → 再擦除」。
+   *
+   * 作废走的就是「撤回擦除」那条路：dropErasedCache 把内存缓存与落盘记录一起丢掉，
+   * 于是下面的 recompositeRegion 必然重新擦一次 —— 重新请求 /erase、重新量一次
+   * 墨色（「自动取色」的字色也跟着更新）。
+   *
+   * 目标见 isReerasableRegion：AI 重绘的「擦除」产物不在其中。
+   */
+  const reeraseInImage = useCallback(async (imageId: string) => {
+    const img = getImage(imageId);
+    if (!img) return;
+    const targets = img.regions.filter(isReerasableRegion);
+    for (const r of targets) {
+      dropErasedCache(r.id);
+      await recompositeRegion(imageId, r.id);
+    }
+  }, [getImage, dropErasedCache, recompositeRegion]);
+
+  /** 重新擦除 on the current image. */
+  const reeraseImage = useCallback(async (imageId: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await reeraseInImage(imageId);
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, reeraseInImage]);
+
+  /** Batch variant: the same 重新擦除 over every loaded image. */
+  const reeraseAllImages = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      for (const img of imagesRef.current) {
+        await reeraseInImage(img.id);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, reeraseInImage]);
+
+  /**
    * Shared driver for one translate run: sweep `pickIds()` and, when the sweep
    * ends with pages still holding untranslated boxes (their vision call failed
    * / returned nothing), sweep them again — at most `config.maxRetryRounds`
@@ -1495,6 +1549,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     previewFrozenTextAllImages,
     endPreview,
     endPreviewAllImages,
+    reeraseImage,
+    reeraseAllImages,
     resyncEditedRegions,
     refreshEditorPatches,
     buildBrushBase,
