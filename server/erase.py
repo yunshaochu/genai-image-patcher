@@ -181,11 +181,14 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
         return bgr_roi, None
 
     med = float(np.median(gray[R]))
-    dark_text = med >= 128
-    if dark_text:
-        text = holes & (gray < med - 50)
-    else:
-        text = holes & (gray > med + 50)
+    # 文字比底色「暗还是亮」**不能**看底色自身的明暗（med >= 128 就当亮底暗字）：
+    # 中灰底 + 更亮的字（典型如灰紫气泡 156 + 白字 255）会被判反 ——
+    # text = holes & (gray < med - 50) 里只剩个位数像素，整条擦除静默空转。
+    # 改成看洞里的证据：两侧都比一遍，哪一侧的像素多就认哪一侧。
+    dark = holes & (gray < med - 50)
+    light = holes & (gray > med + 50)
+    dark_text = int(dark.sum()) >= int(light.sum())
+    text = dark if dark_text else light
     if not text.any():
         return bgr_roi, None
 
@@ -214,48 +217,74 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
     return roi, stats
 
 
-def erase_bubble_roi(bgr_roi, dl=3, rad=6):
-    """气泡区域擦除：中心平坦种子 flood fill 底色 → 洞 = 文字。
+def _border_seeds(gray):
+    """ROI 四边中点当种子：框完全落在底色里时，边框像素就是底色。"""
+    h, w = gray.shape
+    cy, cx = h // 2, w // 2
+    return [(cx, 3), (cx, h - 4), (3, cy), (w - 4, cy)]
+
+
+def _pick_bubble_bg(gray, seeds):
+    """从给定种子选出「底色区」R。
 
     flood fill 面积异常（描边破损泄漏/底色渐变断裂）时逐级收缩容差重试；
-    三档都没落进「合理面积」窗口时，用面积最大的那次 fill 当底色。
+    三档都没落进「合理面积」窗口时，用面积最大的那次 fill 当底色 ——
+    与前端本地兜底算法（services/textErase.ts）同一套做法。
 
-    返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
+    返回 `(R, windowed)`：`windowed=False` 表示三档容差都没落进「合理面积」
+    窗口，R 是兜底挑出来的 —— 调用方据此判断这个种子策略是不是没找对底色。
     """
-    gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-    seeds = _flat_seeds_center(gray)
-    R = None
     best = None
     for diff in (40, 22, 12):
         r = _flood_fill_region(gray, seeds, diff)
         frac = r.sum() / float(gray.size)
         if 0.08 <= frac <= 0.85:
-            R = r
-            break
+            return r, True
         if best is None or r.sum() > best.sum():
             best = r
-    if R is None:
-        # 窗口没命中时用面积最大的那次 fill —— 与前端本地兜底算法
-        # （services/textErase.ts）同一套做法：面积最大的那次 fill 就是底色，
-        # 它留下的洞就是文字。
-        #
-        # 这里**不能**退回「内接椭圆」兜底（历史实现）：R = 椭圆时，椭圆外的
-        # 一切都能从 ROI 边界连通到，于是全部落进 ext，holes = ~R & ~ext 成了
-        # 空集，inpaint 无掩码可修 —— 实测白底黑字（底色占比 0.92+，最普通的
-        # 一种情形）就是这样被一个像素都擦不掉的。
-        #
-        # 只有连最大那次 fill 都几乎吞掉整块 ROI（≥99.5%）时才退回椭圆：那说明
-        # 填充顺着抗锯齿/渐变把文字一起爬过去了，拿它当底色本来也没有洞可修。
-        best_frac = best.sum() / float(gray.size) if best is not None else 0.0
-        if best is not None and best_frac < 0.995:
-            R = best
-        else:
-            yy, xx = np.ogrid[:h, :w]
-            cx, cy = (w - 1) / 2, (h - 1) / 2
-            rx, ry = max(1.0, w / 2 - 3), max(1.0, h / 2 - 3)
-            R = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
-    return _inpaint_holes(bgr_roi, gray, R, dl, rad)
+
+    # 窗口没命中时不能退回「内接椭圆」兜底（历史实现）：R = 椭圆时，椭圆外的
+    # 一切都能从 ROI 边界连通到，于是全部落进 ext，holes = ~R & ~ext 成了空集，
+    # inpaint 无掩码可修 —— 实测白底黑字（底色占比 0.92+，最普通的一种情形）
+    # 就是这样被一个像素都擦不掉的。
+    #
+    # 只有连最大那次 fill 都几乎吞掉整块 ROI（≥99.5%）时才退回椭圆：那说明填充
+    # 顺着抗锯齿/渐变把文字一起爬过去了，拿它当底色本来也没有洞可修。
+    best_frac = best.sum() / float(gray.size) if best is not None else 0.0
+    if best is not None and best_frac < 0.995:
+        return best, False
+
+    h, w = gray.shape
+    yy, xx = np.ogrid[:h, :w]
+    cx, cy = (w - 1) / 2, (h - 1) / 2
+    rx, ry = max(1.0, w / 2 - 3), max(1.0, h / 2 - 3)
+    return ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0, False
+
+
+def erase_bubble_roi(bgr_roi, dl=3, rad=6):
+    """气泡区域擦除：flood fill 底色 → 洞 = 文字。
+
+    只用中心平坦种子在「框比文字大一圈」时最稳；框紧贴文字时会失效：框里大半
+    是字，中心区中位数就成了文字色，平坦种子落在笔画上 → R 退化成文字本身（实测
+    只覆盖 4.5%），其余像素全部「边界可达」→ 洞只剩十几个像素 → 擦掉一片垃圾、
+    一个字都没动。所以中心种子没能找到「面积合理」的底色时，改用四边中点当种子
+    再来一次（框在底色里时，边框就是底色），那次找到合理底色才采纳。
+
+    返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
+    """
+    gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY)
+
+    R, windowed = _pick_bubble_bg(gray, _flat_seeds_center(gray))
+    roi, stats = _inpaint_holes(bgr_roi, gray, R, dl, rad)
+    # 中心种子找对了底色就到此为止（找到的掩码太小也视为没找对：实测退化的那次
+    # text_ratio 只有 0.002，正常情形都在 0.03 以上）。
+    if windowed and stats is not None and stats.get('text_ratio', 0) >= 0.01:
+        return roi, stats
+
+    R2, windowed2 = _pick_bubble_bg(gray, _border_seeds(gray))
+    if windowed2:
+        return _inpaint_holes(bgr_roi, gray, R2, dl, rad)
+    return roi, stats
 
 
 def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):

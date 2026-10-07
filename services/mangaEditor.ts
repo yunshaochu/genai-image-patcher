@@ -161,18 +161,24 @@ export interface PxRect {
  * the region centre and whose own centre is closest (same idea as
  * `match_bubbles`), so manually drawn boxes benefit too.
  */
-export const resolveEraseRect = (
+/**
+ * 包含 `region` 中心、且面积不过分夸张（≤ MAX_BUBBLE_AREA_RATIO 倍）的 `bubble`
+ * 框，取中心最近的一个；没有则 null。
+ *
+ * 两处用它：1) 擦除 ROI 要把整只气泡并进来（resolveEraseRect）；2) 决定擦除模式
+ * —— 被气泡框包住的文字就是「泡内文字」，底色是那层泡底，该走 bubble 模式
+ * （见 compositeRegionPatch）。
+ */
+export const findCoveringBubbleBox = (
   region: Region,
   contextBubbles: Region[] | undefined,
   imgW: number,
   imgH: number
-): PxRect => {
+): ReturnType<typeof regionToPx> | null => {
   const self = regionToPx(region, imgW, imgH);
   const selfArea = Math.max(1, (self.x2 - self.x1) * (self.y2 - self.y1));
-  let { x1, y1, x2, y2 } = self;
-  const cx = (x1 + x2) / 2;
-  const cy = (y1 + y2) / 2;
-
+  const cx = (self.x1 + self.x2) / 2;
+  const cy = (self.y1 + self.y2) / 2;
   let best: ReturnType<typeof regionToPx> | null = null;
   let bestDist = Infinity;
   for (const b of contextBubbles ?? []) {
@@ -187,6 +193,18 @@ export const resolveEraseRect = (
       best = bb;
     }
   }
+  return best;
+};
+
+export const resolveEraseRect = (
+  region: Region,
+  contextBubbles: Region[] | undefined,
+  imgW: number,
+  imgH: number
+): PxRect => {
+  const self = regionToPx(region, imgW, imgH);
+  let { x1, y1, x2, y2 } = self;
+  const best = findCoveringBubbleBox(region, contextBubbles, imgW, imgH);
   if (best) {
     x1 = Math.min(x1, best.x1);
     y1 = Math.min(y1, best.y1);
@@ -514,7 +532,12 @@ export const compositeRegionPatch = async (
   // 结果在这里一律作废（数据层已被清成 editorErased=false，这里是最后一道闸门），
   // 绝不可以在 AI 已经抹干净的底图上再跑一次泛洪擦除。
   if (region.editorErased && !region.aiErasedBase) {
-    const kind: EraseKind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
+    // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
+    // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
+    // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
+    const kind: EraseKind = findCoveringBubbleBox(region, contextBubbles, imgW, imgH)
+      ? 'bubble'
+      : region.detectedClass === 'text_free' ? 'free' : 'bubble';
     // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
     // text box — see resolveEraseRect.
     const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
