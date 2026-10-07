@@ -414,7 +414,41 @@ export interface ApiProfile {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 这个生图 API 是否支持「擦除」场景。
+   *  `undefined` = 未表态 → 视为支持（新建 / 存量配置默认勾选，用户须主动取消）。
+   *  「自定义」场景恒可用（见 profileSupportsIntent），所以不需要标记。 */
+  supportsErase?: boolean;
+  /** 这个生图 API 是否支持「翻译」场景。`undefined` = 视为支持。
+   *  未勾选时翻译阶段与「翻译」场景的重绘都不跑（省额度 / 省时间）。 */
+  supportsTranslate?: boolean;
 }
+
+/**
+ * 某一个生图配置组是否支持某个重绘场景。
+ *
+ * 「自定义」是所有 API 固定可用的场景，永远返回 true；其余场景看配置组上的
+ * 勾选标记。未表态（undefined）与未选择配置组都按「支持」处理 —— 这样存量
+ * 配置、旧导出文件、自定义 URL/Key 的行为与以前完全一致，不会突然什么都不跑。
+ */
+export const profileSupportsIntent = (
+  profile: ApiProfile | null | undefined,
+  intent: RedrawIntent
+): boolean => {
+  if (intent === 'custom') return true;
+  if (!profile) return true; // 未使用配置组（自定义 URL/Key）→ 不设限
+  return intent === 'erase' ? profile.supportsErase !== false : profile.supportsTranslate !== false;
+};
+
+/** 当前生效的生图配置组（null = 未选配置组，走自定义 URL/Key）。 */
+export const activeImageApiProfile = (config: AppConfig): ApiProfile | null =>
+  (config.imageApiProfiles ?? []).find(p => p.id === config.activeImageApiProfileId) ?? null;
+
+/**
+ * 当前生图 API 是否支持某个重绘场景 —— 管线与 UI 共用这一个判定，两边不会
+ * 各说各话（场景按钮的禁用态、翻译按钮的禁用态、实际跑哪些框都读它）。
+ */
+export const imageApiSupportsIntent = (config: AppConfig, intent: RedrawIntent): boolean =>
+  profileSupportsIntent(activeImageApiProfile(config), intent);
 
 /**
  * 思考强度（翻译调用）：透传给 OpenAI 兼容接口的 `reasoning_effort`。

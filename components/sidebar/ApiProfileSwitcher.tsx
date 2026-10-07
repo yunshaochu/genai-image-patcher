@@ -23,6 +23,9 @@ interface ApiProfileSwitcherProps {
   /** Write a preset's triple into the live config. */
   onApply: (values: ApiProfileValues) => void;
   language: Language;
+  /** 生图配置组：额外给出「擦除 / 翻译」场景勾选（见 ApiProfile.supportsErase）。
+   *  翻译配置组是文本模型，没有这项，所以默认关闭。 */
+  showScenarioFlags?: boolean;
 }
 
 const makeId = (): string => {
@@ -78,6 +81,7 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
   onProfilesChange,
   onApply,
   language,
+  showScenarioFlags = false,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [naming, setNaming] = useState<null | 'create' | 'rename'>(null);
@@ -155,6 +159,16 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
     closeMenu();
   };
 
+  /** 「擦除 / 翻译」场景勾选：直接写回所选那组（复选框是显式动作，不需要再点
+   *   ✓ 保存 —— 与 URL/Key/模型那三个输入框的「草稿 + 保存」语义不同）。 */
+  const toggleScenarioFlag = (key: 'supportsErase' | 'supportsTranslate', value: boolean) => {
+    if (!active) return;
+    onProfilesChange(
+      profiles.map(p => (p.id === active.id ? { ...p, [key]: value } : p)),
+      active.id,
+    );
+  };
+
   const startCreate = () => {
     closeMenu();
     setNameDraft(suggestName(current));
@@ -184,7 +198,14 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
       model: current.model,
     };
     const name = uniqueName(nameDraft.trim() || suggestName(values), profiles);
-    const profile: ApiProfile = { id: makeId(), name, ...values };
+    // 新建的组默认「擦除 / 翻译」都勾上（与存量配置的默认一致）：需要限定场景
+    // 的用户须主动取消勾选。
+    const profile: ApiProfile = {
+      id: makeId(),
+      name,
+      ...values,
+      ...(showScenarioFlags ? { supportsErase: true, supportsTranslate: true } : {}),
+    };
     onProfilesChange([...profiles, profile], profile.id);
     setNaming(null);
   };
@@ -263,6 +284,43 @@ export const ApiProfileSwitcher: React.FC<ApiProfileSwitcherProps> = ({
           </svg>
         </button>
       </div>
+
+      {/* 场景支持：这个生图 API 能跑哪些重绘场景。「自定义」是所有 API 固定
+          可用的，所以只列擦除 / 翻译两个勾选框；未勾选 → 工作台里对应场景
+          按钮置灰，管线也跳过那些框（不消耗额度）。 */}
+      {showScenarioFlags && (
+        active ? (
+          <div className="pt-1.5 border-t border-skin-border/60 space-y-1">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase font-bold text-skin-muted">{t(language, 'apiScenarioFlags')}</span>
+              <HelpTip text={t(language, 'apiScenarioFlagsDesc')} />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1 text-[11px] text-skin-text cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={active.supportsErase !== false}
+                  onChange={(e) => toggleScenarioFlag('supportsErase', e.target.checked)}
+                  className="cursor-pointer"
+                />
+                {t(language, 'promptTabErase')}
+              </label>
+              <label className="flex items-center gap-1 text-[11px] text-skin-text cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={active.supportsTranslate !== false}
+                  onChange={(e) => toggleScenarioFlag('supportsTranslate', e.target.checked)}
+                  className="cursor-pointer"
+                />
+                {t(language, 'promptTabTranslate')}
+              </label>
+              <span className="ml-auto text-[9px] text-skin-muted shrink-0">{t(language, 'apiScenarioCustomAlways')}</span>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[9px] text-skin-muted leading-snug">{t(language, 'apiScenarioNoProfile')}</p>
+        )
+      )}
 
       {naming && (
         <div className="flex items-center gap-1 animate-in fade-in slide-in-from-top-1">

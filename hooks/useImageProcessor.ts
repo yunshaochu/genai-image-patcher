@@ -1,6 +1,6 @@
 
 import { useState, useRef } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, shouldSkipBubbleDetection, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, shouldSkipBubbleDetection, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf, imageApiSupportsIntent } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -217,6 +217,14 @@ export function useImageProcessor(
     const configRef = useRef(config);
     configRef.current = config;
 
+    /**
+     * 当前生图 API 是否支持某个重绘场景（「自定义」恒可用；未选配置组 = 不设限；
+     * 见 types.ts → imageApiSupportsIntent）。管线据此跳过未勾选的场景：那些框
+     * 保持 pending，不消耗额度/时间，用户把勾选改回来即可继续。
+     */
+    const supportsIntent = (intent: RedrawIntent): boolean =>
+        imageApiSupportsIntent(configRef.current, intent);
+
     /** 重绘前翻译: with translation mode on, the generate pipeline fills a
      *  missing translation inline (legacy behaviour) instead of redrawing
      *  without it. Off = decoupled stages (default). */
@@ -383,6 +391,17 @@ export function useImageProcessor(
                     effectiveIntentOf(r, defaultIntent) !== 'translate' || !!r.customTranslation?.trim()
                 );
             }
+        }
+        // 场景标记：只跑当前生图 API 勾选过的场景。「自定义」恒可用；未勾选的
+        // 场景（擦除 / 翻译）在这里整体跳过 —— 框保持 pending（不算失败、不消耗
+        // 重试预算），把勾选改回来就能接着跑。全图遮罩模式下场景是图片级的，
+        // 所以整张图一起跳过。
+        if (config.useFullImageMasking) {
+            if (!supportsIntent(effectiveIntentOf(imageSnapshot, defaultIntent))) return false;
+        } else {
+            regionsToProcess = regionsToProcess.filter(r =>
+                supportsIntent(effectiveIntentOf(r, defaultIntent))
+            );
         }
         if (regionsToProcess.length === 0) return false;
         // 本次调用真正产出的框 id —— mergeProcessedRegions 只回写它们（见其注释）。
@@ -1179,6 +1198,12 @@ export function useImageProcessor(
      * naming stays consistent (a page with nothing new changes nothing).
      */
     const handleTranslate = async (processAll: boolean) => {
+        // 场景标记：翻译阶段同样受「翻译」勾选约束 —— 译文最终只喂给「翻译」场景
+        // 的重绘，那条路既然不走，翻译文本阶段也不该跑（省额度 / 省时间）。
+        if (!imageApiSupportsIntent(config, 'translate')) {
+            setErrorMsg(t(config.language, 'apiScenarioTranslateOff'));
+            return;
+        }
         if (abortControllerRef.current) abortControllerRef.current.abort();
         const controller = new AbortController();
         abortControllerRef.current = controller;

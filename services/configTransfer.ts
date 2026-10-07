@@ -89,6 +89,10 @@ const sanitizeProfileList = (value: unknown): ApiProfile[] => {
       baseUrl: typeof item.baseUrl === 'string' ? item.baseUrl : '',
       apiKey: typeof item.apiKey === 'string' ? item.apiKey : '',
       model: typeof item.model === 'string' ? item.model : '',
+      // 场景标记：非布尔（旧导出 / 手改文件）一律丢掉 → undefined = 默认支持，
+      // 与「存量配置默认全勾选」的语义一致。
+      ...(typeof item.supportsErase === 'boolean' ? { supportsErase: item.supportsErase } : {}),
+      ...(typeof item.supportsTranslate === 'boolean' ? { supportsTranslate: item.supportsTranslate } : {}),
     });
   }
   return out;

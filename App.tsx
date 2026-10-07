@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
+import RegionLocator from './components/RegionLocator';
 import { stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl } from './services/imageUtils';
 import { downloadImagesAsZip } from './services/downloadZip';
 // Type-only: mixing an interface into a value import makes the dev server emit a
@@ -183,6 +184,13 @@ export default function App() {
     handleSelectImage(imageId);
     setSelectedRegionId(regionId);
   }, [images, handleSelectImage, setSelectedRegionId]);
+
+  /** 框定位器（AI 重绘模式）：跳到某张图的某个框 —— 与术语表锚点同一套语义
+   *  （先切图，handleSelectImage 会清掉框选中，再把目标框选上）。 */
+  const handleLocateJump = useCallback((imageId: string, regionId: string) => {
+      handleSelectImage(imageId);
+      setSelectedRegionId(regionId);
+  }, [handleSelectImage, setSelectedRegionId]);
 
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -1176,6 +1184,19 @@ export default function App() {
             </div>
             <p className="text-lg font-medium">{t(config.language, 'readyToCreate')}</p>
             <p className="text-sm opacity-60">{t(config.language, 'uploadHint')}</p>
+          </div>
+        )}
+
+        {/* 框定位（AI 重绘模式）：重绘往往隔着好几页翻，这里给出「已完成 / 待重绘」
+            两个有序清单，点一下直接跳到那张图的那个框。 */}
+        {isApiMode && images.length > 0 && (
+          <div className="absolute top-4 right-4 z-10">
+            <RegionLocator
+              images={images}
+              language={config.language}
+              selectedRegionId={selectedRegionId}
+              onJump={handleLocateJump}
+            />
           </div>
         )}
 

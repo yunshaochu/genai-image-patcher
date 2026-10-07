@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, clampRedrawIntent } from '../../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, clampRedrawIntent, imageApiSupportsIntent } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
 
@@ -61,6 +61,15 @@ export const useRunGating = ({
     clampRedrawIntent(v.redrawIntent, config.enableMangaMode, config.defaultRedrawIntent ?? 'translate');
   const regionNeedsTranslation = (r: UploadedImage['regions'][number]) =>
     isGenPaintable(r) && intentOf(r) === 'translate';
+  // 场景标记：当前生图 API 没勾选的场景管线会整体跳过（见 useImageProcessor）。
+  // 这里只用来判断「一个框都跑不了」，让重绘按钮不再是一个无声的空操作。
+  const intentSupported = (v: { redrawIntent?: RedrawIntent }) => imageApiSupportsIntent(config, intentOf(v));
+  const hasPaintableRegions = scopedImages.some(img => img.regions.some(isGenPaintable));
+  const anyProcessableRegion = scopedImages.some(img =>
+    img.regions.some(isGenPaintable) && (config.useFullImageMasking
+      ? intentSupported(img)
+      : img.regions.some(r => isGenPaintable(r) && intentSupported(r)))
+  );
   const translationReady = scopedImages.some(img =>
     config.useFullImageMasking
       ? img.regions.some(isGenPaintable) && intentOf(img) === 'translate' && !!img.customTranslation?.trim()
@@ -76,6 +85,9 @@ export const useRunGating = ({
     if (!targetImageExists) return 'No image selected';
     if (!hasValidKey) return 'Missing API Key (Check Settings)';
     if (!hasRegions && !canProceedWithEmptyRegions) return 'No regions selected';
+    // 有可绘制的框，但当前生图 API 一个场景都没勾选（或全是被跳过的那种）：
+    // 跑起来也只是空转，直接说明原因。
+    if (hasPaintableRegions && !anyProcessableRegion) return t(lang, 'apiScenarioNoneAvailable');
     // 必须翻译 on but nothing translated yet: generating would only skip
     // everything, so point the user at the translate stage instead. Moot while
     // 重绘前翻译 fills missing translations inline.
@@ -89,6 +101,8 @@ export const useRunGating = ({
   })();
 
   const translateReason = resultOnly ? '' : (() => {
+    // 「翻译」场景没勾选时整个翻译阶段都不跑（译文只喂给翻译重绘）。
+    if (!imageApiSupportsIntent(config, 'translate')) return t(lang, 'apiScenarioTranslateOff');
     if (!config.enableTranslationMode || !config.translationApiKey || !config.translationBaseUrl) {
       return t(lang, 'translateMissingConfig');
     }

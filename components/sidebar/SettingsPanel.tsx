@@ -123,6 +123,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                             onChange('openaiModel', values.model);
                         }}
                         language={lang}
+                        // 生图配置组：可分别限定「擦除 / 翻译」场景
+                        // （自定义场景对所有 API 固定可用）。
+                        showScenarioFlags
                     />
                     <div className="animate-in fade-in slide-in-from-top-1">
                         <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>

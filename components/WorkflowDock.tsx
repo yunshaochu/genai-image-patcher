@@ -1,6 +1,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, imageApiSupportsIntent } from '../types';
 import { t } from '../services/translations';
 import { fetchOpenAIModels } from '../services/aiService';
 import { Section } from './sidebar/Section';
@@ -182,6 +182,15 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
   const hasOverride = targetIntent !== undefined;
   const sceneLabel = (v: RedrawIntent) =>
     t(lang, v === 'translate' ? 'promptTabTranslate' : v === 'erase' ? 'promptTabErase' : 'promptTabCustom');
+  // 场景标记：当前生图 API 未勾选的场景禁用（自定义对所有 API 固定可用），
+  // 免得用户选了却什么都不发生 —— 管线也会跳过那些框（见 useImageProcessor）。
+  const intentSupported = (v: RedrawIntent) => imageApiSupportsIntent(config, v);
+  const sceneBtnTitle = (v: RedrawIntent) =>
+    intentSupported(v) ? t(lang, 'promptTabHint') : t(lang, 'apiScenarioNotSupported');
+  const sceneBtnClass = (v: RedrawIntent, activeCls: string) => intentSupported(v)
+    ? activeCls
+    : 'text-skin-muted opacity-40 cursor-not-allowed';
+  const hasUnsupportedScene = intents.some(v => !intentSupported(v));
 
   /** 给当前目标单独设置场景覆盖。 */
   const handleTargetIntentChange = (tab: RedrawIntent) => {
@@ -422,7 +431,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                           <button
                             key={v}
                             onClick={() => onConfigChange('defaultRedrawIntent', v)}
-                            className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${defaultIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                            disabled={!intentSupported(v)}
+                            title={sceneBtnTitle(v)}
+                            className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${sceneBtnClass(v, defaultIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text')}`}
                           >
                             {sceneLabel(v)}
                           </button>
@@ -465,7 +476,9 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                             <button
                               key={v}
                               onClick={() => handleTargetIntentChange(v)}
-                              className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${activeIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text'}`}
+                              disabled={!intentSupported(v)}
+                              title={sceneBtnTitle(v)}
+                              className={`flex-1 px-1 py-1 text-[10px] rounded transition-all ${sceneBtnClass(v, activeIntent === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted hover:text-skin-text')}`}
                             >
                               {sceneLabel(v)}
                             </button>
@@ -537,6 +550,13 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                         </div>
                       )}
                     </>
+                  )}
+                  {/* 有场景被生图 API 屏蔽时给一句缘由：按钮已置灰，但置灰本身
+                      看不出是"这个接口不支持"还是"坏了"。 */}
+                  {hasUnsupportedScene && (
+                    <p className="text-[9px] text-amber-600 dark:text-amber-400 leading-tight">
+                      {t(lang, 'apiScenarioNotSupported')}
+                    </p>
                   )}
                 </div>
                 )}
