@@ -1,5 +1,5 @@
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
@@ -13,7 +13,6 @@ import { AsyncSemaphore, runWithConcurrency } from '../services/concurrencyUtils
 import { t } from '../services/translations';
 import { detectBubbles } from '../services/detectionService';
 import { TRANSLATION_CACHE_MARKER } from '../services/translationCache';
-import { mergeGlossary } from '../services/glossary';
 import { recordPayload, PayloadTransform } from '../services/payloadLog';
 
 /**
@@ -186,9 +185,7 @@ export function useImageProcessor(
     updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void,
     updateAllImages: (updater: (img: UploadedImage) => UploadedImage) => void,
     config: AppConfig,
-    selectedImage: UploadedImage | undefined,
-    /** Persist the glossary grown by the translate stage (config.glossaryText). */
-    onGlossaryChange?: (glossaryText: string) => void
+    selectedImage: UploadedImage | undefined
 ) {
     const [processingState, setProcessingState] = useState<ProcessingStep>(ProcessingStep.IDLE);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -216,35 +213,9 @@ export function useImageProcessor(
         fallback?: RedrawIntent
     ): RedrawIntent => rawEffectiveIntentOf(v, fallback, config.enableMangaMode);
 
-    // Live glossary for the in-flight run. `config.glossaryText` is the
-    // persisted copy; a batch must not depend on a React re-render to see the
-    // terms merged by an earlier image, so runs read/write this ref and flush
-    // it back to the config when they finish. `configRef`/`glossaryRef` give
-    // the async loops the freshest values.
+    // `configRef` gives the async loops the freshest values.
     const configRef = useRef(config);
     configRef.current = config;
-    const glossaryRef = useRef(config.glossaryText ?? '');
-    useEffect(() => {
-        // External edits (settings textarea / clear) win while no run is active.
-        glossaryRef.current = config.glossaryText ?? '';
-    }, [config.glossaryText]);
-
-    /** Merge the term pairs one translation reported into the glossary ref.
-     *  Returns true when the glossary actually changed. */
-    const absorbTerms = (terms: string): boolean => {
-        if (!terms.trim()) return false;
-        const next = mergeGlossary(glossaryRef.current, terms);
-        if (next === glossaryRef.current) return false;
-        glossaryRef.current = next;
-        return true;
-    };
-
-    /** Persist the run-grown glossary back into the config. */
-    const flushGlossary = () => {
-        if (!onGlossaryChange) return;
-        if (glossaryRef.current === (configRef.current.glossaryText ?? '')) return;
-        onGlossaryChange(glossaryRef.current);
-    };
 
     /** 重绘前翻译: with translation mode on, the generate pipeline fills a
      *  missing translation inline (legacy behaviour) instead of redrawing
@@ -508,11 +479,9 @@ export function useImageProcessor(
                         translationText = imageSnapshot.customTranslation.trim();
                     } else if (inlineTranslate) {
                         setProcessingState(ProcessingStep.API_CALLING);
-                        const translation = await generateTranslation(
-                            await getTranslationBase64(), config, signal, undefined, glossaryRef.current
+                        translationText = await generateTranslation(
+                            await getTranslationBase64(), config, signal, undefined
                         );
-                        translationText = translation.text;
-                        absorbTerms(translation.terms);
 
                         if (translationText) {
                             updateImage(imageSnapshot.id, img => ({ ...img, customTranslation: translationText }));
@@ -795,11 +764,9 @@ export function useImageProcessor(
                     } else if (inlineTranslate) {
                         setProcessingState(ProcessingStep.API_CALLING);
                         const contextBase64 = maskedContextUrl ? await urlToBase64(maskedContextUrl) : undefined;
-                        const translation = await generateTranslation(
-                            await getTranslationBase64(), config, signal, contextBase64, glossaryRef.current
+                        translationText = await generateTranslation(
+                            await getTranslationBase64(), config, signal, contextBase64
                         );
-                        translationText = translation.text;
-                        absorbTerms(translation.terms);
 
                         // Persist the translation into customTranslation so the dock
                         // reflects it and the next run reuses it.
@@ -1178,11 +1145,6 @@ export function useImageProcessor(
             }
             setProcessingState(ProcessingStep.IDLE);
         } finally {
-            // Generation translates in place only when 重绘前翻译 is on (so the
-            // run may have grown the glossary); with the switch off it doesn't
-            // translate at all, but the flush still guards an externally edited
-            // glossary from being dropped mid-run.
-            flushGlossary();
             // Defensive sweep: every exit path (normal completion, abort, error)
             // must leave regions in a terminal state. AbortError handlers inside
             // processSingleImage / processRegionTask silently return without
@@ -1340,15 +1302,14 @@ export function useImageProcessor(
                         sentUrl: payloadUrl,
                     });
                     const result = await generateTranslation(
-                        await urlToBase64(payloadUrl), config, controller.signal, undefined, glossaryRef.current
+                        await urlToBase64(payloadUrl), config, controller.signal, undefined
                     );
-                    if (result.text) {
+                    if (result) {
                         localImageHasTranslation.set(img.id, true);
-                        updateImage(img.id, cur => ({ ...cur, customTranslation: result.text }));
+                        updateImage(img.id, cur => ({ ...cur, customTranslation: result }));
                     } else {
                         failures++; // empty answer — kept untranslated for a retry
                     }
-                    absorbTerms(result.terms);
                 } catch (err: any) {
                     if (err?.name !== 'AbortError') {
                         failures++;
@@ -1402,7 +1363,6 @@ export function useImageProcessor(
             }
 
             let contextBase64: string | undefined;
-            let pageTerms = '';
 
             // Statuses as they were before this stage: a box that is already
             // 'completed' keeps its patch (and its status), and a translated box
@@ -1451,16 +1411,15 @@ export function useImageProcessor(
                         extra: contextUrl ? { url: contextUrl, label: t(config.language, 'payloadTrContext') } : null,
                     });
                     const result = await generateTranslation(
-                        await urlToBase64(payloadUrl), config, controller.signal, contextBase64, glossaryRef.current
+                        await urlToBase64(payloadUrl), config, controller.signal, contextBase64
                     );
-                    if (result.text) {
-                        commitRegionTranslation(img.id, region.id, result.text, restoreStatus(region.id));
+                    if (result) {
+                        commitRegionTranslation(img.id, region.id, result, restoreStatus(region.id));
                     } else {
                         // The model answered with nothing usable — count it so
                         // the user gets a summary instead of a silent no-op.
                         settle(new Error('模型未返回译文'));
                     }
-                    if (result.terms) pageTerms = pageTerms ? `${pageTerms}\n${result.terms}` : result.terms;
                 } catch (err: any) {
                     if (err?.name === 'AbortError') return;
                     console.error('[translate] region failed:', img.file?.name, region.id, err);
@@ -1479,11 +1438,6 @@ export function useImageProcessor(
                 setRegionStatus(img.id, toMarkWorking.map(r => r.id), 'processing');
             }
             await runWithConcurrency(regionsToTranslate, Math.max(1, limit), translateRegion, controller.signal, 0);
-
-            // One glossary update per page ("每翻译一张图都要更新术语表") — the
-            // terms of all its regions arrive in one merge. Nothing new = the
-            // merge is a no-op and the glossary is left untouched.
-            absorbTerms(pageTerms);
 
             if (contextUrl) releaseObjectURL(contextUrl);
         };
@@ -1539,9 +1493,8 @@ export function useImageProcessor(
             if (e?.name !== 'AbortError') setErrorMsg(e?.message || 'Translation failed');
             setProcessingState(ProcessingStep.IDLE);
         } finally {
-            // Persist the glossary the run grew, then make sure no region is
-            // left in 'processing' (abort paths return early).
-            flushGlossary();
+            // Make sure no region is left in 'processing' (abort paths return
+            // early).
             updateAllImages(img => {
                 const stuck = img.regions.some(r => r.status === 'processing');
                 if (!stuck) return img;

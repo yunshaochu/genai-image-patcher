@@ -20,6 +20,8 @@ import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
 import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn } from './hooks/useMangaEditor';
+import { useGlossary } from './hooks/useGlossary';
+import type { PageTerm } from './services/glossaryBook';
 
 // Heavy components: only loaded when the user opens the dialogs.
 const HelpModal = lazy(() => import('./components/HelpModal'));
@@ -82,12 +84,6 @@ export default function App() {
     replaceStore
   } = useImageManager(config.performanceMode, config.enableSessionPersistence);
 
-  // Glossary grown by the translate stage is persisted through the config so it
-  // survives reloads and is visible/editable in Global Settings.
-  const handleGlossaryChange = useCallback((glossaryText: string) => {
-      setConfig(prev => (prev.glossaryText === glossaryText ? prev : { ...prev, glossaryText }));
-  }, [setConfig]);
-
   const {
       processingState,
       errorMsg,
@@ -97,10 +93,19 @@ export default function App() {
       handleStop,
       handleAutoDetect,
       handleTranslate
-  } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage, handleGlossaryChange);
+  } = useImageProcessor(images, updateImage, updateAllImages, config, selectedImage);
 
   // In-place manga text editor engine (editor workflow mode). All editor data
   // lives on Region fields; this hook owns only caches + debounce timers.
+  // 术语表 v2：useMangaEditor 需要 onPageTerms（每页翻译完成时合并术语），
+  // useGlossary 需要 recompositeRegion（选定标准译名后重排受影响的框）——
+  // 两者互相依赖，用 ref 间接打破：useMangaEditor 拿到的是稳定的转发回调，
+  // useGlossary 创建后把真正的 mergePageTerms 填进 ref。
+  const glossaryMergeRef = useRef<((imageId: string, regions: Region[], terms: PageTerm[]) => Region[]) | null>(null);
+  const handlePageTerms = useCallback((imageId: string, regions: Region[], terms: PageTerm[]): Region[] => {
+    return glossaryMergeRef.current?.(imageId, regions, terms) ?? [];
+  }, []);
+
   const {
       busy: editorBusy,
       translating: editorTranslating,
@@ -124,7 +129,58 @@ export default function App() {
       refreshEditorPatches,
       buildBrushBase,
       clearEditorCaches,
-  } = useMangaEditor({ images, updateImage, config, setErrorMsg });
+      recompositeRegion,
+  } = useMangaEditor({ images, updateImage, config, setErrorMsg, onPageTerms: handlePageTerms });
+
+  const glossary = useGlossary({
+    config,
+    images,
+    updateImage,
+    recompositeRegion,
+    enableSessionPersistence: config.enableSessionPersistence,
+  });
+  useEffect(() => {
+    glossaryMergeRef.current = glossary.mergePageTerms;
+  }, [glossary.mergePageTerms]);
+
+  /** 术语表操作结果的一次性提示（AI 选择完成/无可选等），显示在术语表 tab 里。 */
+  const [glossaryNotice, setGlossaryNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!glossaryNotice) return;
+    const timer = setTimeout(() => setGlossaryNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [glossaryNotice]);
+
+  const handleGlossaryAiSelect = useCallback(async () => {
+    const lang = config.language;
+    const summary = await glossary.runAiSelection();
+    if (summary.error) {
+      setErrorMsg(t(lang, 'glossaryAiSelectFailed', { reason: summary.error }));
+      return;
+    }
+    setGlossaryNotice(summary.total === 0
+      ? t(lang, 'glossaryAiSelectNone')
+      : t(lang, 'glossaryAiSelectDone', { count: summary.picked }));
+  }, [glossary.runAiSelection, config.language, setErrorMsg]);
+
+  /** 单独导入术语表 JSON（整本替换，与「工作区导入」同语义）。 */
+  const handleGlossaryImport = useCallback(async (file: File) => {
+    const lang = config.language;
+    const res = await glossary.importJsonFile(file);
+    if (!res.ok) {
+      setErrorMsg(t(lang, 'glossaryImportFailed'));
+      return;
+    }
+    setGlossaryNotice(t(lang, 'glossaryImportDone', { count: res.count }));
+  }, [glossary.importJsonFile, config.language, setErrorMsg]);
+
+  /** 跳到锚点框：先切图（handleSelectImage 会清框选中），再选中目标框。
+   *  锚点可能指向已删除的图 —— 跳之前确认图还在。 */
+  const handleGlossaryJump = useCallback((imageId: string, regionId: string) => {
+    if (!images.some(i => i.id === imageId)) return;
+    handleSelectImage(imageId);
+    setSelectedRegionId(regionId);
+  }, [images, handleSelectImage, setSelectedRegionId]);
 
   const [isDragging, setIsDragging] = useState(false);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
@@ -589,7 +645,7 @@ export default function App() {
       setWorkStateBusy(true);
       setWorkStateStatus(null);
       try {
-          const name = await downloadWorkStateZip(images, selectedImageId, config);
+          const name = await downloadWorkStateZip(images, selectedImageId, config, undefined, glossary.book);
           setWorkStateStatus({ text: t(config.language, 'workStateExported', { name }), tone: 'ok' });
       } catch (e: any) {
           console.error("Work state export failed", e);
@@ -600,7 +656,7 @@ export default function App() {
       } finally {
           setWorkStateBusy(false);
       }
-  }, [images, selectedImageId, config]);
+  }, [images, selectedImageId, config, glossary.book]);
 
   /** Restore a previously exported work-state ZIP: replaces the gallery and
    *  merges the packaged settings (validated — see workStateTransfer.ts). */
@@ -625,6 +681,9 @@ export default function App() {
           clearEditorCaches();
           replaceStore(outcome.images, outcome.selectedImageId);
           if (outcome.config) setConfig(outcome.config);
+          // 术语表随包还原（旧包没有 glossary.json → 不动现有术语表）。文本在
+          // 导出时就已是统一后的，这里只还原树，不再做统一替换。
+          if (outcome.glossary) glossary.restoreBook(outcome.glossary);
           setWorkStateStatus({
               text: outcome.configAppliedCount > 0
                   ? t(config.language, 'workStateImportedWithConfig', { count: outcome.images.length, settings: outcome.configAppliedCount })
@@ -640,7 +699,19 @@ export default function App() {
       } finally {
           setWorkStateBusy(false);
       }
-  }, [config, replaceStore, setConfig, clearEditorCaches]);
+  }, [config, replaceStore, setConfig, clearEditorCaches, glossary.restoreBook]);
+
+  /** 批量翻译（编辑器）：整批结束后按开关自动发起一次 AI 选择（纯文本调用）。 */
+  const handleTranslateAllWithGlossary = useCallback(async () => {
+      await translateAllImages();
+      if (config.glossaryAutoAiSelect) await handleGlossaryAiSelect();
+  }, [translateAllImages, config.glossaryAutoAiSelect, handleGlossaryAiSelect]);
+
+  /** 清空图库联动清术语表 —— 术语表是作品级的，作品没了术语表也没意义。 */
+  const handleClearAllWithGlossary = useCallback(() => {
+      handleClearAllImages();
+      glossary.clearBook();
+  }, [handleClearAllImages, glossary.clearBook]);
 
   // ON-DEMAND STITCHING for Apply — scope-aware. 全部 applies every image that
   // HAS a result; untouched images are skipped on purpose: applying one would
@@ -889,7 +960,7 @@ export default function App() {
         onUpload={handleUpload}
         currentImage={selectedImage}
         onDeleteImage={handleDeleteImage}
-        onClearAllImages={handleClearAllImages} 
+        onClearAllImages={handleClearAllWithGlossary}
         onToggleSkip={handleToggleSkip}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
@@ -1135,7 +1206,7 @@ export default function App() {
             buildBrushBase={(regionId) => buildBrushBase(selectedImage.id, regionId)}
             onBrushChange={(regionId, url) => setBrushLayer(selectedImage.id, regionId, url)}
             onTranslate={() => translateSingleImage(selectedImage.id)}
-            onTranslateAll={() => translateAllImages()}
+            onTranslateAll={handleTranslateAllWithGlossary}
             translating={editorTranslating}
             translatingImageId={editorTranslatingImageId}
             onStopTranslate={stopTranslation}
@@ -1151,6 +1222,18 @@ export default function App() {
             angleMeasureArmed={angleMeasureArmed}
             onToggleAngleMeasure={handleArmAngleMeasure}
             onOpenHelp={editorOnOpenHelp}
+            glossary={{
+              book: glossary.book,
+              aiSelecting: glossary.aiSelecting,
+              unresolvedCount: glossary.unresolvedCount,
+              notice: glossaryNotice,
+              onSelectVariant: glossary.selectVariant,
+              onRunAiSelection: handleGlossaryAiSelect,
+              onExport: glossary.exportJson,
+              onImport: handleGlossaryImport,
+              onClear: glossary.clearBook,
+              onJumpToRef: handleGlossaryJump,
+            }}
           />
         )}
 

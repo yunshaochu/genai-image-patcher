@@ -3,6 +3,7 @@ import { compressImageToTargetSize, releaseObjectURL, urlToBase64 } from './imag
 import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLimitGate';
 import { recordPayload, PayloadTransform } from './payloadLog';
 import { buildFontChoicePrompt, resolveFontIdFromAi } from './fontService';
+import { PageTerm } from './glossaryBook';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -49,15 +50,15 @@ export interface RegionTranslation {
  * token，也不让模型有机会干扰嵌字字体。
  */
 const buildPrompt = (skeleton: string, fontAutoDetect: boolean): string => {
-  // 字体那条规则插在 freeze 之后，后面两条的编号要跟着顺延，所以统一算出来。
+  // 字体那条规则插在 terms 之后，后面两条的编号要跟着顺延，所以统一算出来。
   const fontRule = fontAutoDetect
     ? `
-7. font 填字符串：看【原文】的字形风格，从下面选一个最接近的（译文会用它来嵌字）。只填引号里的字符串，不要写别的：
+8. font 填字符串：看【原文】的字形风格，从下面选一个最接近的（译文会用它来嵌字）。只填引号里的字符串，不要写别的：
 ${buildFontChoicePrompt()}
 注意：普通对话文字基本都是常规印刷体；拿不准、看不清、或者风格没有明显特征时，一律填 "default"。`
     : '';
-  const nJson = fontAutoDetect ? 8 : 7;
-  const nEvery = fontAutoDetect ? 9 : 8;
+  const nJson = fontAutoDetect ? 9 : 8;
+  const nEvery = fontAutoDetect ? 10 : 9;
 
   return `你是一名漫画翻译。图片中已用红框标出编号区域，每个编号对应一段需要翻译的漫画文字（对白/旁白/音效字等）。
 
@@ -76,12 +77,13 @@ ${skeleton}
    - 艺术字/装饰性文字（特效字体、手写花字、与画面融为一体的标题字），普通排版字体无法还原；
    - text_free 且文字直接压在复杂背景上（渐变、网点、图案、人物、景物），抹掉原文会破坏画面。
    普通气泡内文字、干净纯色背景上的文字填 false。
-6. 若框内完全没有文字（误检），source 和 zh 填空字符串，freeze 填 false，color 填 "black"。${fontRule}
+6. 若框内完全没有文字（误检），source 和 zh 填空字符串，freeze 填 false，color 填 "black"。
+7. terms 填数组：本页出现的作品专有名词（人名/地名/组织/招式名/固定称谓），用来汇总全作术语表。source 填原文术语（取自你识别出的原文，越短越好，只要名字本身）；target 填你在 zh 译文里**实际使用**的那个译名。普通词汇、拟声词不要收；拿不准是不是专有名词的不要收；没有就填 []。${fontRule}
 ${nJson}. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
 ${nEvery}. 清单中的每个编号都必须出现且只出现一次。
 
 输出格式：
-{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}]}`;
+{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"原文术语","target":"译名"}]}`;
 };
 
 /** Draw the image with numbered boxes for each region; returns a data URL. */
@@ -224,6 +226,29 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     }
   });
 
+/** 一次整页翻译的完整产出：逐框结果 + 本页术语（喂给术语表 v2）。 */
+export interface EditorTranslateOutcome {
+  results: Map<string, RegionTranslation>;
+  /** 本页出现的作品专有名词（{source: 原文, target: 本页实际译名}）。解析
+   *  失败/模型没给时为 []——术语是附属产物，绝不因为它的格式问题让整页
+   *  翻译重试。 */
+  terms: PageTerm[];
+}
+
+/** 从已解析的 JSON 里捞术语数组。宽容：任何一条不合格就跳过那一条。 */
+const parsePageTerms = (parsed: any): PageTerm[] => {
+  const list: any[] = Array.isArray(parsed?.terms) ? parsed.terms : [];
+  const terms: PageTerm[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const source = typeof item.source === 'string' ? item.source.trim() : '';
+    const target = typeof item.target === 'string' ? item.target.trim() : '';
+    if (!source || !target) continue;
+    terms.push({ source, target });
+  }
+  return terms;
+};
+
 /**
  * Parse a model response into per-region results. Throws on an empty /
  * unparseable body so the caller can retry the call — a truncated or
@@ -234,7 +259,7 @@ const parseTranslationResponse = (
   content: string,
   regions: Region[],
   fontAutoDetect: boolean
-): Map<string, RegionTranslation> => {
+): EditorTranslateOutcome => {
   if (!content.trim()) throw new Error('AI 返回了空响应');
   const parsed = extractJson(content);
   const list: any[] = Array.isArray(parsed?.regions) ? parsed.regions : [];
@@ -256,14 +281,15 @@ const parseTranslationResponse = (
   // JSON body with no usable entries is a bad response (wrong key, truncated
   // list) — treat it like a parse failure so the caller retries.
   if (results.size === 0) throw new Error('AI 响应中没有可用的区域数据');
-  return results;
+  return { results, terms: parsePageTerms(parsed) };
 };
 
 /**
  * Translate all given regions of one image with a single vision-AI call.
- * Returns a Map keyed by Region.id. Regions the model found empty
- * (misdetections) come back with blank source/zh and are ignored by the
- * caller.
+ * Returns per-region results keyed by Region.id plus the page's term list
+ * (proper nouns the model actually used, feeding the glossary). Regions the
+ * model found empty (misdetections) come back with blank source/zh and are
+ * ignored by the caller.
  *
  * `signal` lets the caller abort the request (editor stop button).
  *
@@ -278,12 +304,12 @@ export const translateEditorRegions = async (
   regions: Region[],
   config: AppConfig,
   signal?: AbortSignal
-): Promise<Map<string, RegionTranslation>> => {
+): Promise<EditorTranslateOutcome> => {
   const { translationBaseUrl, translationApiKey, translationModel } = config;
   if (!translationApiKey || !translationBaseUrl) {
     throw new Error('请先在全局设置中配置翻译模型的 Base URL 和 API Key');
   }
-  if (regions.length === 0) return new Map();
+  if (regions.length === 0) return { results: new Map(), terms: [] };
 
   // 「发送遮罩全图作上下文」also covers this path: here the annotated page IS the
   // payload, so honouring the switch means nothing outside the circled regions

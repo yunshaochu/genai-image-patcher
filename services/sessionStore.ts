@@ -1,5 +1,6 @@
-import { Region, UploadedImage, ImageHistoryState, RedrawIntent } from '../types';
+import { Region, UploadedImage, ImageHistoryState, RedrawIntent, GlossaryTerm } from '../types';
 import { migratePromptToTranslation } from './translationCache';
+import { sanitizeBook } from './glossaryBook';
 
 /**
  * Session persistence (IndexedDB).
@@ -304,4 +305,37 @@ export async function clearSession(): Promise<void> {
   tx.objectStore(IMAGE_STORE).clear();
   tx.objectStore(META_STORE).clear();
   await txDone(tx);
+}
+
+// -------------------- Glossary book (术语表 v2) --------------------
+//
+// Lives in META_STORE under its own key, so clearSession() wipes it together
+// with the session meta (清空图库 → 术语表一起清).
+
+const GLOSSARY_META_KEY = 'glossary';
+
+interface GlossaryMetaRecord {
+  key: string;
+  terms: GlossaryTerm[];
+  savedAt: number;
+}
+
+export async function saveGlossaryBook(terms: GlossaryTerm[]): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction([META_STORE], 'readwrite');
+  const rec: GlossaryMetaRecord = { key: GLOSSARY_META_KEY, terms, savedAt: Date.now() };
+  tx.objectStore(META_STORE).put(rec);
+  await txDone(tx);
+}
+
+/** null = nothing saved. The stored record is sanitized so a corrupted or
+ *  stale-shaped entry can never crash the hook. */
+export async function loadGlossaryBook(): Promise<GlossaryTerm[] | null> {
+  const db = await openDb();
+  const tx = db.transaction([META_STORE], 'readonly');
+  const rec = await requestToPromise(
+    tx.objectStore(META_STORE).get(GLOSSARY_META_KEY)
+  ) as GlossaryMetaRecord | undefined;
+  if (!rec) return null;
+  return sanitizeBook(rec.terms);
 }

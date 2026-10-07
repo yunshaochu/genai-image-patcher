@@ -164,8 +164,8 @@ const DEFAULT_CONFIG: AppConfig = {
   translationPromptWithContext: '',
   requireTranslationForGeneration: false,
   translateBeforeRedraw: false,
-  enableGlossary: true,
-  glossaryText: '',
+  glossaryAutoUnify: true,
+  glossaryAutoAiSelect: false,
 
   // AI Payload Compression Defaults
   enableAiPayloadCompression: true,
@@ -303,12 +303,16 @@ export function useConfig() {
         if (typeof migratedConfig.translateBeforeRedraw === 'undefined') {
             migratedConfig.translateBeforeRedraw = false;
         }
-        if (typeof migratedConfig.enableGlossary === 'undefined') {
-            migratedConfig.enableGlossary = true;
+        if (typeof migratedConfig.glossaryAutoUnify === 'undefined') {
+            migratedConfig.glossaryAutoUnify = true;
         }
-        if (typeof migratedConfig.glossaryText === 'undefined') {
-            migratedConfig.glossaryText = '';
+        if (typeof migratedConfig.glossaryAutoAiSelect === 'undefined') {
+            migratedConfig.glossaryAutoAiSelect = false;
         }
+        // 术语表 v1（全局注入式）已废弃：相关字段从配置里清掉。术语数据现在
+        // 是 workspace 级（GlossaryTerm 树），见 services/glossaryBook.ts。
+        delete (migratedConfig as any).enableGlossary;
+        delete (migratedConfig as any).glossaryText;
 
         // detectionApiUrl + editorBackendUrl were merged into the single
         // pythonBackendUrl (unified backend base URL). Derive it from the old

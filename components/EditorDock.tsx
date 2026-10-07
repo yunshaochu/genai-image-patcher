@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AppConfig, Region, UploadedImage } from '../types';
+import { AppConfig, GlossaryTerm, Region, UploadedImage } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
@@ -9,6 +9,7 @@ import { isAiOwned, editorPerfOn, DISCRETE_RECOMPOSITE_DEBOUNCE_MS } from '../ho
 import { DockActions, useRunGating } from './sidebar/DockActions';
 import { LayerOrderButtons } from './sidebar/LayerOrderButtons';
 import { HelpTip } from './sidebar/HelpTip';
+import { GlossarySection } from './sidebar/GlossarySection';
 
 /**
  * Right-side collapsible dock for the editor workflow's "编辑" canvas tab.
@@ -74,6 +75,20 @@ interface EditorDockProps {
   onToggleAngleMeasure?: (armed: boolean) => void;
   /** 打开使用手册（一次性手势提示里的「使用手册」链接用）。 */
   onOpenHelp?: () => void;
+  /** 术语表 v2 区块（面板下方 tab）；不传则整个区块不渲染。 */
+  glossary?: {
+    book: GlossaryTerm[];
+    aiSelecting: boolean;
+    unresolvedCount: number;
+    /** 操作结果的一次性提示（AI 选择完成/无可选），几秒后由 App 清掉。 */
+    notice?: string | null;
+    onSelectVariant: (key: string, variantIndex: number | null) => void;
+    onRunAiSelection: () => void;
+    onExport: () => void;
+    onImport: (file: File) => void;
+    onClear: () => void;
+    onJumpToRef: (imageId: string, regionId: string) => void;
+  };
 }
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
@@ -766,7 +781,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onUnfreeze, onFreeze, onPreviewFrozenText, onPreviewFrozenTextAll,
   onEndPreview, onEndPreviewAll,
   onDownload, onApplyAsOriginal, onReorderRegion,
-  angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp,
+  angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp, glossary,
 }) => {
   const lang = config.language;
   const [collapsed, setCollapsed] = useState(() => {
@@ -873,6 +888,26 @@ const EditorDock: React.FC<EditorDockProps> = ({
       </div>
     );
   }
+
+  // 术语表 tab：钉在两个展开分支（全局操作 / 框属性）的滚动区与底部结果按钮之间。
+  const glossarySection = glossary && (
+    <GlossarySection
+      lang={lang}
+      book={glossary.book}
+      aiSelecting={glossary.aiSelecting}
+      unresolvedCount={glossary.unresolvedCount}
+      autoUnify={config.glossaryAutoUnify}
+      autoAiSelect={config.glossaryAutoAiSelect}
+      onConfigChange={onConfigChange}
+      onSelectVariant={glossary.onSelectVariant}
+      onRunAiSelection={glossary.onRunAiSelection}
+      onExport={glossary.onExport}
+      onImport={glossary.onImport}
+      onClear={glossary.onClear}
+      onJumpToRef={glossary.onJumpToRef}
+      notice={glossary.notice}
+    />
+  );
 
   // Global view: no box selected → batch operations for the whole image.
   if (!region) {
@@ -1049,6 +1084,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
             save path. They follow the 作用范围 control at the top of this dock:
             「全部」applies every image that has a result, and ZIPs the finished
             ones for download. */}
+        {glossarySection}
         <DockActions
           resultOnly
           config={config}
@@ -1621,6 +1657,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
       </div>
 
       {/* Same pinned result actions as the global view — see the note there. */}
+      {glossarySection}
       <DockActions
         resultOnly
         config={config}

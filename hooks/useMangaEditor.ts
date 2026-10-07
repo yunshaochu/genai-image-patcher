@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf } from '../types';
 import { loadImage, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { translateEditorRegions } from '../services/editorTranslate';
+import { PageTerm } from '../services/glossaryBook';
 import {
   compositeRegionPatch,
   regionNeedsComposite,
@@ -106,6 +107,11 @@ interface UseMangaEditorParams {
   updateImage: (id: string, updater: (img: UploadedImage) => UploadedImage) => void;
   config: AppConfig;
   setErrorMsg: (msg: string | null) => void;
+  /** 每页翻译的术语落地口（术语表 v2）：本页刚翻完的框（sourceText/editorText
+   *  已写好）+ AI 上报的术语。实现方负责合并进术语树，并（glossaryAutoUnify
+   *  开着时）按已选标准译名改写本页框文本——返回值会替换原数组进入后续的
+   *  状态提交与合成，所以自动统一的页面第一次上屏就是统一后的样子。 */
+  onPageTerms?: (imageId: string, regions: Region[], terms: PageTerm[]) => Region[];
 }
 
 /**
@@ -178,7 +184,7 @@ const mergeEditorUpdates = (region: Region, updates: EditorFieldUpdates): Region
  * cache (purely a performance cache — rebuildable at any time) and per-region
  * debounce timers.
  */
-export function useMangaEditor({ images, updateImage, config, setErrorMsg }: UseMangaEditorParams) {
+export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPageTerms }: UseMangaEditorParams) {
   const [busy, setBusy] = useState(false);
   // True while an auto-translate run (single page or batch) is in flight —
   // drives the dock's stop button. Distinct from `busy`, which erase
@@ -765,7 +771,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     setTranslatingImageId(imageId);
     try {
       const imageEl = await loadImage(img.previewUrl);
-      const results = await translateEditorRegions(imageEl, targets, configRef.current, signal);
+      const { results, terms } = await translateEditorRegions(imageEl, targets, configRef.current, signal);
 
       // Compute post-update region objects up-front (updaters must stay pure,
       // and recomposite needs them explicitly — the store commit lags behind
@@ -842,6 +848,16 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         throw new Error('AI 没有识别到任何文字（可能全部为空框/误检）');
       }
 
+      // 术语表 v2：上报本页术语（合并进术语树）；glossaryAutoUnify 开着时实现方
+      // 会顺手把本页框文本按已选标准译名改写并返回新数组 —— 用它替换原数组，
+      // 后续的状态提交 / 合成看到的就是统一后的文本。
+      if (onPageTerms && (terms.length > 0 || translated.length + frozen.length > 0)) {
+        const unified = onPageTerms(imageId, [...translated, ...frozen], terms);
+        const unifiedById = new Map(unified.map(r => [r.id, r]));
+        for (let i = 0; i < translated.length; i++) translated[i] = unifiedById.get(translated[i].id) ?? translated[i];
+        for (let i = 0; i < frozen.length; i++) frozen[i] = unifiedById.get(frozen[i].id) ?? frozen[i];
+      }
+
       const byId = new Map<string, Region>([...translated, ...frozen].map(nr => [nr.id, nr]));
       updateImage(imageId, current => ({
         ...current,
@@ -886,7 +902,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
         translateAbortRef.current = null;
       }
     }
-  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets]);
+  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets, onPageTerms]);
 
   /**
    * Manual unfreeze (fix an AI false positive): move the frozen translation
@@ -1339,5 +1355,6 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg }: Use
     refreshEditorPatches,
     buildBrushBase,
     clearEditorCaches,
+    recompositeRegion,
   };
 }

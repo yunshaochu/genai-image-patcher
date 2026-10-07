@@ -485,13 +485,13 @@ export interface AppConfig {
    *  is auto-filled rather than waited for). */
   translateBeforeRedraw: boolean;
 
-  /** Maintain a project-wide 术语表 while translating: each translation call
-   *  also reports the term pairs it used, which are merged into `glossaryText`
-   *  and fed back into the following translation prompts so naming stays
-   *  consistent across every page. No new terms = no update. */
-  enableGlossary: boolean;
-  /** The glossary itself: one `原文 | 译文 | 备注` per line (备注 optional). */
-  glossaryText: string;
+  /** 术语表 v2：已选定标准的术语，之后新翻页再出现该术语的其他译名时，
+   *  自动替换成已选译名（本地字符串替换 + 重排，无 API 调用）。
+   *  见 services/glossaryBook.ts / hooks/useGlossary.ts。 */
+  glossaryAutoUnify: boolean;
+  /** 整批翻译结束后自动发起一次「AI 选择标准译名」（纯文本调用，只处理有多种
+   *  译名且尚未人工选择的术语）。默认关：这是一次 API 调用，由用户决定。 */
+  glossaryAutoAiSelect: boolean;
 
   /** When true, images sent to translation/redraw APIs are re-encoded to WebP
    *  at a target file size (binary search on quality). Preserves pixel
@@ -509,4 +509,36 @@ export enum ProcessingStep {
   API_CALLING = 'API_CALLING',
   STITCHING = 'STITCHING',
   DONE = 'DONE',
+}
+
+// =====================================================================
+// 术语表 v2（workspace 级，见 services/glossaryBook.ts）
+//
+// 翻译不注入术语：每页翻译返回本页出现的术语（原文 + 本页实际译名），
+// 按原文聚合成树 —— 一个 key 挂多个译名变体。人工或 AI 从变体里选定标准
+// 译名后，本地替换统一所有锚定框的译文（不重新翻译）。
+// =====================================================================
+
+/** 一个译名变体出现位置的锚点。 */
+export interface GlossaryRef {
+  imageId: string;
+  regionId: string;
+}
+
+/** 一个译名变体 + 它出现过的所有锚点（频次 = refs.length）。 */
+export interface GlossaryVariant {
+  value: string;
+  refs: GlossaryRef[];
+}
+
+/**
+ * 一条术语：原文 key + 翻译中实际出现过的译名变体。
+ * selected = 选定的标准译名下标（variants 内）；null = 尚未统一。
+ * note = AI 选择时给的理由（可选，仅展示）。
+ */
+export interface GlossaryTerm {
+  key: string;
+  variants: GlossaryVariant[];
+  selected: number | null;
+  note?: string;
 }

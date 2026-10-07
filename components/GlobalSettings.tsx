@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { AppConfig, Language, ThemeType } from '../types';
 import { t } from '../services/translations';
-import { countGlossaryEntries } from '../services/glossary';
 import { downloadConfigExport, readConfigExport } from '../services/configTransfer';
 import { HelpTip } from './sidebar/HelpTip';
 import { ApiProfileSwitcher } from './sidebar/ApiProfileSwitcher';
@@ -122,10 +121,6 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
     useEffect(() => {
         try { localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* ignore */ }
     }, [tab]);
-
-    // Two-step destructive action (same pattern as the gallery's clear button).
-    const [glossaryClearArmed, setGlossaryClearArmed] = useState(false);
-    const glossaryCount = countGlossaryEntries(config.glossaryText);
 
     // --- Config backup (export / import / reset) ---
     const [importArmed, setImportArmed] = useState(false);
@@ -717,53 +712,6 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             />
                                         }
                                     />
-                                </SettingsCard>
-
-                                {/* Own card rather than a nested block: the glossary is
-                                    data (and the only destructive action in here), not a
-                                    translation behaviour. */}
-                                <SettingsCard
-                                    title={t(lang, 'glossary')}
-                                    help={t(lang, 'glossaryDesc')}
-                                    summary={config.enableGlossary
-                                        ? t(lang, 'glossaryCount', { count: glossaryCount })
-                                        : undefined}
-                                    summaryTone="on"
-                                    action={
-                                        <Toggle
-                                            checked={config.enableGlossary}
-                                            onChange={(v) => updateConfig('enableGlossary', v)}
-                                        />
-                                    }
-                                >
-                                    <OffDim off={!config.enableGlossary}>
-                                        <div className="flex items-center justify-end gap-2">
-                                            <button
-                                                onClick={() => {
-                                                    if (glossaryClearArmed) {
-                                                        updateConfig('glossaryText', '');
-                                                        setGlossaryClearArmed(false);
-                                                    } else {
-                                                        setGlossaryClearArmed(true);
-                                                        setTimeout(() => setGlossaryClearArmed(false), 3000);
-                                                    }
-                                                }}
-                                                className={`text-[9px] px-1.5 py-0.5 rounded border transition-all ${
-                                                    glossaryClearArmed
-                                                        ? 'bg-rose-500 text-white border-rose-600'
-                                                        : 'text-skin-muted border-skin-border hover:text-rose-500 hover:border-rose-500'
-                                                }`}
-                                            >
-                                                {glossaryClearArmed ? t(lang, 'glossaryClearConfirm') : t(lang, 'glossaryClear')}
-                                            </button>
-                                        </div>
-                                        <textarea
-                                            value={config.glossaryText || ''}
-                                            onChange={(e) => updateConfig('glossaryText', e.target.value)}
-                                            className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm font-mono"
-                                            placeholder={glossaryCount === 0 ? t(lang, 'glossaryEmpty') : t(lang, 'glossaryPlaceholder')}
-                                        />
-                                    </OffDim>
                                 </SettingsCard>
                             </>
                         )}

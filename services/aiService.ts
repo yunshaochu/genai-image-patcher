@@ -4,7 +4,7 @@ import { AppConfig } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
 import { DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT } from "../hooks/useConfig";
 import { globalRateLimitGate, parseRetryAfter, isRateLimitError } from "./rateLimitGate";
-import { buildGlossaryInstruction, parseTranslationWithTerms } from "./glossary";
+
 
 /**
  * Helper to sanitize header values (API Keys) to prevent
@@ -500,30 +500,16 @@ const generateOpenAIImageEdit = async (
   }
 };
 
-/** One translation call's outcome: the translation plus the glossary upgrade. */
-export interface TranslationResult {
-  /** The translation itself (the glossary block is stripped out). */
-  text: string;
-  /** Term pairs the model reported as new/corrected (one per line), or '' when
-   *  the page contained nothing worth remembering. */
-  terms: string;
-}
-
 /**
- * Perform translation using an OpenAI-compatible endpoint.
- *
- * `glossaryText` is the project glossary accumulated so far; when the glossary
- * feature is on it is injected into the prompt (so the model reuses the
- * established wording) and the model is asked to report the new/corrected
- * terms it used, which come back in `terms`.
+ * Perform translation using an OpenAI-compatible endpoint. Returns the
+ * translation text (trimmed).
  */
 export const generateTranslation = async (
   imageBase64: string,
   config: AppConfig,
   signal?: AbortSignal,
-  contextImageBase64?: string,
-  glossaryText?: string
-): Promise<TranslationResult> => {
+  contextImageBase64?: string
+): Promise<string> => {
   const { translationBaseUrl, translationApiKey, translationModel, translationPrompt } = config;
 
   if (!translationApiKey || !translationBaseUrl) {
@@ -538,15 +524,9 @@ export const generateTranslation = async (
   const url = `${cleanBaseUrl}/chat/completions`;
 
   const useContext = !!contextImageBase64;
-  const glossaryEnabled = config.enableGlossary !== false;
-  const basePrompt = useContext
+  const prompt = useContext
     ? TRANSLATION_CONTEXT_SYSTEM_PROMPT
     : (translationPrompt || DEFAULT_TRANSLATION_PROMPT);
-  // The glossary instruction goes LAST so it wins over the user's own output
-  // format section (the model reports its terms after the translation).
-  const prompt = glossaryEnabled
-    ? basePrompt + buildGlossaryInstruction(glossaryText ?? '')
-    : basePrompt;
 
   const imageContent: any[] = [
     { type: "text", text: prompt },
@@ -608,23 +588,70 @@ export const generateTranslation = async (
 
     const timeout = config.apiTimeout || 60000;
     const content = await executeWithRetry(worker, timeout, signal);
-    if (!glossaryEnabled) return { text: content.trim(), terms: '' };
-
-    const parsed = parseTranslationWithTerms(content);
-    if (parsed.format !== 'json') {
-        // Diagnostics: the glossary can only fill when the model answers with
-        // the JSON contract. A plain/marker answer is normal only for older
-        // prompts, so surface the head of the raw response to make "why is my
-        // glossary still empty?" answerable from the console. No warning when
-        // the contract WAS followed and simply reported no new terms.
-        console.warn(
-            `[glossary] 模型未按 JSON 契约返回（识别为 ${parsed.format}），本次可能没有术语。` +
-            `原始返回前 400 字：\n${content.slice(0, 400)}`
-        );
-    }
-    return parsed;
+    return content.trim();
   } catch (error) {
       console.error("Translation API Error", error);
+      throw error;
+  }
+};
+
+/**
+ * Pure-text chat completion against the translation endpoint (no image
+ * payload). Used by the glossary AI pick: variant choice is language
+ * knowledge, not visual knowledge, so no page images are sent.
+ */
+export const generateTextCompletion = async (
+  prompt: string,
+  config: AppConfig,
+  signal?: AbortSignal,
+  maxTokens: number = 4096
+): Promise<string> => {
+  const { translationBaseUrl, translationApiKey, translationModel } = config;
+
+  if (!translationApiKey || !translationBaseUrl) {
+      throw new Error("Translation API Key or Base URL missing.");
+  }
+
+  const safeApiKey = sanitizeHeaderValue(translationApiKey);
+  let cleanBaseUrl = translationBaseUrl.replace(/\/$/, "");
+  if (!cleanBaseUrl.endsWith('/v1')) {
+     cleanBaseUrl += '/v1';
+  }
+  const url = `${cleanBaseUrl}/chat/completions`;
+
+  try {
+    const worker = async (opSignal: AbortSignal): Promise<string> => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${safeApiKey}`,
+        },
+        body: JSON.stringify({
+          model: translationModel,
+          messages: [{ role: "user", content: prompt }],
+          max_tokens: maxTokens
+        }),
+        signal: opSignal
+      });
+
+      if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          const e: any = new Error(`Translation API Error: ${err.error?.message || response.statusText}`);
+          e.status = response.status;
+          e.retryAfter = response.headers.get('Retry-After');
+          throw e;
+      }
+
+      const data = await response.json();
+      return data.choices?.[0]?.message?.content || '';
+    };
+
+    const timeout = config.apiTimeout || 60000;
+    const content = await executeWithRetry(worker, timeout, signal);
+    return content.trim();
+  } catch (error) {
+      console.error("Text Completion API Error", error);
       throw error;
   }
 };

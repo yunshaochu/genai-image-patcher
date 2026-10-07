@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { AppConfig, Region, UploadedImage } from '../types';
+import { AppConfig, GlossaryTerm, Region, UploadedImage } from '../types';
 import {
   ImageRecord,
   PersistableUrl,
@@ -8,6 +8,7 @@ import {
   serializeImage,
 } from './sessionStore';
 import { buildExportPayload, mergeImportedConfig } from './configTransfer';
+import { sanitizeBook, serializeBook } from './glossaryBook';
 
 /**
  * Whole-work-state backup: gallery images + the full editing session (regions,
@@ -35,6 +36,8 @@ export const WORKSTATE_VERSION = 1;
 
 const MANIFEST_NAME = 'manifest.json';
 const CONFIG_NAME = 'config.json';
+/** 术语表 v2（glossaryBook.ts 的信封格式，与单独导出同一个文件）。 */
+const GLOSSARY_NAME = 'glossary.json';
 
 /** A persisted URL in the manifest: either a ZIP entry path or a kept URL. */
 type ManifestRef = { type: 'file'; path: string } | { type: 'url'; url: string };
@@ -132,15 +135,23 @@ const triggerDownload = (blob: Blob, fileName: string): void => {
 };
 
 /** Pack every image (its current editing state) plus the settings into a ZIP
- *  and download it. Returns the file name used. */
+ *  and download it. Returns the file name used.
+ *
+ *  `glossaryTerms`（术语表 v2）提供时写入 glossary.json —— 哪怕是空数组也写，
+ *  这样导入方能区分「旧包没有术语表」（不动现有术语表）和「这个作品的术语
+ *  表就是空的」（还原为空）。 */
 export async function downloadWorkStateZip(
   images: UploadedImage[],
   selectedImageId: string | null,
   config: AppConfig,
   onProgress?: (done: number, total: number) => void,
+  glossaryTerms?: GlossaryTerm[],
 ): Promise<string> {
   const zip = new JSZip();
   zip.file(CONFIG_NAME, JSON.stringify(buildExportPayload(config), null, 2));
+  if (glossaryTerms) {
+    zip.file(GLOSSARY_NAME, JSON.stringify(serializeBook(glossaryTerms), null, 2));
+  }
 
   const entries: WorkStateImageEntry[] = [];
   let done = 0;
@@ -217,6 +228,8 @@ export type WorkStateImportOutcome =
       /** Merged config, present only when the package carried usable settings. */
       config?: AppConfig;
       configAppliedCount: number;
+      /** 术语表 v2，仅当包里有 glossary.json 时存在（空数组也是有效还原）。 */
+      glossary?: GlossaryTerm[];
     }
   | { status: 'error'; error: WorkStateImportError };
 
@@ -338,5 +351,15 @@ export async function readWorkStateZip(
     } catch { /* settings are optional — a bad config.json must not fail the restore */ }
   }
 
-  return { status: 'ok', images, selectedImageId, config, configAppliedCount };
+  // 术语表同样随包走：旧包没有这个文件 → undefined（导入方不动现有术语表）；
+  // 有但内容坏了 → 跳过，不让一颗老鼠屎坏掉整个还原。
+  let glossary: GlossaryTerm[] | undefined;
+  const glossaryEntry = zip.file(GLOSSARY_NAME);
+  if (glossaryEntry) {
+    try {
+      glossary = sanitizeBook(JSON.parse(await glossaryEntry.async('string'))) ?? undefined;
+    } catch { /* glossary is optional */ }
+  }
+
+  return { status: 'ok', images, selectedImageId, config, configAppliedCount, glossary };
 }
