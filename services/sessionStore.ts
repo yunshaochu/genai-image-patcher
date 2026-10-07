@@ -19,9 +19,10 @@ import { sanitizeBook } from './glossaryBook';
  */
 
 const DB_NAME = 'banana-change-session';
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 const IMAGE_STORE = 'images';
 const META_STORE = 'meta';
+const ERASE_STORE = 'erase';
 const META_KEY = 'session';
 
 /** blob: URLs are fetched to Blobs; data:/http(s) URLs are kept as strings.
@@ -84,6 +85,21 @@ function openDb(): Promise<IDBDatabase> {
         }
         if (!db.objectStoreNames.contains(META_STORE)) {
           db.createObjectStore(META_STORE, { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains(ERASE_STORE)) {
+          // 擦除缓存（见下方 EraseRecord）：key = 调用方拼的完整缓存键；
+          // regionId 索引用于「同一个框只留最新一条」，imageId 索引用于按图库清理，
+          // savedAt 索引用于条数超限时淘汰最旧的。
+          const store = db.createObjectStore(ERASE_STORE, { keyPath: 'key' });
+          store.createIndex('regionId', 'regionId', { unique: false });
+          store.createIndex('imageId', 'imageId', { unique: false });
+          store.createIndex('savedAt', 'savedAt', { unique: false });
+        } else {
+          // 已存在的库（老版本建过一次）：补上之后新增的索引。
+          const store = req.transaction!.objectStore(ERASE_STORE);
+          if (!store.indexNames.contains('imageId')) {
+            store.createIndex('imageId', 'imageId', { unique: false });
+          }
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -301,10 +317,173 @@ export async function loadSession(): Promise<{
 
 export async function clearSession(): Promise<void> {
   const db = await openDb();
-  const tx = db.transaction([IMAGE_STORE, META_STORE], 'readwrite');
+  const tx = db.transaction([IMAGE_STORE, META_STORE, ERASE_STORE], 'readwrite');
   tx.objectStore(IMAGE_STORE).clear();
   tx.objectStore(META_STORE).clear();
+  tx.objectStore(ERASE_STORE).clear();
   await txDone(tx);
+}
+
+// -------------------- 泛洪擦除底图缓存 --------------------
+//
+// 编辑器「泛洪擦除」一次要跑完整条像素管线（离线时是主线程同步算法，秒级），
+// 而结果只跟「框几何 + 擦除 ROI + 底图变体」有关 —— 会话重开后图形一模一样，
+// 没理由再擦一遍。这里按调用方给的完整缓存键把擦除后的 ROI 落盘，重开编辑器时
+// 直接命中；只有用户主动改变输入（撤回擦除 / 拖动改几何 / 应用为原图）才会生成
+// 新键，才会重新擦除。
+//
+// 纯粹是性能缓存：任何时刻删掉都只是"下次重擦"，不影响正确性。随会话一起清。
+
+export interface EraseRecord {
+  /** 完整缓存键，由调用方拼（含 imageId / 底图变体 / 框几何 / ROI）。 */
+  key: string;
+  imageId: string;
+  regionId: string;
+  /** 擦除后的 ROI 位图（无损 PNG）。 */
+  blob: Blob;
+  /** 区域裁剪在 ROI 里的偏移与 ROI 尺寸（px）。 */
+  dx: number;
+  dy: number;
+  w: number;
+  h: number;
+  /** 擦除时量到的墨色 / 底色（自动取色沿用，避免重擦后颜色跳变）。 */
+  textColor?: string;
+  bgColor?: string;
+  savedAt: number;
+}
+
+/** 全局条数上限：超过就按 savedAt 淘汰最旧的，防止长期积累（每框最多一条）。 */
+const ERASE_MAX_ENTRIES = 400;
+
+/**
+ * 读一条擦除缓存；不存在 / 结构不对（老版本残留）/ 读盘出错时一律返回 null
+ * （缓存读不到只是「这次重新擦」，绝不能让 IndexedDB 的毛病打断合成）。
+ */
+export async function loadEraseRecord(key: string): Promise<EraseRecord | null> {
+  try {
+    const db = await openDb();
+    const tx = db.transaction([ERASE_STORE], 'readonly');
+    const rec = await requestToPromise(
+      tx.objectStore(ERASE_STORE).get(key)
+    ) as EraseRecord | undefined;
+    if (!rec || !(rec.blob instanceof Blob) || rec.key !== key) return null;
+    return rec;
+  } catch (e) {
+    console.warn('[erase-cache] 读取失败（将重新擦除）', e);
+    return null;
+  }
+}
+
+/**
+ * 写入一条擦除缓存，并顺手清掉同一个框的旧条目（拖动会不断产生新键，不清理会
+ * 无限增长）。超过全局上限时淘汰最旧的若干条。失败（配额满 / 隐私模式）静默
+ * 忽略 —— 缓存写不进去只是下次重擦，不该影响编辑。
+ */
+export async function saveEraseRecord(rec: EraseRecord): Promise<void> {
+  try {
+    const db = await openDb();
+
+    const readTx = db.transaction([ERASE_STORE], 'readonly');
+    const siblings = await requestToPromise(
+      readTx.objectStore(ERASE_STORE).index('regionId').getAllKeys(rec.regionId)
+    ) as IDBValidKey[];
+
+    const tx = db.transaction([ERASE_STORE], 'readwrite');
+    const store = tx.objectStore(ERASE_STORE);
+    for (const k of siblings) if (k !== rec.key) store.delete(k);
+    store.put(rec);
+    await txDone(tx);
+
+    await pruneEraseRecords(db);
+  } catch (e) {
+    console.warn('[erase-cache] 写入失败（下次会重新擦除）', e);
+  }
+}
+
+/** 按 savedAt 从旧到新删除，直到条数落到上限以内。 */
+async function pruneEraseRecords(db: IDBDatabase): Promise<void> {
+  const countTx = db.transaction([ERASE_STORE], 'readonly');
+  const count = await requestToPromise(countTx.objectStore(ERASE_STORE).count());
+  let excess = count - ERASE_MAX_ENTRIES;
+  if (excess <= 0) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction([ERASE_STORE], 'readwrite');
+    const cursorReq = tx.objectStore(ERASE_STORE).index('savedAt').openCursor();
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (!cursor || excess <= 0) return; // 走完 / 删够了，交给 tx.oncomplete
+      cursor.delete();
+      excess--;
+      cursor.continue();
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+/** 丢掉某个框的全部擦除缓存（撤回擦除 / 冻结 / 重置时调用 = 用户要求重擦）。 */
+export async function deleteEraseRecordsForRegion(regionId: string): Promise<void> {
+  try {
+    const db = await openDb();
+    const readTx = db.transaction([ERASE_STORE], 'readonly');
+    const keys = await requestToPromise(
+      readTx.objectStore(ERASE_STORE).index('regionId').getAllKeys(regionId)
+    ) as IDBValidKey[];
+    if (keys.length === 0) return;
+    const tx = db.transaction([ERASE_STORE], 'readwrite');
+    const store = tx.objectStore(ERASE_STORE);
+    for (const k of keys) store.delete(k);
+    await txDone(tx);
+  } catch (e) {
+    console.warn('[erase-cache] 删除失败', e);
+  }
+}
+
+/** 整体清掉（工作区导入 / 图库整体替换）。 */
+export async function clearEraseRecords(): Promise<void> {
+  try {
+    const db = await openDb();
+    const tx = db.transaction([ERASE_STORE], 'readwrite');
+    tx.objectStore(ERASE_STORE).clear();
+    await txDone(tx);
+  } catch (e) {
+    console.warn('[erase-cache] 清空失败', e);
+  }
+}
+
+/**
+ * 会话恢复后清理孤儿：只保留 `imageIds` 里这些图的擦除底图，其余（图被删掉、换过
+ * 一批图库、上次没来得及清理的）全部丢掉。
+ *
+ * 刷新页面本身**不**清空可复用的条目 —— 那正是这份缓存存在的意义；这里删的是
+ * 「已经对不上任何图」的部分，避免它们一直占着 IndexedDB（以及让条数上限去背锅）。
+ * 传空数组 = 当前图库为空 → 全删。
+ */
+export async function pruneEraseRecordsExcept(imageIds: readonly string[]): Promise<void> {
+  try {
+    const keep = new Set(imageIds);
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([ERASE_STORE], 'readwrite');
+      const store = tx.objectStore(ERASE_STORE);
+      // 走 imageId 索引的 key 游标：只需要「索引键 + 主键」，不反序列化 blob。
+      const req = store.index('imageId').openKeyCursor();
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) return; // 走完，交给 tx.oncomplete
+        if (!keep.has(String(cursor.key))) store.delete(cursor.primaryKey);
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.warn('[erase-cache] 清理孤儿失败', e);
+  }
 }
 
 // -------------------- Glossary book (术语表 v2) --------------------

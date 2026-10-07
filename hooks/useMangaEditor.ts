@@ -11,9 +11,16 @@ import {
   syncBubbleStatuses,
   eraseBaseUrlOf,
   ErasedCacheEntry,
+  EraseCachePersist,
 } from '../services/mangaEditor';
 import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
 import { runWithConcurrency } from '../services/concurrencyUtils';
+import {
+  loadEraseRecord,
+  saveEraseRecord,
+  deleteEraseRecordsForRegion,
+  clearEraseRecords,
+} from '../services/sessionStore';
 
 
 /**
@@ -267,6 +274,64 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     effectiveIntentOf(r, configRef.current.defaultRedrawIntent ?? 'translate', configRef.current.enableMangaMode), []);
 
   /**
+   * 擦除底图的持久化适配器（见 EraseCachePersist）。
+   *
+   * 泛洪擦除一次要跑完整条像素管线（后端不可用时是主线程同步算法，秒级），而结果
+   * 只跟「图片 + 底图变体 + 框几何 + ROI」有关 —— 会话恢复出来的图库这些全都一样，
+   * 所以把上次的结果落盘复用，重开编辑器不必再泛洪一遍。
+   *
+   * 只在开着「会话持久化」时启用：关掉时图库本来就不会恢复，imageId 每次都是新的，
+   * 写了也永远不会被读到（白占空间）。
+   */
+  const buildErasePersist = useCallback((
+    imageId: string,
+    appliedAsOriginal: boolean
+  ): EraseCachePersist | undefined => {
+    if (!configRef.current.enableSessionPersistence) return undefined;
+    // 持久键包含底图变体：应用为原图之后像素变了，旧结果不能再用。
+    const keyOf = (regionId: string, geomKey: string) =>
+      `${imageId}|${appliedAsOriginal ? 'applied' : 'src'}|${regionId}|${geomKey}`;
+    return {
+      load: async (regionId, geomKey) => {
+        // 读不到 / 读坏了都只是「这次重新擦」：绝不让缓存问题打断合成。
+        try {
+          const rec = await loadEraseRecord(keyOf(regionId, geomKey));
+          if (!rec) return null;
+          // 每个会话一份新的 Object URL（老的已随上次会话消失），解码仍由调用方懒做。
+          return {
+            geomKey,
+            url: URL.createObjectURL(rec.blob),
+            dx: rec.dx,
+            dy: rec.dy,
+            w: rec.w,
+            h: rec.h,
+            textColor: rec.textColor,
+            bgColor: rec.bgColor,
+          };
+        } catch (e) {
+          console.warn('[erase-cache] 恢复失败，将重新擦除', e);
+          return null;
+        }
+      },
+      save: (regionId, entry, blob) => {
+        void saveEraseRecord({
+          key: keyOf(regionId, entry.geomKey),
+          imageId,
+          regionId,
+          blob,
+          dx: entry.dx,
+          dy: entry.dy,
+          w: entry.w,
+          h: entry.h,
+          textColor: entry.textColor,
+          bgColor: entry.bgColor,
+          savedAt: Date.now(),
+        });
+      },
+    };
+  }, []);
+
+  /**
    * Rebuild the region's patch from its editor fields and write the result
    * into processedImageUrl. Completion semantics:
    *  - Text written (editorText non-empty) → status 'completed': the patch
@@ -325,7 +390,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         true,
         true,
         configRef.current.editorAutoTextColor,
-        onStage
+        onStage,
+        buildErasePersist(imageId, !!img.appliedAsOriginal)
       );
       const url = result?.url ?? null;
       // 自动取色量到的墨色写回区域：本版贴图已经用它画过了（合成器先擦除再
@@ -434,7 +500,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       console.error('Editor composite failed', e);
       setErrorMsg('Editor composite failed: ' + (e?.message || e));
     }
-  }, [getImage, updateImage, setErrorMsg]);
+  }, [getImage, updateImage, setErrorMsg, buildErasePersist]);
 
   /** Run one composite, tracking the region as "compositing" while it runs. */
   const runRecomposite = useCallback((imageId: string, regionId: string, regionOverride?: Region) => {
@@ -610,6 +676,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
    * — otherwise re-erasing the same box would silently reuse the stale result
    * and never ask the backend again (a backend algorithm update or a residue-y
    * pass would stay on screen forever).
+   *
+   * 落盘的那份一起删：这个方法就是「用户主动要求重擦」的信号（撤回擦除 / 冻结 /
+   * 重置），留着持久记录会让同一个几何永远命中旧结果，用户的重擦点了也没用。
    */
   const dropErasedCache = useCallback((regionId: string) => {
     const entry = erasedCacheRef.current.get(regionId);
@@ -617,6 +686,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       releaseObjectURL(entry.url);
       erasedCacheRef.current.delete(regionId);
     }
+    void deleteEraseRecordsForRegion(regionId);
   }, []);
 
   // AI「擦除」产物 vs 编辑器加的底图层：只要本框拿到了 AI 抹干净的底图
@@ -1375,10 +1445,13 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       configRef.current.pythonBackendUrl,
       getContextBubbles(img),
       false,
-      false
+      false,
+      undefined,
+      undefined,
+      buildErasePersist(imageId, !!img.appliedAsOriginal)
     );
     return result?.url ?? null;
-  }, [getImage]);
+  }, [getImage, buildErasePersist]);
 
   /**
    * Drop every in-memory editor cache. Called when the gallery is wholesale
@@ -1390,6 +1463,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   const clearEditorCaches = useCallback(() => {
     erasedCacheRef.current.forEach(e => releaseObjectURL(e.url));
     erasedCacheRef.current.clear();
+    // 落盘的擦除底图一起丢：键里带着 imageId，换一份图库后旧条目永远不会被读到，
+    // 留着只是占空间（导入的图库即使 id 相同，底图也已经不是同一张）。
+    void clearEraseRecords();
     debounceRef.current.forEach(t => clearTimeout(t));
     debounceRef.current.clear();
     editStampRef.current.clear();

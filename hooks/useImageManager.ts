@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { UploadedImage, Region, ImageHistoryState, PerformanceMode, RedrawIntent, ViewMode } from '../types';
 import { readFileAsDataURL, readFileAsObjectURL, loadImage, naturalSortCompare, stitchImage, cropRegion, compressImage, generateThumbnail, releaseObjectURL, cleanupImageUrls, base64ToObjectURLAsync, MAX_HISTORY_ENTRIES, PREVIEW_MAX_PX } from '../services/imageUtils';
-import { saveSession, loadSession, clearSession } from '../services/sessionStore';
+import { saveSession, loadSession, clearSession, pruneEraseRecordsExcept } from '../services/sessionStore';
 
 // ViewMode now lives in types.ts (it grew the per-workflow work tabs 重绘 / 修补).
 
@@ -93,6 +93,11 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
           setSelectedImageId(session.selectedImageId);
           console.info(`[session] Restored ${session.images.length} image(s) from previous session`);
         }
+        // 擦除底图缓存按图库对账：图库恢复出来的那些留着（下次就不用再泛洪），
+        // 已经对不上任何图的（图片被删、换过图库）当场丢掉，别一直占着 IndexedDB。
+        const restoredIds = session?.images.map((img) => img.id) ?? [];
+        void pruneEraseRecordsExcept(restoredIds)
+          .catch((e) => console.error('[session] Failed to prune erase cache', e));
       })
       .catch((e) => console.error('[session] Failed to restore session', e))
       .finally(() => {

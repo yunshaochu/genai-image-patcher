@@ -29,6 +29,21 @@ import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
 const PATCH_IMAGE_TYPE = 'image/webp';
 const PATCH_IMAGE_QUALITY = 0.94;
 
+/**
+ * Encoding for the erased-ROI cache (内存缓存与落盘用的是同一份 Blob)。
+ *
+ * PNG 无损，但擦除 ROI 通常不小（气泡 ∪ 文本框 + 8px 边距），PNG 编码本身就要
+ * 几十到几百毫秒，落盘一条也常是几百 KB —— 尺寸和耗时不划算。改用高质量 WebP：
+ * 体积通常小接近一个数量级，编码也快得多（浏览器不支持编码 WebP 时会自动回退成
+ * PNG，只是大一点，不影响正确性）。
+ *
+ * 有损但不会累积：这份 ROI 只在几何变化时重算一次，之后每一版贴图都是从它重新
+ * 画出来再编码的（贴图自己也是 WebP，见上），不存在「对同一张位图反复编码」的
+ * 代际损失。0.95 在照片 / 渐变背景上肉眼基本无差。
+ */
+const ERASE_IMAGE_TYPE = 'image/webp';
+const ERASE_IMAGE_QUALITY = 0.95;
+
 const canvasToObjectURL = (
   canvas: HTMLCanvasElement,
   type: string = PATCH_IMAGE_TYPE,
@@ -37,6 +52,19 @@ const canvasToObjectURL = (
   new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob) resolve(URL.createObjectURL(blob));
+      else reject(new Error('canvas.toBlob returned null'));
+    }, type, quality);
+  });
+
+/** Same as canvasToObjectURL but hands back the Blob itself (擦除缓存要落盘). */
+const canvasToBlob = (
+  canvas: HTMLCanvasElement,
+  type: string,
+  quality?: number
+): Promise<Blob> =>
+  new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
       else reject(new Error('canvas.toBlob returned null'));
     }, type, quality);
   });
@@ -57,6 +85,20 @@ export interface ErasedCacheEntry {
    *  存在缓存条目上是因为同一个几何只会擦一次，但每一版贴图都要用这个颜色。 */
   textColor?: string;
   bgColor?: string;
+}
+
+/**
+ * 擦除缓存的持久化适配器（可选）。
+ *
+ * 内存缓存未命中时先问它要一条 —— 命中就整条像素管线都不用跑（会话重开、切页
+ * 回来都算命中）；新擦出来的结果交给它落盘。真正的持久键由实现方拼（要把图片 id、
+ * 底图变体这些调用方上下文算进去），所以这里只传 regionId + geomKey。
+ */
+export interface EraseCachePersist {
+  /** 取一条已落盘的擦除结果；没有返回 null。 */
+  load: (regionId: string, geomKey: string) => Promise<ErasedCacheEntry | null>;
+  /** 落盘一条新擦除结果（best-effort，不阻塞合成）。 */
+  save: (regionId: string, entry: ErasedCacheEntry, blob: Blob) => void;
 }
 
 const regionGeomKey = (region: Region): string =>
@@ -425,6 +467,9 @@ export interface CompositeResult {
  * guess. Skipped when the box's colour was pinned by hand
  * (`editorStyle.colorSource === 'manual'`), so a hand-picked colour is never
  * silently replaced. The colour used is reported back on the result.
+ *
+ * `erasePersist` (可选) 把擦除底图接到持久层：内存缓存未命中时先查持久层（命中
+ * 就跳过整条像素管线），新擦的结果落盘 —— 会话重开不必为同一几何再泛洪一次。
  */
 export const compositeRegionPatch = async (
   imageEl: HTMLImageElement | HTMLCanvasElement,
@@ -437,7 +482,9 @@ export const compositeRegionPatch = async (
   includeText = true,
   autoTextColor = false,
   /** Optional stage sink for the editor's recomposite timing instrumentation. */
-  onStage?: (stage: string) => void
+  onStage?: (stage: string) => void,
+  /** Optional 擦除缓存持久化：缓存未命中时先查、擦完落盘（见 EraseCachePersist）。 */
+  erasePersist?: EraseCachePersist
 ): Promise<CompositeResult | null> => {
   // AI「擦除」产物本身就是这一格的画面：即使这一格现在没有字、没有擦除、没有
   // 画笔（例如刚点了「冻结翻译」把译文撤出来），也必须继续出图 —— 否则贴图会被
@@ -477,34 +524,45 @@ export const compositeRegionPatch = async (
     const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}`;
     let entry = erasedCache.get(region.id);
     if (!entry || entry.geomKey !== key) {
-      const eraseCanvas = document.createElement('canvas');
-      eraseCanvas.width = roi.w;
-      eraseCanvas.height = roi.h;
-      const ectx = eraseCanvas.getContext('2d');
-      if (!ectx) throw new Error('Could not get canvas context');
-      ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
-      const outcome = await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
-        kind,
-        dilate: ERASE_DILATE,
-        inpaintRadius: ERASE_INPAINT_RADIUS,
-      });
-      // Keep the erased base LOSSLESS: it is computed once per geometry but
-      // redrawn into every later patch, so a lossy copy would bleed artifacts
-      // into each re-composite.
-      const url = await canvasToObjectURL(eraseCanvas, 'image/png');
-      if (entry) releaseObjectURL(entry.url);
-      entry = {
-        geomKey: key,
-        url,
-        dx: Math.round(cropX - roi.x),
-        dy: Math.round(cropY - roi.y),
-        w: roi.w,
-        h: roi.h,
-        // 取色跟着缓存走：同一个几何只擦一次，之后每一版都要复用同一个墨色。
-        textColor: outcome.stats?.textColor,
-        bgColor: outcome.stats?.bgColor,
-      };
-      erasedCache.set(region.id, entry);
+      // 持久层优先：同一几何上次会话已经擦过（图库是恢复出来的，几何一模一样），
+      // 直接复用那份 ROI —— 整条像素管线都不用跑。只有用户主动改了输入（撤回
+      // 擦除 / 拖动改几何 / 应用为原图）才会换键，才会真的重新擦一遍。
+      const restored = erasePersist ? await erasePersist.load(region.id, key) : null;
+      if (restored) {
+        if (entry) releaseObjectURL(entry.url);
+        entry = restored;
+        erasedCache.set(region.id, entry);
+      } else {
+        const eraseCanvas = document.createElement('canvas');
+        eraseCanvas.width = roi.w;
+        eraseCanvas.height = roi.h;
+        const ectx = eraseCanvas.getContext('2d');
+        if (!ectx) throw new Error('Could not get canvas context');
+        ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
+        const outcome = await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
+          kind,
+          dilate: ERASE_DILATE,
+          inpaintRadius: ERASE_INPAINT_RADIUS,
+        });
+        // 编码成 WebP（见 ERASE_IMAGE_TYPE）：这份 ROI 只算一次、之后被反复重画，
+        // 但只会被编码这一次，所以有损编码不会累积；PNG 的编码耗时和落盘体积都不划算。
+        const blob = await canvasToBlob(eraseCanvas, ERASE_IMAGE_TYPE, ERASE_IMAGE_QUALITY);
+        if (entry) releaseObjectURL(entry.url);
+        entry = {
+          geomKey: key,
+          url: URL.createObjectURL(blob),
+          dx: Math.round(cropX - roi.x),
+          dy: Math.round(cropY - roi.y),
+          w: roi.w,
+          h: roi.h,
+          // 取色跟着缓存走：同一个几何只擦一次，之后每一版都要复用同一个墨色。
+          textColor: outcome.stats?.textColor,
+          bgColor: outcome.stats?.bgColor,
+        };
+        erasedCache.set(region.id, entry);
+        // 落盘（best-effort，不 await）：下次会话同一几何直接命中。
+        erasePersist?.save(region.id, entry, blob);
+      }
     }
     // Decode once per cache entry — every composite redraws this ROI, and a
     // fresh loadImage() per composite measured ~20 ms.
