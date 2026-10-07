@@ -217,8 +217,8 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
 def erase_bubble_roi(bgr_roi, dl=3, rad=6):
     """气泡区域擦除：中心平坦种子 flood fill 底色 → 洞 = 文字。
 
-    flood fill 面积异常（描边破损泄漏/底色渐变断裂）时逐级收缩容差重试，
-    全部失败才用接近全幅的椭圆兜底（保证覆盖，宁可保守）。
+    flood fill 面积异常（描边破损泄漏/底色渐变断裂）时逐级收缩容差重试；
+    三档都没落进「合理面积」窗口时，用面积最大的那次 fill 当底色。
 
     返回 `(擦除后的 ROI, stats)`，stats 见 _measure_text_stats。
     """
@@ -236,7 +236,19 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
         if best is None or r.sum() > best.sum():
             best = r
     if R is None:
-        if best is not None and best.sum() / float(gray.size) <= 0.85:
+        # 窗口没命中时用面积最大的那次 fill —— 与前端本地兜底算法
+        # （services/textErase.ts）同一套做法：面积最大的那次 fill 就是底色，
+        # 它留下的洞就是文字。
+        #
+        # 这里**不能**退回「内接椭圆」兜底（历史实现）：R = 椭圆时，椭圆外的
+        # 一切都能从 ROI 边界连通到，于是全部落进 ext，holes = ~R & ~ext 成了
+        # 空集，inpaint 无掩码可修 —— 实测白底黑字（底色占比 0.92+，最普通的
+        # 一种情形）就是这样被一个像素都擦不掉的。
+        #
+        # 只有连最大那次 fill 都几乎吞掉整块 ROI（≥99.5%）时才退回椭圆：那说明
+        # 填充顺着抗锯齿/渐变把文字一起爬过去了，拿它当底色本来也没有洞可修。
+        best_frac = best.sum() / float(gray.size) if best is not None else 0.0
+        if best is not None and best_frac < 0.995:
             R = best
         else:
             yy, xx = np.ogrid[:h, :w]
