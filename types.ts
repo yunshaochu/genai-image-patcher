@@ -128,6 +128,32 @@ export const effectiveIntentOf = (
     return fallback ?? 'translate';
 };
 
+/**
+ * 「AI 判定这一格没有文字」的占位标记 —— 往 editorText 里写一个空格。
+ *
+ * 整页翻译时模型会对误检出来的空框回 `source:"" / zh:""`，这是一个**合法的
+ * 终结答案**，但译文为空 = 没有任何字段能表明「这一格已经处理过」，于是翻译
+ * 按钮永远可按、每次都会把整页重新发一遍。写入一个空格就把这个状态落了库。
+ *
+ * 空格是刻意选的：它不会被排版（textLayout 对纯空白返回 null）、不会产生贴图
+ * （regionNeedsComposite 同样 trim 后判断）、也不会被当成「已嵌字」而改变状态；
+ * 只有「这一格是否已处理」的判断认它（见 isTranslationHandled）。
+ * 用户想强制重翻，把框里的文字清空即可（用户清空写入的是 ''，算未处理）。
+ */
+export const EMPTY_TEXT_MARK = ' ';
+
+/**
+ * 这一格是否已经「处理过」—— 翻译目标选择据此过滤，已处理的框不再重复请求。
+ *
+ * 这里必须用**存在性**而不是 trim 后的内容：空框的标记就是一个空格，trim 之后
+ * 是空串，用 trim 判断永远认不出来（翻译按钮会一直可按）。用户手动清空输入框
+ * 写入的是 ''（假值）→ 仍算未处理，可以重新翻译。
+ */
+export const isTranslationHandled = (
+  r: Pick<Region, 'editorText' | 'editorFrozenText' | 'customTranslation'>
+): boolean =>
+  !!r.editorText || !!r.editorFrozenText?.trim() || !!r.customTranslation?.trim();
+
 export interface Region {
   id: string;
   x: number; // Percentage 0-100 relative to image
@@ -338,6 +364,38 @@ export interface ApiProfile {
   model: string;
 }
 
+/**
+ * 思考强度（翻译调用）：透传给 OpenAI 兼容接口的 `reasoning_effort`。
+ *
+ *  - 'none'   不思考（最低档，翻译这种轻任务默认就用它：更快、更省 token）
+ *  - 'low'    'medium'  'high'  逐级加大模型思考预算
+ *
+ * 只会加到**翻译端点**的请求体（/chat/completions）上：编辑器整页翻译、
+ * 单框翻译、术语表 AI 选择。AI 重绘走图片端点，不受它影响。
+ */
+export type TranslationReasoningEffort = 'none' | 'low' | 'medium' | 'high';
+
+/** 翻译请求体里要并入的 `{ reasoning_effort }` 片段；未配置时不发该字段。 */
+export const translationReasoningParams = (
+  effort: TranslationReasoningEffort | undefined,
+): { reasoning_effort?: TranslationReasoningEffort } =>
+  effort ? { reasoning_effort: effort } : {};
+
+/** 档位顺序（低 → 高），两处设置面板共用，避免选项漂移。 */
+export const TRANSLATION_REASONING_EFFORTS: readonly TranslationReasoningEffort[] =
+  ['none', 'low', 'medium', 'high'];
+
+/** 档位 → i18n 文案 key（zh / en 均已提供）。 */
+export const TRANSLATION_REASONING_LABEL_KEYS: Record<
+  TranslationReasoningEffort,
+  'reasoningNone' | 'reasoningLow' | 'reasoningMedium' | 'reasoningHigh'
+> = {
+  none: 'reasoningNone',
+  low: 'reasoningLow',
+  medium: 'reasoningMedium',
+  high: 'reasoningHigh',
+};
+
 export interface AppConfig {
   prompt: string;
   /** 默认重绘场景：所有**没有单独改过**的切片（region / 全图模式下的图片）
@@ -455,6 +513,9 @@ export interface AppConfig {
   translationBaseUrl: string;
   translationApiKey: string;
   translationModel: string;
+  /** 思考强度：作为 `reasoning_effort` 发给翻译端点。'none' = 不思考（最低档）。
+   *  见 TranslationReasoningEffort。 */
+  translationReasoningEffort: TranslationReasoningEffort;
 
   // Saved translation endpoints (OpenAI-compatible), same model as imageApiProfiles.
   translationApiProfiles: ApiProfile[];

@@ -109,7 +109,7 @@ export default function App() {
   const {
       busy: editorBusy,
       translating: editorTranslating,
-      translatingImageId: editorTranslatingImageId,
+      translatingImageIds: editorTranslatingImageIds,
       computedFontSizes,
       updateEditorRegion,
       setBrushLayer,
@@ -1208,7 +1208,7 @@ export default function App() {
             onTranslate={() => translateSingleImage(selectedImage.id)}
             onTranslateAll={handleTranslateAllWithGlossary}
             translating={editorTranslating}
-            translatingImageId={editorTranslatingImageId}
+            translatingImageIds={editorTranslatingImageIds}
             onStopTranslate={stopTranslation}
             onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
             onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}

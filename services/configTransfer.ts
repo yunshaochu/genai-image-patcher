@@ -106,6 +106,7 @@ const ENUM_FIELDS: Record<string, readonly string[]> = {
   performanceMode: ['unlimited', 'balanced'],
   executionMode: ['concurrent', 'serial'],
   defaultRedrawIntent: ['translate', 'erase', 'custom'],
+  translationReasoningEffort: ['none', 'low', 'medium', 'high'],
 };
 
 /** Loose structural check: same kind of value as the one already in config.

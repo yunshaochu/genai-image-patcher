@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { AppConfig, GlossaryTerm, Region, UploadedImage } from '../types';
+import {
+  AppConfig,
+  GlossaryTerm,
+  Region,
+  UploadedImage,
+  TRANSLATION_REASONING_EFFORTS,
+  TRANSLATION_REASONING_LABEL_KEYS,
+  isTranslationHandled,
+} from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
 import { layoutText, drawTextLayout, TextLayout } from '../services/textLayout';
@@ -47,10 +55,11 @@ interface EditorDockProps {
   onTranslateAll: () => void;
   /** True while an auto-translate run is in flight — shows the stop button. */
   translating: boolean;
-  /** Image whose translation is currently in flight (null when idle). Batch
-   *  runs set it per page, so per-region editing can stay unlocked for the
-   *  pages that are NOT being translated right now. */
-  translatingImageId?: string | null;
+  /** Images whose translation is currently in flight (empty when idle). Batch
+   *  runs add each page as it starts, so per-region editing can stay unlocked
+   *  for the pages that are NOT being translated right now — including the
+   *  several pages 并发执行 handles at once. */
+  translatingImageIds?: Set<string>;
   onStopTranslate: () => void;
   onUnfreeze: (regionId: string) => void;
   onFreeze: (regionId: string) => void;
@@ -777,7 +786,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
   onTranslate, onTranslateAll,
-  translating, translatingImageId, onStopTranslate,
+  translating, translatingImageIds, onStopTranslate,
   onUnfreeze, onFreeze, onPreviewFrozenText, onPreviewFrozenTextAll,
   onEndPreview, onEndPreviewAll,
   onDownload, onApplyAsOriginal, onReorderRegion,
@@ -913,11 +922,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
   if (!region) {
     // Mirror the hook's pickTranslateTargets filter so the translate button's
     // disabled state matches what would actually be translated: AI-owned
-    // regions and regions that already hold a translation (typeset or
-    // frozen) are excluded — re-translating those wastes quota.
+    // regions and regions that already hold a translation / a「AI 判定无文字」
+    // 标记 are excluded — re-translating those wastes quota. isTranslationHandled
+    // 用存在性判断（不是 trim），否则空框里的占位空格认不出来，按钮会一直可按。
     const translateTargetCount = image.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) &&
-      !r.editorText?.trim() && !r.editorFrozenText?.trim()
+      !r.contextOnly && !isAiOwned(r) && !isTranslationHandled(r)
     ).length;
     // Editable but untranslatable → everything is already translated/frozen.
     const editableCount = image.regions.filter(r => !r.contextOnly && !isAiOwned(r)).length;
@@ -1021,6 +1030,72 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   {t(lang, 'editorTranslateAll')}
                 </button>
               )}
+
+              {/* 翻译执行方式：一张图 = 一次视觉调用，所以「并发」= 同时翻几页。
+                  这几个值就是「处理选项」里的全局执行设置（与 AI 重绘共用），
+                  编辑器模式下 WorkflowDock 不可见，所以在这里也放一份入口。 */}
+              <div className="pt-1.5 mt-0.5 border-t border-skin-border/60 space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold text-skin-muted uppercase tracking-wide">{t(lang, 'editorTranslateRunTitle')}</span>
+                  <HelpTip text={t(lang, 'editorTranslateRunTip')} />
+                </div>
+                <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+                  <button
+                    onClick={() => onConfigChange('executionMode', 'concurrent')}
+                    disabled={translating}
+                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all disabled:opacity-50 ${config.executionMode === 'concurrent' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                  >
+                    {t(lang, 'modeConcurrent')}
+                  </button>
+                  <button
+                    onClick={() => onConfigChange('executionMode', 'serial')}
+                    disabled={translating}
+                    className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all disabled:opacity-50 ${config.executionMode === 'serial' ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                  >
+                    {t(lang, 'modeSerial')}
+                  </button>
+                </div>
+                {config.executionMode === 'concurrent' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] text-skin-muted whitespace-nowrap">{t(lang, 'concurrency')}</span>
+                    <input
+                      type="number" min="1" step="1"
+                      value={config.concurrencyLimit}
+                      disabled={translating}
+                      onChange={(e) => onConfigChange('concurrencyLimit', Math.max(1, Math.floor(Number(e.target.value)) || 1))}
+                      className="w-full p-1 text-[10px] border border-skin-border rounded bg-skin-surface shadow-sm disabled:opacity-50"
+                    />
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-skin-muted whitespace-nowrap">{t(lang, 'timeoutLabel')}</span>
+                  <input
+                    type="number" min="1" step="1"
+                    value={config.apiTimeout / 1000}
+                    disabled={translating}
+                    onChange={(e) => onConfigChange('apiTimeout', Math.max(1, Number(e.target.value)) * 1000)}
+                    className="w-full p-1 text-[10px] border border-skin-border rounded bg-skin-surface shadow-sm disabled:opacity-50"
+                  />
+                </div>
+                {/* 思考强度：发给翻译端点的 reasoning_effort。「不思考」为最低档。 */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] text-skin-muted whitespace-nowrap">{t(lang, 'reasoningEffortLabel')}</span>
+                  <div className="flex flex-1 bg-skin-fill p-0.5 rounded border border-skin-border">
+                    {TRANSLATION_REASONING_EFFORTS.map(id => (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => onConfigChange('translationReasoningEffort', id)}
+                        disabled={translating}
+                        title={t(lang, 'reasoningEffortDesc')}
+                        className={`flex-1 px-1 py-0.5 text-[9px] rounded transition-all disabled:opacity-50 ${config.translationReasoningEffort === id ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                      >
+                        {t(lang, TRANSLATION_REASONING_LABEL_KEYS[id])}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1113,7 +1188,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
    * locks globally through `busy`.
    */
   const regionEditLocked =
-    aiLocked || translatingImageId === image.id || (busy && !translating);
+    aiLocked || !!translatingImageIds?.has(image.id) || (busy && !translating);
   const text = region.editorText ?? '';
   const vertical = region.editorStyle?.isVertical;
   /** 整块文字的旋转角（度，顺时针为正）。0 = 不旋转。 */
@@ -1252,6 +1327,21 @@ const EditorDock: React.FC<EditorDockProps> = ({
           placeholder={t(lang, 'editorTextPlaceholder')}
           className="w-full p-2 text-xs border border-skin-border rounded-lg bg-skin-surface focus:ring-1 focus:ring-skin-primary focus:border-skin-primary transition-all resize-none shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
         />
+
+        {/* AI 判定本框没有文字：editorText 里存着一枚占位空格（EMPTY_TEXT_MARK），
+            用来标记「这一格已处理」—— 翻译按钮不再重复请求它。 */}
+        {!!region.editorText && !region.editorText.trim() && (
+          <div className="flex items-center gap-1.5 p-2 rounded-lg bg-skin-fill border border-skin-border">
+            <span className="text-[10px] text-skin-muted leading-snug flex-1">{t(lang, 'editorEmptyBoxHint')}</span>
+            <button
+              onClick={() => onUpdateRegion(region.id, { editorText: '' })}
+              disabled={regionEditLocked}
+              className="shrink-0 px-1.5 py-0.5 text-[9px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-50 transition-colors"
+            >
+              {t(lang, 'editorEmptyBoxClear')}
+            </button>
+          </div>
+        )}
 
         {/* 整页 AI 翻译一并识别出的原文 —— 只读参考，不参与排版 */}
         {region.sourceText?.trim() && (

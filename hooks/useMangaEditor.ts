@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf } from '../types';
+import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf, EMPTY_TEXT_MARK, isTranslationHandled } from '../types';
 import { loadImage, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { translateEditorRegions } from '../services/editorTranslate';
 import { PageTerm } from '../services/glossaryBook';
@@ -13,6 +13,7 @@ import {
   ErasedCacheEntry,
 } from '../services/mangaEditor';
 import { editorFontStack, ensureEditorFontLoaded, fontIdFromStack } from '../services/fontService';
+import { runWithConcurrency } from '../services/concurrencyUtils';
 
 
 /**
@@ -193,11 +194,22 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   // AbortController of the in-flight translation (single-page runs own it;
   // batch runs share one controller across images).
   const translateAbortRef = useRef<AbortController | null>(null);
-  // Image whose translation is currently in flight. The dock keys per-region
+  // Images whose translation is currently in flight. The dock keys per-region
   // editing off this: during a BATCH run the pages already finished (and the
-  // ones not started yet) stay editable — only the page being translated is
-  // locked, because its regions are about to be overwritten by the AI.
-  const [translatingImageId, setTranslatingImageId] = useState<string | null>(null);
+  // ones not started yet) stay editable — only the pages being translated are
+  // locked, because their regions are about to be overwritten by the AI. A Set
+  // (not a single id) because 处理选项的「并发执行」sends several pages at once.
+  const [translatingImageIds, setTranslatingImageIds] = useState<Set<string>>(() => new Set());
+
+  /** Add / remove one page from the in-flight translate set (并发批次会同时有多个). */
+  const markTranslatingImage = useCallback((imageId: string, on: boolean) => {
+    setTranslatingImageIds(prev => {
+      if (on === prev.has(imageId)) return prev;
+      const next = new Set(prev);
+      if (on) next.add(imageId); else next.delete(imageId);
+      return next;
+    });
+  }, []);
   // regionId → last resolved font size (auto-fit or manual), for panel display.
   const [computedFontSizes, setComputedFontSizes] = useState<Record<string, number>>({});
   const imagesRef = useRef(images);
@@ -207,15 +219,15 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
 
   /**
    * Per-image flavour of the global `busy` lock, mirroring the dock's
-   * `regionEditLocked`: during a translate run only the page actually being
-   * translated is frozen (its regions are about to be overwritten by the AI),
+   * `regionEditLocked`: during a translate run only the page(s) actually being
+   * translated are frozen (their regions are about to be overwritten by the AI),
    * while erase still locks every page. Used by the region operations the
    * user may run mid-batch (freeze / unfreeze) so a completed page stays
    * editable while the next one renders.
    */
   const isImageLocked = useCallback(
-    (imageId: string) => busy && (!translating || translatingImageId === imageId),
-    [busy, translating, translatingImageId],
+    (imageId: string) => busy && (!translating || translatingImageIds.has(imageId)),
+    [busy, translating, translatingImageIds],
   );
 
   // regionId → { geomKey, url } — cache of the erased base crop.
@@ -712,7 +724,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
    * typed, or editorFrozenText held back) — re-sending those would burn API
    * quota AND overwrite the user's own edits. A page whose regions are all
    * done therefore yields zero targets and the whole call is skipped.
-   * To force a re-translation of one box, clear its text first.
+   * 「AI 判定无文字」的空框同样算已处理（editorText 里存着一枚占位空格，
+   * 见 EMPTY_TEXT_MARK）—— 否则这类框永远没有被处理的痕迹，翻译按钮会一直
+   * 可按、每点一次都整页重发。To force a re-translation of one box, clear its
+   * text first (清空后 editorText 为 ''，即回到未处理)。
    */
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
     img.regions.filter(r => {
@@ -721,7 +736,10 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       // 和图上 AI 已经画好的中文重叠。其它 AI 独占框（自定义 / 旧版）跳过 ——
       // 它们的内容已经是最终形态。
       if (isAiOwned(r) && intentOf(r) !== 'translate') return false;
-      if (r.editorText?.trim() || r.editorFrozenText?.trim() || r.customTranslation?.trim()) return false;
+      // 「已处理」用存在性判断，不是 trim：AI 判定无文字的空框里存着一个占位
+      // 空格（EMPTY_TEXT_MARK），trim 之后同样为空 —— 用 trim 判断的话这些框
+      // 永远算未翻译，按钮一直可按、每次点都把整页重发一遍。
+      if (isTranslationHandled(r)) return false;
       return true;
     }), [intentOf]);
 
@@ -766,9 +784,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     const signal = outerSignal ?? ownCtrl!.signal;
     if (ownCtrl) translateAbortRef.current = ownCtrl;
 
-    setBusy(true);
-    setTranslating(true);
-    setTranslatingImageId(imageId);
+    // Mark this page in-flight so the dock locks it while the AI overwrites its
+    // regions. `busy` / `translating` are owned by the run driver
+    // (translateAllImages / translateSingleImage): under 并发执行 several pages
+    // run at once, so resetting them per call here would unlock the whole UI the
+    // instant the first page finished, while others are still running.
+    markTranslatingImage(imageId, true);
     try {
       const imageEl = await loadImage(img.previewUrl);
       const { results, terms } = await translateEditorRegions(imageEl, targets, configRef.current, signal);
@@ -779,11 +800,20 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       // engine auto-fits the new text.
       const translated: Region[] = [];
       const frozen: Region[] = [];
+      /** AI 判定「框内没有文字」的框：写入占位空格标记为已处理（EMPTY_TEXT_MARK）。 */
+      const emptied: Region[] = [];
       /** 自动识别选中的字体 id：合成前要先从后端取回来。 */
       const neededFontIds = new Set<string>();
       for (const r of targets) {
         const res = results.get(r.id);
-        if (!res || !res.zh?.trim()) continue; // empty box / misdetection
+        // 模型明确回答「这个框里没有文字」（source 与 zh 都是空串）= 误检/空框。
+        // 这是一个**合法的终结答案**，不是失败：往 editorText 写一枚占位空格把
+        // 它标成「已处理」，翻译按钮不再一直可按，整批重试也不会反复重发它。
+        if (res && !res.source?.trim() && !res.zh?.trim()) {
+          emptied.push({ ...r, editorText: EMPTY_TEXT_MARK });
+          continue;
+        }
+        if (!res || !res.zh?.trim()) continue; // 响应不完整 / 模型漏了这个 id
         // AI judges the original's direction and dominant text colour; when
         // it doesn't say, keep the existing style (undefined = layout
         // auto-heuristic / default black). The typeset colour matches the
@@ -841,10 +871,33 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
           });
         }
       }
-      // Land what this call translated into the batch mirror right away, so the
-      // end-retry scan counts it as done even before React commits the store.
-      if (skipRegionIds) for (const nr of [...translated, ...frozen]) skipRegionIds.add(nr.id);
+      // Land what this call resolved into the batch mirror right away (译文 +
+      // 「无文字」标记), so the end-retry scan counts it as done even before
+      // React commits the store.
+      if (skipRegionIds) for (const nr of [...translated, ...frozen, ...emptied]) skipRegionIds.add(nr.id);
+
+      // 「AI 判定无文字」的标记必须真正落库：它就是这一格的终结答案。不落库的话
+      // 空框没有任何已处理的痕迹，翻译按钮会一直可按、每次点都整页重发。
+      if (emptied.length > 0) {
+        const marksById = new Map(emptied.map(r => [r.id, r]));
+        updateImage(imageId, current => ({
+          ...current,
+          regions: current.regions.map(r => marksById.get(r.id) ?? r),
+        }));
+      }
+
       if (translated.length === 0 && frozen.length === 0) {
+        // 每个目标框都被模型明确判为空框 → 合法结果：标记已落地，不报错、不重试。
+        const allConfirmedEmpty = targets.every(r => {
+          const res = results.get(r.id);
+          return !!res && !res.source?.trim() && !res.zh?.trim();
+        });
+        if (allConfirmedEmpty) {
+          console.warn('[translate] 本页目标框均被判定无文字，已标记，跳过');
+          return;
+        }
+        // 否则是「响应不完整」（模型漏了某些框，或给了原文却没给译文）：抛出去
+        // 让整批重试再试一轮。已标记的空框不会跟着一起重发。
         throw new Error('AI 没有识别到任何文字（可能全部为空框/误检）');
       }
 
@@ -895,14 +948,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         setErrorMsg(e?.message || '翻译失败');
       }
     } finally {
-      setBusy(false);
-      setTranslating(false);
-      setTranslatingImageId(prev => (prev === imageId ? null : prev));
+      markTranslatingImage(imageId, false);
       if (ownCtrl && translateAbortRef.current === ownCtrl) {
         translateAbortRef.current = null;
       }
     }
-  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets, onPageTerms]);
+  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets, onPageTerms, markTranslatingImage]);
 
   /**
    * Manual unfreeze (fix an AI false positive): move the frozen translation
@@ -1027,6 +1078,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         aiErasedBase: undefined,
         // 擦除产物一起作废（不 release：history 里可能还引用着同一份 blob）。
         aiEraseBaseUrl: undefined,
+        // 「AI 判定无文字」的占位空格：重置 = 这一格整个交回 AI，标记一并清掉，
+        // 否则它会一直算「已处理」，再也不会被翻译选中。
+        ...(r.editorText !== undefined && !r.editorText.trim() ? { editorText: undefined } : {}),
         ...(r.editorText?.trim()
           ? { editorFrozenText: r.editorText, editorText: undefined }
           : {}),
@@ -1176,6 +1230,11 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
    *
    * A run-scoped synchronous mirror (`skipRegionIds`) keeps a box the store has
    * not rendered as done yet from being re-sent (imagesRef lags updateImage).
+   *
+   * Each page is one vision call, so the sweep runs pages through
+   * `runWithConcurrency` honouring 处理选项: 「并发执行」 with `concurrencyLimit`
+   * pages in flight at once, 「串行执行」 one page at a time. Timeout per
+   * request comes from `config.apiTimeout` (see editorTranslate).
    */
   const runTranslateRounds = useCallback(async (pickIds: () => string[], ctrl: AbortController) => {
     const skipRegionIds = new Set<string>();
@@ -1189,31 +1248,38 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         return !!img && pickTranslateTargets(img).some(r => !skipRegionIds.has(r.id));
       });
       if (ids.length === 0) break;
-      for (const id of ids) {
-        if (ctrl.signal.aborted) break;
-        await translateImageRegions(id, ctrl.signal, skipRegionIds);
-      }
+      const cfg = configRef.current;
+      const limit = cfg.executionMode === 'serial'
+        ? 1
+        : Math.max(1, Math.floor(cfg.concurrencyLimit) || 1);
+      // runWithConcurrency never rejects: a page that throws is logged and
+      // skipped (translateImageRegions already surfaces the error itself), so
+      // one bad page can't abort the whole batch.
+      await runWithConcurrency(ids, limit, id => translateImageRegions(id, ctrl.signal, skipRegionIds), ctrl.signal, 0);
       if (ctrl.signal.aborted) break;
       if (attempt >= endRetryBudget) break;
     }
   }, [translateImageRegions, pickTranslateTargets]);
 
   /**
-   * Batch variant: translate every loaded image that has editable regions,
-   * sequentially. Per-image failures surface via setErrorMsg but do not
-   * abort the batch. One shared AbortController lets the stop button cancel
-   * the in-flight request AND skip the remaining images.
+   * Batch variant: translate every loaded image that has editable regions.
+   * The sweep runs 串行 or 并发 per 处理选项 (see runTranslateRounds). Per-image
+   * failures surface via setErrorMsg but do not abort the batch. One shared
+   * AbortController lets the stop button cancel the in-flight requests AND skip
+   * the remaining images.
    */
   const translateAllImages = useCallback(async () => {
     if (busy) return;
     const ctrl = new AbortController();
     translateAbortRef.current = ctrl;
+    setBusy(true);
     setTranslating(true);
     try {
       await runTranslateRounds(() => imagesRef.current.map(img => img.id), ctrl);
     } finally {
+      setBusy(false);
       setTranslating(false);
-      setTranslatingImageId(null);
+      setTranslatingImageIds(new Set());
       if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
     }
   }, [busy, runTranslateRounds]);
@@ -1228,12 +1294,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     if (busy) return;
     const ctrl = new AbortController();
     translateAbortRef.current = ctrl;
+    setBusy(true);
     setTranslating(true);
     try {
       await runTranslateRounds(() => [imageId], ctrl);
     } finally {
+      setBusy(false);
       setTranslating(false);
-      setTranslatingImageId(null);
+      setTranslatingImageIds(new Set());
       if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
     }
   }, [busy, runTranslateRounds]);
@@ -1335,7 +1403,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   return {
     busy,
     translating,
-    translatingImageId,
+    translatingImageIds,
     computedFontSizes,
     updateEditorRegion,
     setBrushLayer,

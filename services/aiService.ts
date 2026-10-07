@@ -1,6 +1,6 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { AppConfig } from "../types";
+import { AppConfig, translationReasoningParams } from "../types";
 import { fetchImageAsBase64 } from "./imageUtils";
 import { DEFAULT_TRANSLATION_PROMPT, TRANSLATION_CONTEXT_SYSTEM_PROMPT } from "../hooks/useConfig";
 import { globalRateLimitGate, parseRetryAfter, isRateLimitError } from "./rateLimitGate";
@@ -569,7 +569,9 @@ export const generateTranslation = async (
         body: JSON.stringify({
           model: translationModel,
           messages: messages,
-          max_tokens: 2048
+          max_tokens: 2048,
+          // 思考强度（reasoning_effort）：'none' = 不思考。
+          ...translationReasoningParams(config.translationReasoningEffort),
         }),
         signal: opSignal
       });
@@ -630,7 +632,9 @@ export const generateTextCompletion = async (
         body: JSON.stringify({
           model: translationModel,
           messages: [{ role: "user", content: prompt }],
-          max_tokens: maxTokens
+          max_tokens: maxTokens,
+          // 思考强度（reasoning_effort）：'none' = 不思考。
+          ...translationReasoningParams(config.translationReasoningEffort),
         }),
         signal: opSignal
       });

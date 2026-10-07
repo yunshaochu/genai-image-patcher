@@ -1,4 +1,4 @@
-import { AppConfig, Region } from '../types';
+import { AppConfig, Region, translationReasoningParams } from '../types';
 import { compressImageToTargetSize, releaseObjectURL, urlToBase64 } from './imageUtils';
 import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLimitGate';
 import { recordPayload, PayloadTransform } from './payloadLog';
@@ -390,6 +390,9 @@ export const translateEditorRegions = async (
               ],
             }],
             max_tokens: 4096,
+            // 思考强度（reasoning_effort）：'none' = 不思考。整页翻译是轻任务，
+            // 关掉思考能明显缩短等待（尤其对带思考链的模型）。
+            ...translationReasoningParams(config.translationReasoningEffort),
           }),
           signal: ctrl.signal,
         });

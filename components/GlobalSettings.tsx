@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { AppConfig, Language, ThemeType } from '../types';
+import {
+    AppConfig,
+    Language,
+    ThemeType,
+    TRANSLATION_REASONING_EFFORTS,
+    TRANSLATION_REASONING_LABEL_KEYS,
+} from '../types';
 import { t } from '../services/translations';
 import { downloadConfigExport, readConfigExport } from '../services/configTransfer';
 import { HelpTip } from './sidebar/HelpTip';
@@ -44,6 +50,8 @@ const LANGUAGES: { id: Language; label: string }[] = [
     { id: 'zh', label: '中文' },
     { id: 'en', label: 'English' },
 ];
+
+
 
 const Toggle: React.FC<{ checked: boolean; onChange: (value: boolean) => void; size?: 'md' | 'sm' }> = ({
     checked,
@@ -591,6 +599,30 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             </FloatingPanel>
                                         </div>
                                     </div>
+                                </SettingsCard>
+
+                                {/* 思考强度：作为 reasoning_effort 发给翻译端点。
+                                    只影响翻译调用（编辑器整页翻译 / 单框翻译 /
+                                    术语表 AI 选择），AI 重绘图片端点不受影响。 */}
+                                <SettingsCard
+                                    title={t(lang, 'reasoningEffortLabel')}
+                                    help={t(lang, 'reasoningEffortDesc')}
+                                    summary={t(lang, TRANSLATION_REASONING_LABEL_KEYS[config.translationReasoningEffort] ?? 'reasoningNone')}
+                                    summaryTone={config.translationReasoningEffort === 'none' ? 'off' : 'on'}
+                                >
+                                    <div className="flex bg-skin-fill p-1 rounded-lg border border-skin-border">
+                                        {TRANSLATION_REASONING_EFFORTS.map(id => (
+                                            <button
+                                                key={id}
+                                                type="button"
+                                                onClick={() => updateConfig('translationReasoningEffort', id)}
+                                                className={`flex-1 py-1.5 text-[10px] rounded-md transition-all font-medium ${config.translationReasoningEffort === id ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                                            >
+                                                {t(lang, TRANSLATION_REASONING_LABEL_KEYS[id])}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <p className="text-[10px] text-skin-muted leading-tight">{t(lang, 'reasoningEffortHint')}</p>
                                 </SettingsCard>
 
                                 <SettingsCard

@@ -157,6 +157,8 @@ const DEFAULT_CONFIG: AppConfig = {
   translationBaseUrl: 'http://localhost:7860/v1',
   translationApiKey: '',
   translationModel: 'gemini-3-flash-preview',
+  // 思考强度：'none' = 不思考（翻译默认最低档）。
+  translationReasoningEffort: 'none',
   translationApiProfiles: [],
   activeTranslationApiProfileId: null,
   translationPrompt: DEFAULT_TRANSLATION_PROMPT,
@@ -389,6 +391,12 @@ export function useConfig() {
         }
         if (typeof migratedConfig.activeTranslationApiProfileId === 'undefined') {
             migratedConfig.activeTranslationApiProfileId = null;
+        }
+
+        // 思考强度（翻译调用）：老配置没有这个键 → 默认「不思考」；枚举值被手改
+        // 坏的也一并丢弃（否则会以非法 reasoning_effort 打到接口上）。
+        if (!['none', 'low', 'medium', 'high'].includes(migratedConfig.translationReasoningEffort)) {
+            migratedConfig.translationReasoningEffort = 'none';
         }
 
         // Session persistence is opt-in now (it writes the whole session to
