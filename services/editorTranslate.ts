@@ -80,12 +80,16 @@ ${skeleton}
    - text_free 且文字直接压在复杂背景上（渐变、网点、图案、人物、景物），抹掉原文会破坏画面。
    普通气泡内文字、干净纯色背景上的文字填 false。
 6. 若框内完全没有文字（误检），source 和 zh 填空字符串，freeze 填 false，color 填 "black"。
-7. terms 填数组：本页出现的作品专有名词（人名/地名/组织/招式名/固定称谓），用来汇总全作术语表。source 填原文术语（取自你识别出的原文，越短越好，只要名字本身）；target 填你在 zh 译文里**实际使用**的那个译名。普通词汇、拟声词不要收；拿不准是不是专有名词的不要收；没有就填 []。${fontRule}
+7. terms 填数组：本页出现的作品专有名词（人名/地名/组织/招式名/固定称谓），用来汇总全作术语表。source 填原文术语（取自你识别出的原文，越短越好，只要名字本身）；target 填你在 zh 译文里**实际使用**的那个译名。
+   - 敬语 / 称呼后缀不要写进术语：くん / ちゃん / さん / 様 / 殿 / 氏 / 先生 / 先輩 / 君 / 大人 / ちゃん付け / 呼び捨て 之类一律去掉，只填名字本身（タナカくん → タナカ，タナカさん → タナカ）。target 同理，只填译名本身，不要带上「小/君/酱/桑/先生」这类称呼（译文若写成「田中君」，target 填「田中」）。
+   - 因此同一个人物带不带敬语只算**同一条**术语：タナカくん 和 タナカ 都填 source「タナカ」，不要拆成两条，也不要让它们的 target 不一致。
+   - 下面的「タナカ → 田中」只是示范写法（假名姓氏对应的汉字是唯一的），不是本作的术语；本作专名一律按你在 zh 里的实际译法填。
+   - 普通词汇、拟声词不要收；拿不准是不是专有名词的不要收；没有就填 []。${fontRule}
 ${nJson}. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
 ${nEvery}. 清单中的每个编号都必须出现且只出现一次。
 
 输出格式：
-{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"原文术语","target":"译名"}]}`;
+{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"タナカ","target":"田中"}]}（terms 里的名字不带敬语后缀，此处只是格式示范）`;
 };
 
 /** Draw the image with numbered boxes for each region; returns a data URL. */
@@ -233,7 +237,7 @@ export interface EditorTranslateOutcome {
   results: Map<string, RegionTranslation>;
   /** 本页出现的作品专有名词（{source: 原文, target: 本页实际译名}）。解析
    *  失败/模型没给时为 []——术语是附属产物，绝不因为它的格式问题让整页
-   *  翻译重试。 */
+   *  翻译重试。source / target 都不带敬语称呼后缀，见 PageTerm。 */
   terms: PageTerm[];
 }
 
