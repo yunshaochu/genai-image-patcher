@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AppConfig } from '../../types';
 import { t } from '../../services/translations';
+import { HelpTip } from './HelpTip';
 
 interface MangaToolsPanelProps {
     config: AppConfig;
@@ -127,6 +128,26 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
                                     onChange={(e) => onChange('detectionConfidenceThreshold', Number(e.target.value))}
                                     className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
                                 />
+                            </div>
+
+                            {/* 跳过策略：管的是「哪些页要跑检测」，不是检测参数，
+                                所以和上面三个滑杆用一条分隔线隔开。 */}
+                            <div className="pt-2 border-t border-skin-border/40">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] text-skin-text flex items-center gap-1 min-w-0">
+                                        <span className="truncate">{t(lang, 'detectSkipManualOnlyPages')}</span>
+                                        <HelpTip text={t(lang, 'detectSkipManualOnlyPagesDesc')} />
+                                    </span>
+                                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={!!config.detectionSkipManualOnlyPages}
+                                            onChange={(e) => onChange('detectionSkipManualOnlyPages', e.target.checked)}
+                                        />
+                                        <div className="bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:transition-all peer-checked:bg-skin-primary w-9 h-5 after:h-4 after:w-4" />
+                                    </label>
+                                </div>
                             </div>
                         </div>
                     )}

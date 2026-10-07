@@ -70,6 +70,10 @@ export const translations = {
     detectInflation: "气泡膨胀率",
     detectOffset: "位置偏移 (X / Y)",
     detectConfidence: "置信度阈值",
+    detectSkipManualOnlyPages: "跳过只有手框的页面",
+    detectSkipManualOnlyPagesDesc: "开启后，自动检测会跳过「只剩手画框、还没有任何文字区」的页面 —— 手框过就说明这页你自己已经处理过。关闭则这类页面照旧检测（与以前一致），而且不受「检测记忆」影响，会一直参与检测。\n此外无论开关如何：已经有文字区（气泡内 / 气泡外文字）的页面一律跳过 —— 这些框就是上次检测的产物；一个框都没有的页面跑过一次就被记住（封面 / 插图 / 无字页不会被反复重检）；请求失败的页面会记成待补跑，整批跑完后自动补几轮，跨重启也认。\n跳过只对「所有图片」范围生效 —— 「当前图片」是点名单页的命令（也是想强制重跑某一页时的入口），永远照跑。",
+    detectSkipped: "已跳过 {count} 张检测过的页面",
+    detectFailedPages: "有 {count} 张图片检测失败，可再点一次检测重试",
     
     // Prompt
     promptTitle: "提示词",
@@ -318,7 +322,7 @@ export const translations = {
     timeoutLabel: "超时时间 (秒)",
     retriesLabel: "每区域重试次数",
     endRetryRoundsLabel: "整批重试轮数",
-    endRetryRoundsDesc: "翻译/重绘跑完后再扫一遍图库：若仍有未处理或失败的框，就整体重跑一轮。最多额外跑这么多轮（0 = 关闭）。",
+    endRetryRoundsDesc: "翻译/重绘跑完后再扫一遍图库：若仍有未处理或失败的框，就整体重跑一轮。自动检测气泡的整批重跑也用它（只补跑接口报错的页面）。最多额外跑这么多轮（0 = 关闭）。",
     showRetryDiagnostics: "显示重试诊断",
     showRetryDiagnosticsDesc: "在每个切片旁显示重试次数和错误历史，方便排查频繁失败的图片。",
     retryBadge: "重试 {count}",
@@ -713,6 +717,10 @@ export const translations = {
     detectInflation: "Inflation Rate",
     detectOffset: "Position Offset (X / Y)",
     detectConfidence: "Confidence Threshold",
+    detectSkipManualOnlyPages: "Skip manual-only pages",
+    detectSkipManualOnlyPagesDesc: "When on, auto-detection skips pages that hold nothing but hand-drawn boxes (no auto-detected text areas) — a hand-drawn box means you already handled that page yourself. When off, those pages are detected as before and the detection memory never suppresses them.\nBeyond that, either way: pages that already have text areas (text inside / outside bubbles) are skipped (those boxes came from the previous detection); a page with no boxes at all is remembered once it has been detected (covers / artwork / text-free spreads are not re-run); pages whose request failed are remembered as pending and retried automatically after the batch, across restarts too.\nSkipping applies to the “All Images” scope only — “Current Image” is a single, explicitly named page (also the way to force a re-run), so it always runs.",
+    detectSkipped: "Skipped {count} already-detected page(s)",
+    detectFailedPages: "{count} image(s) failed detection — run auto-detect again to retry",
     
     // Prompt
     promptTitle: "Prompt",
@@ -960,7 +968,7 @@ export const translations = {
     timeoutLabel: "Timeout (Seconds)",
     retriesLabel: "Retries per Region",
     endRetryRoundsLabel: "Batch Retry Rounds",
-    endRetryRoundsDesc: "After a translate/redraw pass, scan the gallery again and re-run the whole batch if boxes are still unprocessed or failed. Maximum number of extra round(s) (0 = off).",
+    endRetryRoundsDesc: "After a translate/redraw pass, scan the gallery again and re-run the whole batch if boxes are still unprocessed or failed. Auto-detect bubble batches use it too (retrying only the pages whose request failed). Maximum number of extra round(s) (0 = off).",
     showRetryDiagnostics: "Show Retry Diagnostics",
     showRetryDiagnosticsDesc: "Show per-region retry count and error history. Useful for spotting consistently problematic images.",
     retryBadge: "Retry {count}",

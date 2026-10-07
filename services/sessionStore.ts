@@ -1,4 +1,4 @@
-import { Region, UploadedImage, ImageHistoryState, RedrawIntent, GlossaryTerm } from '../types';
+import { Region, UploadedImage, ImageHistoryState, RedrawIntent, GlossaryTerm, DetectionStatus } from '../types';
 import { migratePromptToTranslation } from './translationCache';
 import { sanitizeBook } from './glossaryBook';
 
@@ -57,6 +57,8 @@ export interface ImageRecord {
   customTranslation?: string;
   /** previewUrl is a committed 应用为原图 result (see UploadedImage). */
   appliedAsOriginal?: boolean;
+  /** 自动检测气泡的记忆（见 UploadedImage.detectionStatus）。 */
+  detectionStatus?: DetectionStatus;
   regions: RegionRecord[];
 }
 
@@ -178,6 +180,7 @@ export async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
     customPromptFree: img.customPromptFree,
     customTranslation: img.customTranslation,
     appliedAsOriginal: img.appliedAsOriginal,
+    detectionStatus: img.detectionStatus,
     regions,
   };
 }
@@ -239,6 +242,7 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
     customPromptFree: rec.customPromptFree,
     customTranslation: rec.customTranslation ?? imgTrans.translation,
     appliedAsOriginal: rec.appliedAsOriginal,
+    detectionStatus: rec.detectionStatus,
     history: [initialState],
     historyIndex: 0,
   };

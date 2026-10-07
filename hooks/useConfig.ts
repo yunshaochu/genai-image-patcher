@@ -136,6 +136,8 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
   detectionConfidenceThreshold: 30,
+  // 跳过策略默认关：只有手画框的页面照旧检测（= 与历史行为一致）。
+  detectionSkipManualOnlyPages: false,
   
   // Manga Module Defaults
   enableMangaMode: false,
@@ -355,6 +357,12 @@ export function useConfig() {
         // 整批「跑完再重试」轮数：老配置没有 → 3（重试机制引入时的默认值）。
         if (typeof migratedConfig.maxRetryRounds === 'undefined') {
             migratedConfig.maxRetryRounds = 3;
+        }
+
+        // 自动检测的跳过策略：老配置没有 → false（只有手画框的页面照旧检测，
+        // 保持引入这个开关之前的行为）。
+        if (typeof migratedConfig.detectionSkipManualOnlyPages === 'undefined') {
+            migratedConfig.detectionSkipManualOnlyPages = false;
         }
 
         // 提示词模块拆分「翻译 / 擦除 / 自定义」后，全局提示词只保留不变量。

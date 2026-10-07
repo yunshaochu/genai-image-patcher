@@ -479,6 +479,9 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
         finalResultUrl: undefined,
         fullAiResultUrl: undefined,
         appliedAsOriginal: true,
+        // 画面整个换掉了（选区也清空）：旧的自动检测记忆描述的是上一张图，留着会
+        // 让这页在整批检测里被永久跳过。清空 = 下次整批检测会重新看这张新图。
+        detectionStatus: undefined,
         history: newHistory,
         historyIndex: newIndex,
       };

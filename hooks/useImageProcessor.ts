@@ -1,6 +1,6 @@
 
 import { useState, useRef } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, shouldSkipBubbleDetection, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -1519,38 +1519,106 @@ export function useImageProcessor(
         const controller = new AbortController();
         abortControllerRef.current = controller;
         try {
-            const targets = scope === 'current'
-               ? (selectedImage ? [selectedImage] : [])
-               : images.filter(img => !img.isSkipped);
-            if (targets.length === 0) {
+            const lang = configRef.current.language;
+
+            // 作用范围内的页面：'current' = 当前选中页（按 id 现取，跑的过程中换页
+            // 也不会中途改目标），'all' = 图库里所有没被用户跳过的页。
+            const currentImageId = selectedImage?.id;
+            const pickInScope = (): UploadedImage[] => scope === 'current'
+                ? imagesRef.current.filter(img => img.id === currentImageId)
+                : imagesRef.current.filter(img => !img.isSkipped);
+
+            // 只跑「还需要检测」的页面：已经有文字区的页、以及（开关打开时）只剩手画
+            // 框的页都跳过 —— 判定见 types.ts → shouldSkipBubbleDetection。每轮都重新
+            // 挑一遍，所以上一轮刚检出文字区的页面会自动退出后面的轮次。
+            //
+            // 跳过只对「所有图片」生效：「当前图片」是用户点名的单页命令，一次往返
+            // 而已，而且它是删框之后把框找回来的补救入口 —— 永远照跑，不跳过。
+            const pickTargets = (): UploadedImage[] => {
+                const inScope = pickInScope();
+                if (scope === 'current') return inScope;
+                return inScope.filter(img => !shouldSkipBubbleDetection(
+                    img,
+                    !!configRef.current.detectionSkipManualOnlyPages
+                ));
+            };
+
+            const inScope = pickInScope();
+            if (inScope.length === 0) {
                return;
             }
+            const skipped = inScope.length - pickTargets().length;
+
+            // 本轮检测请求失败（抛错）的页面 id —— 下一轮只补跑这些。跑成功的页面即
+            // 使「一个框都没检出」也从待办里去掉：同一张图重跑只会得到同一个答案，
+            // 没必要为了「这页真的没有气泡」再花一次往返（跨运行由 detectionStatus
+            // 的 'done' 标记承担同一件事，见 shouldSkipBubbleDetection）。
+            const failedIds = new Set<string>();
+
             const detectTask = async (img: UploadedImage) => {
+               if (controller.signal.aborted) return;
                try {
                    const newRegions = await detectBubbles(img.previewUrl, config);
-                   if (newRegions.length > 0) {
-                       updateImage(img.id, currentImg => {
-                           // Drop new boxes that mostly overlap an existing region
-                           // (≥50% of the new box's area covered). Re-running
-                           // detection (e.g. "current" then "all", or a second
-                           // pass) would otherwise stack duplicate bubbles on
-                           // already-detected images.
-                           const accepted: Region[] = [];
-                           for (const r of newRegions) {
-                               if (!regionOverlapsExisting(r, currentImg.regions)
-                                   && !regionOverlapsExisting(r, accepted)) {
-                                   accepted.push(r);
-                               }
+                   failedIds.delete(img.id);
+                   updateImage(img.id, currentImg => {
+                       // 记一笔「这页跑过检测了」—— 即使一个框都没检出也记，否则空
+                       // 结果的页面（封面 / 插图 / 无字页）会被每一轮整批检测反复重跑。
+                       const marked: UploadedImage = currentImg.detectionStatus === 'done'
+                           ? currentImg
+                           : { ...currentImg, detectionStatus: 'done' as const };
+                       if (newRegions.length === 0) return marked;
+                       // Drop new boxes that mostly overlap an existing region
+                       // (≥50% of the new box's area covered). Re-running
+                       // detection (e.g. "current" then "all", or a second
+                       // pass) would otherwise stack duplicate bubbles on
+                       // already-detected images.
+                       const accepted: Region[] = [];
+                       for (const r of newRegions) {
+                           if (!regionOverlapsExisting(r, marked.regions)
+                               && !regionOverlapsExisting(r, accepted)) {
+                               accepted.push(r);
                            }
-                           if (accepted.length === 0) return currentImg; // no-op
-                           return { ...currentImg, regions: [...currentImg.regions, ...accepted] };
-                       });
-                   }
+                       }
+                       if (accepted.length === 0) return marked; // 只留下「跑过了」的记忆
+                       return { ...marked, regions: [...marked.regions, ...accepted] };
+                   });
                } catch (e: any) {
+                   if (e?.name === 'AbortError') return;
                    console.error(`Detection failed for ${img.file.name}:`, e);
+                   failedIds.add(img.id);
+                   // 失败也记下来：跨重启后「这页上次没跑成」才看得出来，下次整批
+                   // 会自动把它挑回来（见 shouldSkipBubbleDetection 第 4 条）。
+                   updateImage(img.id, currentImg =>
+                       currentImg.detectionStatus === 'failed'
+                           ? currentImg
+                           : { ...currentImg, detectionStatus: 'failed' as const }
+                   );
                }
             };
-            await runWithConcurrency(targets, config.concurrencyLimit, detectTask, controller.signal, 0);
+
+            // 首轮 = 所有待检测的页面；之后每轮只补跑上一轮失败的页，最多
+            // config.maxRetryRounds 轮（0 = 关闭）—— 与翻译 / 重绘阶段的整批重试
+            // 同源：一次完整 sweep 结束后再回头扫一遍没跑成的活。
+            const retryBudget = Math.max(0, config.maxRetryRounds ?? DEFAULT_MAX_END_RETRY_ROUNDS);
+            let targets = pickTargets();
+            for (let attempt = 0; ; attempt++) {
+                if (targets.length > 0) {
+                    await runWithConcurrency(targets, config.concurrencyLimit, detectTask, controller.signal, 0);
+                }
+                if (controller.signal.aborted) break;
+                if (attempt >= retryBudget) break;
+                const retryTargets = pickTargets().filter(img => failedIds.has(img.id));
+                if (retryTargets.length === 0) break;
+                targets = retryTargets;
+            }
+
+            if (controller.signal.aborted) return;
+            // 失败优先于「跳过」提示：一次只弹一条（errorMsg 是单个字符串）。
+            if (failedIds.size > 0) {
+                setErrorMsg(t(lang, 'detectFailedPages', { count: failedIds.size }));
+            } else if (skipped > 0) {
+                setErrorMsg(t(lang, 'detectSkipped', { count: skipped }));
+            }
         } catch (e: any) {
             setErrorMsg("Detection Error: " + e.message);
         } finally {

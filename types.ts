@@ -20,6 +20,19 @@ export interface RestoreBox {
 export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
 
 /**
+ * 自动检测气泡在**一页**上最后一次的结果（见 UploadedImage.detectionStatus）。
+ *
+ * 'done' = 这次请求跑成功了 —— 哪怕一个框都没检出（封面、插图、无字跨页）。
+ * 'failed' = 请求失败（后端不在线 / 超时 / 5xx），这页还没拿到结果。
+ * undefined = 还没跑过检测。
+ *
+ * 为什么要记：检测结果本身（region 框）只在检出东西时才留下痕迹，所以「跑过但没结果」
+ * 和「从没跑过」在数据上完全一样。没有这个标记，零框页面会被每一次整批检测反复重跑；
+ * 有了它，跨重启也能看出「这页上次没跑成」，下次整批会把它挑回来补跑。
+ */
+export type DetectionStatus = 'done' | 'failed';
+
+/**
  * Decides whether a region enters the AI redraw pipeline (masked + painted)
  * and is shown as a working box in the AI-generation canvas. Editor-mode
  * visibility is NOT governed by this — the editor always works on text
@@ -38,6 +51,40 @@ export const isRegionPaintable = (
   }
   // Manual / legacy regions keep the historical contextOnly semantics.
   return !r.contextOnly;
+};
+
+/**
+ * 「这一页还要不要跑自动检测」—— 自动检测据此跳过已经处理过的页面，整批重跑不再
+ * 把整个图库重新过一遍检测接口（见 hooks/useImageProcessor.ts → handleAutoDetect）。
+ *
+ * 判定顺序（先命中先返回）：
+ * 1. 已经有文字区（text_bubble / text_free）→ 跳过：这些框就是上一次检测的产物，
+ *    重跑只会得到同一批框，而且会整批撞在 regionOverlapsExisting 的去重上，白等
+ *    一轮网络往返。
+ * 2. 只剩下人工标注（手画框、以及没有 detectedClass 的历史遗留框 —— 统一按
+ *    `source !== 'auto'` 判）→ **完全由 `skipManualOnlyPages` 说了算**，记忆不参与：
+ *    开着 = 用户手框过就是处理过了，跳过；关着 = 这类页面一直参与检测（开关的语义
+ *    就是「反复检测这类页也没关系」）。
+ * 3. 一个框都没有 → 只看记忆：`detectionStatus === 'done'`（跑过一次，哪怕一个框都
+ *    没检出）→ 跳过。没有这条，封面 / 插图 / 无字页会被每一轮整批检测反复重跑。
+ * 4. 其余（从没跑过、或上次跑失败 'failed'）→ 检测 —— 失败页跨重启也会被挑回来补跑。
+ *
+ * 标记由检测流程写回（成功 = 'done'，请求失败 = 'failed'），随会话 / 工作状态包持久化。
+ *
+ * 因此升级后第一次整批检测会把所有「没有记忆」的页面（包括老项目里那些以前检出 0 个
+ * 框的页面）重跑一遍并记下结果，之后不再重复 —— 老项目不需要额外的开关来补跑。
+ *
+ * 用户想强制重跑某一页时用「当前图片」范围：那条路径不受这里的任何一条影响。
+ */
+export const shouldSkipBubbleDetection = (
+  page: Pick<UploadedImage, 'regions' | 'detectionStatus'>,
+  skipManualOnlyPages: boolean
+): boolean => {
+  if (page.regions.some((r) => r.detectedClass === 'text_bubble' || r.detectedClass === 'text_free')) {
+    return true;
+  }
+  if (page.regions.some((r) => r.source !== 'auto')) return skipManualOnlyPages;
+  return page.detectionStatus === 'done';
 };
 
 /**
@@ -284,6 +331,11 @@ export interface UploadedImage {
   fullAiResultUrl?: string; // The raw full-size output from the AI (before any cropping)
   isSkipped?: boolean; // If true, excluded from batch processing (still exportable, as its result view)
   customPrompt?: string; // Full image specific prompt
+  /** 自动检测气泡的「记忆」：这页最后一次检测的结果，随会话 / 工作状态包持久化。
+   *  跳过判定用它（见 shouldSkipBubbleDetection），所以整批检测不会反复重跑已经跑过
+   *  的页面 —— 哪怕是「一个框都没检出」的空结果页。'应用为原图' 会把内容换掉，那时
+   *  标记随之清空（旧记忆描述的是旧画面）。 */
+  detectionStatus?: DetectionStatus;
   /** 全图遮罩模式下的「图片级意图 / 三套 tab 提示词 / 图片级译文」。语义同 Region。 */
   redrawIntent?: RedrawIntent;
   customPromptErase?: string;
@@ -481,6 +533,10 @@ export interface AppConfig {
   detectionOffsetXPercent: number; // e.g. 0
   detectionOffsetYPercent: number; // e.g. 0
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
+  /** 自动检测气泡的跳过策略：开着 = 「只剩手画框、还没有任何文字区」的页面也跳过
+   *  （用户手框过就当他处理过这页了），关着 = 这类页面照旧检测。已经有文字区的页面
+   *  无论开关如何都会被跳过。判定见 types.ts → shouldSkipBubbleDetection。 */
+  detectionSkipManualOnlyPages: boolean;
   
   // Manga Module Settings (New Structure)
   enableMangaMode: boolean;        // Master switch
