@@ -4,6 +4,7 @@ import { globalRateLimitGate, isRateLimitError, parseRetryAfter } from './rateLi
 import { recordPayload, PayloadTransform } from './payloadLog';
 import { buildFontChoicePrompt, resolveFontIdFromAi } from './fontService';
 import { PageTerm } from './glossaryBook';
+import { t } from './translations';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -129,10 +130,72 @@ const buildPrompt = (skeleton: string, fontAutoDetect: boolean, customTemplate?:
     fontAutoDetect
   );
 
-/** Draw the image with numbered boxes for each region; returns a data URL. */
-const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskOutside: boolean): string => {
-  const w = imageEl.naturalWidth;
-  const h = imageEl.naturalHeight;
+/**
+ * 「擦除判定」的附加说明 —— 只有第二张（擦除对照）图真的发出去时才追加。
+ *
+ * 刻意**不进 `{{...}}` 占位符体系**，两个原因：
+ *  1. 判定要并进现有那条 freeze 规则、而不是新增一条 —— 新增就要重排编号，
+ *     `{{nJson}}` / `{{nEvery}}` 得跟着顺延，用户的自由模板也会被打乱；
+ *  2. 用户自定义过模板时未必会补上新占位符，那样功能会静默失效；追加到渲染结果
+ *     末尾则内置模板和自定义模板都生效，也不动编号。
+ *
+ * 结论复用既有的 `freeze` 字段（与原有文字类型规则取或）—— 不新增任何字段。
+ *
+ * `sfxFollowsErase` = 子开关 AppConfig.enableEraseJudgedFreezeForSfx：打开时把拟声词
+ * 那一类从「一律冻结」里摘出来、改看擦除效果；关闭时保持原样（本段就只是多给 freeze
+ * 一个判断依据，原有规则一条不动）。
+ */
+const eraseCheckPrompt = (sfxFollowsErase: boolean): string => `
+
+【本次附加了第二张图：擦除对照】
+图 1 = 原图 + 编号红框（照旧）。
+图 2 = 同一批编号红框，但框内原文已被算法擦除，编号与图 1 一一对应。
+对每个编号，请对照两张图判断这个框的擦除效果：
+- 框内还留有残留笔画、黑边、脏点、或者一片模糊涂抹的痕迹 → 擦除效果差；
+- 框内干净、底色与图案连续自然（看不出被抹过） → 擦除效果好。
+
+freeze 怎么填（并进上面那条规则，其余规则不变）：
+- 擦除效果差、或者你拿不准 → freeze 填 true（译文照常给出，只是不嵌进图片）。
+- 擦除效果好 → 按上面的规则继续判断。
+${sfxFollowsErase
+    ? `- 拟声词 / 音效字 / 语气词（ドン、ゴゴゴ、ザワ、あっ、うん…）本次**不再因为是这类字而冻结**，
+  只看擦除效果：擦得干净就填 false（和普通对白一样嵌字），有残留笔画、糊痕才填 true。
+  即使上面的规则里写了「拟声词/音效字一般不替换」，本次以这一条为准。`
+    : '- 拟声词 / 音效字 / 语气词仍然一律冻结（freeze 填 true），不受擦除效果影响。'}
+- 艺术字 / 装饰性文字，以及压在复杂背景上、擦掉会破坏画面的文字：照旧 freeze 填 true，
+  这一条不受擦除效果影响。
+
+（本段只是给 freeze 多加一个判断依据，输出格式完全不变 —— 照旧只输出 JSON，不要输出
+任何其他文字、解释或 markdown 代码块。）`;
+
+/**
+ * Draw the image with numbered boxes for each region; returns the data URL plus
+ * the size it was actually drawn at.
+ *
+ * `source` may be the page image or an already-erased page canvas — the
+ * erase-check flow (AppConfig.enableEraseJudgedFreeze) draws the SAME boxes on
+ * both, so the two numbered pages line up box for box.
+ *
+ * `maxDimension`（长边上限）把画布直接建在缩放后的尺寸上，而不是先按原分辨率画完
+ * 再重编码缩小 —— 两个好处：编号框与编号是**按最终分辨率画出来**的（不是被重采样
+ * 糊下去的），而且那张原分辨率的画布压根不会存在（6000×8000 就是 ~190MB canvas
+ * 外加一个 ~40MB 的 PNG data URL，而擦除判定要发两张整页）。
+ *
+ * 几何不受影响：框是百分比存的，线宽与编号字号都按画布宽度算，跟着一起缩。
+ */
+const buildAnnotatedImage = (
+  source: CanvasImageSource,
+  sourceW: number,
+  sourceH: number,
+  regions: Region[],
+  maskOutside: boolean,
+  maxDimension?: number
+): { url: string; width: number; height: number } => {
+  const scale = maxDimension && maxDimension > 0
+    ? Math.min(1, maxDimension / Math.max(sourceW, sourceH))
+    : 1;
+  const w = Math.max(1, Math.round(sourceW * scale));
+  const h = Math.max(1, Math.round(sourceH * scale));
   const canvas = document.createElement('canvas');
   canvas.width = w;
   canvas.height = h;
@@ -145,17 +208,20 @@ const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskO
     // machine — white page first, then only the regions' own pixels (same
     // semantics as imageUtils.createMultiMaskedFullImage, kept inline to avoid a
     // blob round-trip just to re-decode it here).
+    // 源矩形用**源图**像素，目标矩形用画布像素 —— 两者只在 scale === 1 时重合。
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, w, h);
     regions.forEach(r => {
-      const rx = (r.x / 100) * w;
-      const ry = (r.y / 100) * h;
-      const rw = (r.width / 100) * w;
-      const rh = (r.height / 100) * h;
-      if (rw > 0 && rh > 0) ctx.drawImage(imageEl, rx, ry, rw, rh, rx, ry, rw, rh);
+      const sx = (r.x / 100) * sourceW;
+      const sy = (r.y / 100) * sourceH;
+      const sw = (r.width / 100) * sourceW;
+      const sh = (r.height / 100) * sourceH;
+      if (sw > 0 && sh > 0) {
+        ctx.drawImage(source, sx, sy, sw, sh, sx * scale, sy * scale, sw * scale, sh * scale);
+      }
     });
   } else {
-    ctx.drawImage(imageEl, 0, 0);
+    ctx.drawImage(source, 0, 0, w, h);
   }
 
   const lineWidth = Math.max(2, Math.round(w / 500));
@@ -202,7 +268,7 @@ const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskO
     ctx.fillText(label, badge.x + pad, badge.y + pad);
   });
 
-  return canvas.toDataURL('image/png');
+  return { url: canvas.toDataURL('image/png'), width: w, height: h };
 };
 
 /** Extract the first top-level JSON object from a model response. */
@@ -346,7 +412,10 @@ export const translateEditorRegions = async (
   imageEl: HTMLImageElement,
   regions: Region[],
   config: AppConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 预擦除后的整页 canvas（开关打开时由调用方生成）：作为第二张「擦除对照」图
+   *  一起发送，让模型顺手判断每框擦得干不干净。见 AppConfig.enableEraseJudgedFreeze。 */
+  erasedPage?: HTMLCanvasElement
 ): Promise<EditorTranslateOutcome> => {
   const { translationBaseUrl, translationApiKey, translationModel } = config;
   if (!translationApiKey || !translationBaseUrl) {
@@ -354,44 +423,62 @@ export const translateEditorRegions = async (
   }
   if (regions.length === 0) return { results: new Map(), terms: [] };
 
+  // 长边上限：token 只看像素尺寸。两张图按**同一个**上限画 —— 同分辨率才好逐框对照
+  // 「擦之前 / 擦之后」，而擦除图也不需要更高（它只判有没有残留笔画、有没有糊）。
+  const maxDimension = config.aiPayloadTranslationMaxPx || undefined;
   // 「发送遮罩全图作上下文」also covers this path: here the annotated page IS the
   // payload, so honouring the switch means nothing outside the circled regions
   // is uploaded at all (privacy) — not merely an extra context image on top of
-  // an unmasked page.
-  const annotatedUrl = buildAnnotatedImage(imageEl, regions, !!config.sendMaskedContextForTranslation);
-  let payloadUrl = annotatedUrl;
+  // an unmasked page. 第二张图遵守同一个开关：否则一张泄露画面、一张不泄露，
+  // 这个隐私开关就形同虚设。
+  const maskOutside = !!config.sendMaskedContextForTranslation;
+  const annotated = buildAnnotatedImage(
+    imageEl, imageEl.naturalWidth, imageEl.naturalHeight, regions, maskOutside, maxDimension
+  );
+  // 第二张：同一批编号框，画在预擦除后的整页上。
+  const erasedAnnotated = erasedPage
+    ? buildAnnotatedImage(erasedPage, erasedPage.width, erasedPage.height, regions, maskOutside, maxDimension)
+    : null;
+
   let compressedUrl: string | null = null;
+  let erasedCompressedUrl: string | null = null;
   try {
+    let payloadUrl = annotated.url;
+    let erasedPayloadUrl = erasedAnnotated?.url ?? null;
     if (config.enableAiPayloadCompression) {
-      compressedUrl = await compressImageToTargetSize(annotatedUrl, {
+      compressedUrl = await compressImageToTargetSize(annotated.url, {
         targetSizeKB: config.aiPayloadTranslationTargetKB,
-        // 长边上限才是省 token 的那一半 —— 压体积只省字节，token 只看像素尺寸。
-        // 缩放在这里做（而不是 buildAnnotatedImage 里），编号框跟着一起等比缩。
-        maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+        maxDimension,
       });
       payloadUrl = compressedUrl;
+      if (erasedPayloadUrl) {
+        erasedCompressedUrl = await compressImageToTargetSize(erasedPayloadUrl, {
+          targetSizeKB: config.aiPayloadTranslationTargetKB,
+          maxDimension,
+        });
+        erasedPayloadUrl = erasedCompressedUrl;
+      }
     }
     const imageBase64 = await urlToBase64(payloadUrl);
+    const erasedBase64 = erasedPayloadUrl ? await urlToBase64(erasedPayloadUrl) : null;
 
-    // Region geometry is stored as percentages (0-100) — convert to pixels.
-    // The prompt's coordinates must describe the image the model ACTUALLY sees,
-    // so they carry the same long-side cap the payload got: a 2480×3508 page
-    // pinned to 1536 has to be listed as [0,0,1086,1536], not [0,0,2480,3508].
-    // compressImageToTargetSize scales by exactly this ratio, so predicting it
-    // here keeps the two in step.
-    const iw = imageEl.naturalWidth;
-    const ih = imageEl.naturalHeight;
-    const payloadScale = config.enableAiPayloadCompression && config.aiPayloadTranslationMaxPx > 0
-      ? Math.min(1, config.aiPayloadTranslationMaxPx / Math.max(iw, ih))
-      : 1;
-    const pw = Math.round(iw * payloadScale);
-    const ph = Math.round(ih * payloadScale);
+    // Region geometry is stored as percentages (0-100) — convert to pixels. The
+    // prompt's coordinates must describe the image the model ACTUALLY sees, so
+    // they come straight from the annotated canvas' own size: 标注与缩放都在
+    // buildAnnotatedImage 里做完，这里没有任何比例需要再推一遍。
     const skeleton = regions
-      .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * pw)}, ${Math.round((r.y / 100) * ph)}, ${Math.round((r.width / 100) * pw)}, ${Math.round((r.height / 100) * ph)}] (${r.detectedClass ?? 'manual'})`)
+      .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * annotated.width)}, ${Math.round((r.y / 100) * annotated.height)}, ${Math.round((r.width / 100) * annotated.width)}, ${Math.round((r.height / 100) * annotated.height)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
     const fontAutoDetect = !!config.enableFontAutoDetect;
     // 用户在设置里改过编辑器提示词就用他的模板，否则用内置默认模板。
-    const prompt = buildPrompt(skeleton, fontAutoDetect, config.editorTranslationPrompt);
+    const basePrompt = buildPrompt(skeleton, fontAutoDetect, config.editorTranslationPrompt);
+    // 擦除判定那段只在第二张图真的发出去时才追加 —— 说了「见图 2」却没图会把模型带偏。
+    // 子开关（拟声词是否也看擦除效果）只改那一段的措辞，不改图片；它的值不随主开关
+    // 清空，所以这里必须自己带上主开关 —— 生效与否是两者的与，不是子开关单独说了算。
+    const sfxFreedFromFreeze = !!config.enableEraseJudgedFreeze && !!config.enableEraseJudgedFreezeForSfx;
+    const prompt = erasedBase64
+      ? basePrompt + eraseCheckPrompt(sfxFreedFromFreeze)
+      : basePrompt;
 
     // Record the annotated page — in this flow the payload IS a drawing of the
     // image (numbered boxes, optionally masked outside), which the canvas never
@@ -399,6 +486,7 @@ export const translateEditorRegions = async (
     const payloadTransforms: PayloadTransform[] = ['annotate', 'full-page'];
     if (config.sendMaskedContextForTranslation) payloadTransforms.push('mask');
     if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
+    if (erasedPayloadUrl) payloadTransforms.push('erase-check');
     recordPayload({
       config,
       phase: 'editorTranslate',
@@ -406,6 +494,7 @@ export const translateEditorRegions = async (
       transforms: payloadTransforms,
       prompt,
       sentUrl: payloadUrl,
+      extra: erasedPayloadUrl ? { url: erasedPayloadUrl, label: t(config.language, 'payloadExtraErasedPage') } : null,
     });
 
     let cleanBaseUrl = translationBaseUrl.replace(/\/+$/, '');
@@ -444,6 +533,9 @@ export const translateEditorRegions = async (
               content: [
                 { type: 'text', text: prompt },
                 { type: 'image_url', image_url: { url: imageBase64 } },
+                // 图 2：擦除对照（同编号、框内原文已擦）。没有它就不发，
+                // 提示词里那段擦除判定也随之不出现。
+                ...(erasedBase64 ? [{ type: 'image_url', image_url: { url: erasedBase64 } }] : []),
               ],
             }],
             max_tokens: 4096,
@@ -534,5 +626,6 @@ export const translateEditorRegions = async (
     }
   } finally {
     if (compressedUrl) releaseObjectURL(compressedUrl);
+    if (erasedCompressedUrl) releaseObjectURL(erasedCompressedUrl);
   }
 };

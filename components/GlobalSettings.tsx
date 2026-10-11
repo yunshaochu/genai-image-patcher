@@ -689,6 +689,37 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         }
                                     />
 
+                                    <SubRow
+                                        title={t(lang, 'eraseJudgedFreeze')}
+                                        help={t(lang, 'eraseJudgedFreezeDesc')}
+                                        control={
+                                            <Toggle
+                                                size="sm"
+                                                checked={config.enableEraseJudgedFreeze}
+                                                onChange={(enabled) => updateConfig('enableEraseJudgedFreeze', enabled)}
+                                            />
+                                        }
+                                    />
+
+                                    {/* 子开关：拟声词是否也按擦除效果决定冻结。只在主开关打开
+                                        时出现 —— 主开关关掉时这一行隐藏、它也不生效，但值
+                                        留着：主开关再打开时按上次的样子恢复，不会被重置。 */}
+                                    {config.enableEraseJudgedFreeze && (
+                                        <div className="pl-4">
+                                            <SubRow
+                                                title={t(lang, 'eraseJudgedFreezeSfx')}
+                                                help={t(lang, 'eraseJudgedFreezeSfxDesc')}
+                                                control={
+                                                    <Toggle
+                                                        size="sm"
+                                                        checked={config.enableEraseJudgedFreezeForSfx}
+                                                        onChange={(enabled) => updateConfig('enableEraseJudgedFreezeForSfx', enabled)}
+                                                    />
+                                                }
+                                            />
+                                        </div>
+                                    )}
+
                                     {/* 两个阶段的提示词拆成两个 tab：重绘阶段的（纯文本，
                                         喂给图生图重绘调用）与编辑器阶段的（模板，喂给整页 /
                                         选区翻译）。两份都可以改，也都能一键回到出厂文本。 */}

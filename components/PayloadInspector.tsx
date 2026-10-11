@@ -37,6 +37,7 @@ const transformLabel = (lang: Language, transform: PayloadTransform): string => 
         case 'square-fill': return t(lang, 'payloadTrSquareFill');
         case 'compress': return t(lang, 'payloadTrCompress');
         case 'annotate': return t(lang, 'payloadTrAnnotate');
+        case 'erase-check': return t(lang, 'payloadTrEraseCheck');
         default: return transform;
     }
 };

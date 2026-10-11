@@ -10,6 +10,7 @@ import {
   findContainedTextRegions,
   syncBubbleStatuses,
   eraseBaseUrlOf,
+  buildErasedPageCanvas,
   ErasedCacheEntry,
   EraseCachePersist,
 } from '../services/mangaEditor';
@@ -933,7 +934,26 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     markTranslatingImage(imageId, true);
     try {
       const imageEl = await loadImage(img.previewUrl);
-      const { results, terms } = await translateEditorRegions(imageEl, targets, configRef.current, signal);
+      // 擦除判定（默认关）：先把这批框的原文擦一遍，产出一张干净整页当**第二张图**，
+      // 让模型在翻译的同时判断每框擦得干不干净 —— 判定完全由模型负责，本地不否决。
+      let erasedPage: HTMLCanvasElement | undefined;
+      if (configRef.current.enableEraseJudgedFreeze) {
+        try {
+          erasedPage = await buildErasedPageCanvas(imageEl, targets, {
+            imgW: imageEl.naturalWidth,
+            imgH: imageEl.naturalHeight,
+            contextBubbles: getContextBubbles(img),
+            pythonBackendUrl: configRef.current.pythonBackendUrl,
+            signal,
+          });
+        } catch (e) {
+          // 预擦除整条挂掉不能让翻译跟着挂：退回「不带第二张图」的今天行为。
+          console.warn('[翻译] 预擦除失败，本次翻译不带擦除对照图', e);
+        }
+      }
+      // 预擦除期间被停掉：别再往下做标注图（两张整页编码不便宜）。
+      if (signal.aborted) return;
+      const { results, terms } = await translateEditorRegions(imageEl, targets, configRef.current, signal, erasedPage);
 
       // Compute post-update region objects up-front (updaters must stay pure,
       // and recomposite needs them explicitly — the store commit lags behind

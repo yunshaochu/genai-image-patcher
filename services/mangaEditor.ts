@@ -1,6 +1,7 @@
 import { Region, RedrawIntent, effectiveIntentOf } from '../types';
 import { loadImage, releaseObjectURL, previewPixelSize } from './imageUtils';
-import { eraseTextInCanvasAuto, EraseKind } from './textErase';
+import { eraseTextInCanvasAuto, EraseKind, EraseStats } from './textErase';
+import { runWithConcurrency } from './concurrencyUtils';
 import { layoutText, drawTextLayout, measureLayoutBlock } from './textLayout';
 
 /**
@@ -222,6 +223,153 @@ export const resolveEraseRect = (
     w: Math.max(1, Math.round(x2 - x1)),
     h: Math.max(1, Math.round(y2 - y1)),
   };
+};
+
+/**
+ * 「擦除 ROI → 目标画布」的贴回窗口。返回源窗口（ROI 内坐标）与偏移，坐标与目标
+ * 画布无关，由调用方决定画到哪：合成器画进 patch canvas 的 (mx + offX, my + offY)，
+ * 「翻译前预擦除整页」画进整页 canvas 的 (cropX + offX, cropY + offY)。
+ *
+ * 只取该框自己 bbox 那么大的一块，与 whiten_regions.py 结尾的
+ * `final[y1:y2, x1:x2] = erased[...]` 同一语义：泛洪在框外干了什么都丢掉，一次
+ * 泄漏最多弄脏自己这一格，永远伤不到气泡轮廓或隔壁框。
+ *
+ * 两处共用这一份计算是要紧的：**「AI 看到的擦除效果」必须等于「用户最后看到的
+ * 擦除效果」**，否则擦除判定（见 AppConfig.enableEraseJudgedFreeze）就没有意义。
+ */
+export const erasedPatchRect = (
+  roi: PxRect,
+  crop: PxRect
+): { srcX: number; srcY: number; srcW: number; srcH: number; offX: number; offY: number } => {
+  const dx = Math.round(crop.x - roi.x);
+  const dy = Math.round(crop.y - roi.y);
+  const srcX = Math.max(0, dx);
+  const srcY = Math.max(0, dy);
+  return {
+    srcX,
+    srcY,
+    srcW: Math.max(0, Math.min(crop.w, roi.w - srcX)),
+    srcH: Math.max(0, Math.min(crop.h, roi.h - srcY)),
+    // ROI 一般包住 crop（见 resolveEraseRect），所以这两个几乎总是 0；只有当框压在
+    // 图片边上、ROI 被 clamp 回来时才非 0。
+    offX: Math.max(0, -dx),
+    offY: Math.max(0, -dy),
+  };
+};
+
+/** 一格的擦除输入：ROI 尺寸、已就地擦净的 canvas + 这次量到的取色统计。 */
+export interface ErasedRoi {
+  /** ROI 尺寸的干净底图（就是传进来那张 canvas，就地改过）。 */
+  canvas: HTMLCanvasElement;
+  roi: PxRect;
+  /** 取色统计；擦除算法本身没找到文字、或后端没回带头时为 undefined。 */
+  stats?: EraseStats;
+}
+
+/**
+ * 擦掉一格的原文：在放大 ROI 上跑后端 `/erase`（不可用则回落本地算法），就地改
+ * canvas。
+ *
+ * 合成器（外面还包一层缓存）与「翻译前预擦除整页」共用这一份 —— 几何
+ * （resolveEraseRect）、kind 判定、dilate / inpaint_radius 参数、算法本身全在这里，
+ * 两处不可能各说各话。
+ */
+export const eraseRegionRoi = async (
+  source: CanvasImageSource,
+  region: Region,
+  options: {
+    imgW: number;
+    imgH: number;
+    /** 被气泡框包住的文字按「泡内」处理（见 findCoveringBubbleBox）。 */
+    contextBubbles?: Region[];
+    pythonBackendUrl?: string;
+  }
+): Promise<ErasedRoi> => {
+  const { imgW, imgH, contextBubbles, pythonBackendUrl } = options;
+  // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
+  // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
+  // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
+  const kind: EraseKind = findCoveringBubbleBox(region, contextBubbles, imgW, imgH)
+    ? 'bubble'
+    : region.detectedClass === 'text_free' ? 'free' : 'bubble';
+  // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
+  // text box — see resolveEraseRect.
+  const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
+  const canvas = document.createElement('canvas');
+  canvas.width = roi.w;
+  canvas.height = roi.h;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.drawImage(source, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
+  const outcome = await eraseTextInCanvasAuto(canvas, pythonBackendUrl, kind, {
+    kind,
+    dilate: ERASE_DILATE,
+    inpaintRadius: ERASE_INPAINT_RADIUS,
+  });
+  return { canvas, roi, stats: outcome.stats };
+};
+
+/**
+ * 翻译前的预擦除：把给定的几格原文擦掉，产出一张「干净整页」canvas（尺寸与 source
+ * 一致），交给翻译调用当第二张对照图。
+ *
+ * 单框失败只跳过那一格、保留它的原文像素：这张图是给模型看的证据，宁可留一处没擦
+ * 的原文，也不能让整张图作废。
+ *
+ * 每格的 ROI 都从**原始 source** 取，不是从已经擦过一半的整页上取 —— 与合成器一致
+ * （合成器每一格都从 base 重建），免得相邻框的 ROI 重叠时结果互相污染。
+ *
+ * 刻意**不回报任何「擦得干不干净」的量化结论**：判定完全交给看图的那个模型（见
+ * AppConfig.enableEraseJudgedFreeze），本地不否决。
+ */
+export const buildErasedPageCanvas = async (
+  source: HTMLImageElement | HTMLCanvasElement,
+  regions: Region[],
+  options: {
+    imgW: number;
+    imgH: number;
+    contextBubbles?: Region[];
+    pythonBackendUrl?: string;
+    /** 同时在跑几格的擦除：后端 /erase 是网络往返，串行会明显拖慢整页。 */
+    concurrency?: number;
+    /** 用户点了停止就不要再往下排新任务（在途的请求拦不住，见 textErase）。 */
+    signal?: AbortSignal;
+  }
+): Promise<HTMLCanvasElement> => {
+  const { imgW, imgH, contextBubbles, pythonBackendUrl, concurrency = 4, signal } = options;
+  const canvas = document.createElement('canvas');
+  canvas.width = imgW;
+  canvas.height = imgH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.drawImage(source, 0, 0, imgW, imgH);
+
+  const eraseOne = async (region: Region): Promise<void> => {
+    try {
+      const erased = await eraseRegionRoi(source, region, { imgW, imgH, contextBubbles, pythonBackendUrl });
+      const cropX = (region.x / 100) * imgW;
+      const cropY = (region.y / 100) * imgH;
+      const patch = erasedPatchRect(erased.roi, {
+        x: cropX,
+        y: cropY,
+        w: Math.max(1, Math.round((region.width / 100) * imgW)),
+        h: Math.max(1, Math.round((region.height / 100) * imgH)),
+      });
+      if (patch.srcW > 0 && patch.srcH > 0) {
+        ctx.drawImage(
+          erased.canvas,
+          patch.srcX, patch.srcY, patch.srcW, patch.srcH,
+          cropX + patch.offX, cropY + patch.offY, patch.srcW, patch.srcH
+        );
+      }
+    } catch (e) {
+      // 这一格擦不动：保留原文像素 —— 模型在对照图上自己看得出来。
+      console.warn('预擦除失败，该框保留原文', region.id, e);
+    }
+  };
+
+  await runWithConcurrency(regions, concurrency, eraseOne, signal ?? new AbortController().signal);
+  return canvas;
 };
 
 /** Effective text to typeset for a region. Frozen regions (translation held
@@ -556,12 +704,6 @@ export const compositeRegionPatch = async (
   // 结果在这里一律作废（数据层已被清成 editorErased=false，这里是最后一道闸门），
   // 绝不可以在 AI 已经抹干净的底图上再跑一次泛洪擦除。
   if (region.editorErased && !region.aiErasedBase) {
-    // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
-    // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
-    // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
-    const kind: EraseKind = findCoveringBubbleBox(region, contextBubbles, imgW, imgH)
-      ? 'bubble'
-      : region.detectedClass === 'text_free' ? 'free' : 'bubble';
     // Erase on the enlarged ROI (bubble ∪ text box + margin), not on the bare
     // text box — see resolveEraseRect.
     const roi = resolveEraseRect(region, contextBubbles, imgW, imgH);
@@ -580,16 +722,13 @@ export const compositeRegionPatch = async (
         entry = restored;
         erasedCache.set(region.id, entry);
       } else {
-        const eraseCanvas = document.createElement('canvas');
-        eraseCanvas.width = roi.w;
-        eraseCanvas.height = roi.h;
-        const ectx = eraseCanvas.getContext('2d');
-        if (!ectx) throw new Error('Could not get canvas context');
-        ectx.drawImage(imageEl, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
-        const outcome = await eraseTextInCanvasAuto(eraseCanvas, pythonBackendUrl, kind, {
-          kind,
-          dilate: ERASE_DILATE,
-          inpaintRadius: ERASE_INPAINT_RADIUS,
+        // 几何 / kind / 参数 / 算法全在 eraseRegionRoi 里，和「翻译前预擦除整页」
+        // 共用同一份实现 —— 擦除判定成立的前提就是两处擦出来的像素一致。
+        const { canvas: eraseCanvas, stats } = await eraseRegionRoi(imageEl, region, {
+          imgW,
+          imgH,
+          contextBubbles,
+          pythonBackendUrl,
         });
         // 编码成 WebP（见 ERASE_IMAGE_TYPE）：这份 ROI 只算一次、之后被反复重画，
         // 但只会被编码这一次，所以有损编码不会累积；PNG 的编码耗时和落盘体积都不划算。
@@ -603,8 +742,8 @@ export const compositeRegionPatch = async (
           w: roi.w,
           h: roi.h,
           // 取色跟着缓存走：同一个几何只擦一次，之后每一版都要复用同一个墨色。
-          textColor: outcome.stats?.textColor,
-          bgColor: outcome.stats?.bgColor,
+          textColor: stats?.textColor,
+          bgColor: stats?.bgColor,
         };
         erasedCache.set(region.id, entry);
         // 落盘（best-effort，不 await）：下次会话同一几何直接命中。

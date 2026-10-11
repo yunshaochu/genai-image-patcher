@@ -28,7 +28,8 @@ export type PayloadTransform =
     | 'context'         // a masked full page sent alongside a crop
     | 'square-fill'     // padded to a square with a blurred background
     | 'compress'        // re-encoded to WebP at a target size
-    | 'annotate';       // numbered boxes drawn over the page
+    | 'annotate'        // numbered boxes drawn over the page
+    | 'erase-check';    // companion page with every box's text erased (擦除判定)
 
 export interface PayloadRecord {
     id: string;

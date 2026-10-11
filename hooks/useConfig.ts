@@ -174,6 +174,11 @@ const DEFAULT_CONFIG: AppConfig = {
   glossaryAutoUnify: true,
   glossaryAutoAiSelect: false,
 
+  /** 擦除判定默认关：翻译端点不一定收得下两张图，预擦除也要多花几秒。 */
+  enableEraseJudgedFreeze: false,
+  /** 子开关也默认关 = 拟声词/语气词照旧一律冻结（与不开擦除判定时一致）。 */
+  enableEraseJudgedFreezeForSfx: false,
+
   // AI Payload Compression Defaults
   enableAiPayloadCompression: true,
   /** 长边上限默认 0 = 不限：沿用「原分辨率直发」的老行为。清晰度与 token 的取舍
@@ -373,6 +378,18 @@ export function useConfig() {
         // Ensure retry diagnostics toggle exists
         if (typeof migratedConfig.showRetryDiagnostics === 'undefined') {
             migratedConfig.showRetryDiagnostics = false;
+        }
+
+        // 擦除判定（翻译时）：新功能，存量会话一律关 —— 开关打开会让翻译多发一张图、
+        // 并在翻译前多跑一轮擦除，不该替用户决定。
+        if (typeof migratedConfig.enableEraseJudgedFreeze === 'undefined') {
+            migratedConfig.enableEraseJudgedFreeze = false;
+        }
+        if (typeof migratedConfig.enableEraseJudgedFreezeForSfx === 'undefined') {
+            // 子开关同样默认关 = 拟声词照旧一律冻结，与升级前一致。
+            // 注意：这个值**不跟着主开关清空** —— 主开关只是让它不生效/不显示，
+            // 下次主开关打开时按记着的样子恢复（见 types 里该字段的说明）。
+            migratedConfig.enableEraseJudgedFreezeForSfx = false;
         }
 
         // 整批「跑完再重试」轮数：老配置没有 → 3（重试机制引入时的默认值）。
