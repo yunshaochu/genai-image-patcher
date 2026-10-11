@@ -201,12 +201,33 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
     # 改成看洞里的证据：两侧都比一遍，哪一侧的像素多就认哪一侧。
     dark = holes & (gray < med - 50)
     light = holes & (gray > med + 50)
+    protect = None
     if have_mask:
         # 有外部掩码时极性直接看掩码像素的明暗：模型已经指认了哪些像素是字，
         # 它们的中位灰度 vs 底色就是字的极性 —— 彩色字靠洞内证据比票本来就弱，
         # 这正是判反翻车的高发区。
         dark_text = float(np.median(gray[text_mask])) <= med
-        text = (dark if dark_text else light) | text_mask
+        side = dark if dark_text else light
+        # 保护区：与 ROI 边界相连的「极性同色」结构 = 气泡描边 / 框外画面，
+        # 不是文字 —— 文字在框内，与边界隔着一圈底色；模型掩码本身当屏障，
+        # 文字也不会被连进来。没有它，R 顺着渐变泄漏、把描边外的背景也吞进 R
+        # 时（实测一框 R=71% 连框外都吞了），描边环会从 ext 里孤立出来掉进
+        # holes，被当成文字膨胀擦掉 —— 这就是「擦字连描边一起啃」的根源。
+        cand = (side & (~text_mask)).astype(np.uint8)
+        num, labels = cv2.connectedComponents(cand, connectivity=4)
+        border = np.zeros(num, bool)
+        border[np.unique(np.concatenate(
+            (labels[0], labels[-1], labels[:, 0], labels[:, -1])))] = True
+        border[0] = False
+        protect = border[labels]
+        # 掩码旁边 3px 内不保护：那里是文字的抗锯齿边，必须让残留清理够得着。
+        protect &= ~(cv2.dilate(text_mask.astype(np.uint8),
+                                np.ones((3, 3), np.uint8)) > 0)
+        # 启发式增量只收掩码附近的：并集的本意是抓贴着文字的漏网细节
+        # （省略号下半截、小注音），远处的洞在 R 泄漏时全是不该擦的结构。
+        near_band = cv2.dilate(text_mask.astype(np.uint8),
+                               np.ones((31, 31), np.uint8)) > 0
+        text = (side & near_band & ~protect) | text_mask
     else:
         dark_text = int(dark.sum()) >= int(light.sum())
         text = dark if dark_text else light
@@ -217,22 +238,31 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
 
     # 文字 + 描边一起擦：只擦笔画的话，inpaint 的采样边界正好落在宽描边上，
     # 补出来的是描边色（白团）；描边掩码只往"与文字反向偏离底色"的方向长。
-    erase_src = text | _outline_mask(gray, ~ext, text, med, dark_text, dl)
+    #
+    # 有外部掩码时跳过 _outline_mask：它按「比 R 中位数亮/暗 12」找描边，而
+    # R 顺着渐变泄漏时 med 会被拉偏低（实测 180 vs 真实泡底 210），整个白泡
+    # 底都成了「描边候选」，文字又直接印在泡底上（没有独立的白描边圈），种子
+    # 一落整片亮区连成一个组件被吞掉 —— 气泡上半的阴影月牙就这么被擦白的。
+    # CTD 掩码本身涵盖文字及其描边，不需要这层兜底。
+    erase_src = text
+    if not have_mask:
+        erase_src = erase_src | _outline_mask(gray, ~ext, text, med, dark_text, dl)
 
-    # 掩码膨胀抓抗锯齿边，但被 ext 挡住（不啃气泡描边、不越界到邻气泡）
+    # 掩码膨胀抓抗锯齿边，但被 ext / 保护区挡住（不啃气泡描边、不越界到邻气泡）
     m = cv2.dilate(erase_src.astype(np.uint8),
                    np.ones((dl * 2 + 1, dl * 2 + 1), np.uint8))
     m = (m > 0) & (~ext)
+    if protect is not None:
+        m &= ~protect
     if have_mask:
-        # 外部掩码不裁 ext：它是模型逐像素指认的文字。ext 的本职是挡启发式
-        # 洞误啃描边，但 R 不完整时（渐变底的气泡 flood fill 只吞下最亮一块，
-        # 实测 R 只剩 37%），ext 会顺着渐变爬进气泡内部，把半个文字划成
-        # 「外部可达」—— 一个框一半的掩码就这样被杀掉，字全留下来。
-        m |= cv2.dilate(text_mask.astype(np.uint8),
-                        np.ones((dl * 2 + 1, dl * 2 + 1), np.uint8)) > 0
+        # 原始掩码像素无条件擦（不裁 ext/protect：它是模型逐像素指认的文字。
+        # ext 的本职是挡启发式洞误啃描边，但 R 不完整时它连气泡内的渐变都会
+        # 划成「外部可达」，一个框一半的掩码会被这样杀掉）。膨胀环不跟着豁免
+        # —— 无约束的膨胀环会把贴近文字的描边/阴影一起吞掉。
+        m |= text_mask
     roi = cv2.inpaint(bgr_roi, (m.astype(np.uint8)) * 255, rad, cv2.INPAINT_TELEA)
 
-    # 二轮：清文字附近的浅残留（同样不越 ext）
+    # 二轮：清文字附近的浅残留（同样不越 ext / 保护区）
     g2 = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     near = cv2.dilate(erase_src.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
     if dark_text:
@@ -240,13 +270,13 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
     else:
         residue = near & (g2 > med + 35) & (~ext)
     if have_mask:
-        # 模型掩码周边的残留同样不裁 ext（理由同上）
+        # 模型掩码周边的残留不裁 ext（理由同上），且两侧极性都查：跳过了
+        # _outline_mask，模型漏掉的白描边（暗字）/黑描边（亮字）会以与文字
+        # 相反的极性留在这里
         near_m = cv2.dilate(text_mask.astype(np.uint8),
                             np.ones((5, 5), np.uint8)) > 0
-        if dark_text:
-            residue |= near_m & (g2 < med - 35)
-        else:
-            residue |= near_m & (g2 > med + 35)
+        diff = (g2 < med - 35) | (g2 > med + 35)
+        residue |= near_m & diff & (~protect)
     if residue.any():
         roi = cv2.inpaint(roi, (residue.astype(np.uint8)) * 255,
                           max(3, rad - 3), cv2.INPAINT_TELEA)
