@@ -149,6 +149,26 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
                                     </label>
                                 </div>
                             </div>
+
+                            {/* 文字掩码精准擦除：开关的是后端的 comic-text-detector
+                                分割模型（开了才会加载），影响检测耗时与擦除精度。 */}
+                            <div className="pt-2 border-t border-skin-border/40">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] text-skin-text flex items-center gap-1 min-w-0">
+                                        <span className="truncate">{t(lang, 'detectTextMask')}</span>
+                                        <HelpTip text={t(lang, 'detectTextMaskDesc')} />
+                                    </span>
+                                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                                        <input
+                                            type="checkbox"
+                                            className="sr-only peer"
+                                            checked={!!config.detectionTextMask}
+                                            onChange={(e) => onChange('detectionTextMask', e.target.checked)}
+                                        />
+                                        <div className="bg-gray-200 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:transition-all peer-checked:bg-skin-primary w-9 h-5 after:h-4 after:w-4" />
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                     )}
                 </>

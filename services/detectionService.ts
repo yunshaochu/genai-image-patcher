@@ -1,6 +1,6 @@
 
 
-import { AppConfig, Region } from "../types";
+import { AppConfig, Region, RegionTextMask } from "../types";
 
 // API Response Types based on comic-detector RT-DETR API (docs/API_RTDTR.md)
 interface ApiDetection {
@@ -8,6 +8,11 @@ interface ApiDetection {
   class_id: number;
   class_name: 'bubble' | 'text_bubble' | 'text_free';
   confidence: number;
+  /** comic-text-detector 像素掩码（后端开启文字掩码时才有）：base64 PNG +
+   *  掩码在检测图里的位置/尺寸（检测图可能被缩放，单位是缩放后的像素）。 */
+  text_mask?: string;
+  mask_origin?: [number, number];
+  mask_size?: [number, number];
 }
 
 interface ApiDetectionResponse {
@@ -133,6 +138,9 @@ export const detectBubbles = async (
     // are the editable text areas; bubble = 整颗气泡, kept as context-only
     // markers (reserved for later use, e.g. per-bubble styling).
     formData.append('filter_classes', 'bubble,text_bubble,text_free');
+    // 文字掩码精准擦除开关：开后端 comic-text-detector（首次会触发模型加载，
+    // 检测变慢）。必须显式传 false——后端默认值为 true。
+    formData.append('with_masks', String(!!config.detectionTextMask));
 
     // 3. Send Request
     const response = await fetch(apiUrl, {
@@ -180,6 +188,25 @@ export const detectBubbles = async (
 
     // Map API result to internal Region format
     const regions: Region[] = [];
+
+    /** 检测返回的掩码换算成 Region.textMask：掩码与 bbox 同一坐标系（检测图
+     *  的像素，可能被缩放过），统一存成整页百分比，擦除时按目标图尺寸还原
+     *  即可对齐。 */
+    const buildTextMask = (det: ApiDetection): RegionTextMask | undefined => {
+      if (!det.text_mask || !det.mask_origin || !det.mask_size) return undefined;
+      const [ox, oy] = det.mask_origin;
+      const [mw, mh] = det.mask_size;
+      if (!(mw > 0 && mh > 0) || !(width > 0 && height > 0)) return undefined;
+      return {
+        png: det.text_mask,
+        rect: {
+          x: (ox / width) * 100,
+          y: (oy / height) * 100,
+          w: (mw / width) * 100,
+          h: (mh / height) * 100,
+        },
+      };
+    };
 
     keptDetections.forEach((det) => {
       // API returns absolute pixel coordinates [left, top, right, bottom]
@@ -237,6 +264,7 @@ export const detectBubbles = async (
             // by dropEnclosingBoxes (it is the redundant "outer box"), so only
             // empty bubbles ever reach this line.
             contextOnly: det.class_name === 'bubble',
+            textMask: buildTextMask(det),
         });
       }
     });

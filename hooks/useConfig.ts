@@ -139,6 +139,8 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionConfidenceThreshold: 30,
   // 跳过策略默认关：只有手画框的页面照旧检测（= 与历史行为一致）。
   detectionSkipManualOnlyPages: false,
+  // 文字掩码精准擦除默认关：开后端要多加载一个分割模型，检测变慢。
+  detectionTextMask: false,
   
   // Manga Module Defaults
   enableMangaMode: false,
@@ -417,6 +419,12 @@ export function useConfig() {
         // 保持引入这个开关之前的行为）。
         if (typeof migratedConfig.detectionSkipManualOnlyPages === 'undefined') {
             migratedConfig.detectionSkipManualOnlyPages = false;
+        }
+
+        // 文字掩码精准擦除：老配置没有 → false（不加载 comic-text-detector，
+        // 检测保持原速度）。
+        if (typeof migratedConfig.detectionTextMask === 'undefined') {
+            migratedConfig.detectionTextMask = false;
         }
 
         // 提示词模块拆分「翻译 / 擦除 / 自定义」后，全局提示词只保留不变量。

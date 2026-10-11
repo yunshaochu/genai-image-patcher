@@ -266,6 +266,18 @@ export interface ErasedRoi {
   stats?: EraseStats;
 }
 
+/** base64 PNG → ImageBitmap（文字掩码解码）。失败返回 null，调用方走无掩码路径。 */
+const maskBitmap = async (pngBase64: string): Promise<ImageBitmap | null> => {
+  try {
+    const bin = atob(pngBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+  } catch {
+    return null;
+  }
+};
+
 /**
  * 擦掉一格的原文：在放大 ROI 上跑后端 `/erase`（不可用则回落本地算法），就地改
  * canvas。
@@ -301,10 +313,43 @@ export const eraseRegionRoi = async (
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get canvas context');
   ctx.drawImage(source, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
+
+  // 文字掩码精准擦除：把整页百分比坐标的掩码 PNG 裁剪/缩放到 ROI 坐标系。
+  // 检测上传的图可能被缩放过，所以 Region.textMask.rect 存的是百分比；
+  // drawImage 的自动缩放正好消化掉检测图与原图的分辨率差。
+  let maskPng: string | undefined;
+  const tm = region.textMask;
+  if (tm && pythonBackendUrl) {
+    try {
+      const bmp = await maskBitmap(tm.png);
+      if (bmp) {
+        const mcanvas = document.createElement('canvas');
+        mcanvas.width = roi.w;
+        mcanvas.height = roi.h;
+        const mctx = mcanvas.getContext('2d');
+        if (mctx) {
+          mctx.drawImage(
+            bmp,
+            (tm.rect.x / 100) * imgW - roi.x,
+            (tm.rect.y / 100) * imgH - roi.y,
+            Math.max(1, (tm.rect.w / 100) * imgW),
+            Math.max(1, (tm.rect.h / 100) * imgH)
+          );
+          maskPng = mcanvas.toDataURL('image/png').split(',')[1] || undefined;
+        }
+        bmp.close();
+      }
+    } catch (e) {
+      // 掩码对不上就算了：擦除照走洞检测，别让增强功能把主流程绊倒。
+      console.warn('text mask alignment failed, erasing without it', e);
+    }
+  }
+
   const outcome = await eraseTextInCanvasAuto(canvas, pythonBackendUrl, kind, {
     kind,
     dilate: ERASE_DILATE,
     inpaintRadius: ERASE_INPAINT_RADIUS,
+    maskPng,
   });
   return { canvas, roi, stats: outcome.stats };
 };

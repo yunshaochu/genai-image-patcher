@@ -165,30 +165,51 @@ def _measure_text_stats(bgr_roi, text, R, dark_text):
     return stats
 
 
-def _inpaint_holes(bgr_roi, gray, R, dl, rad):
+def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
     """文字 = R 的洞 ∩ 与底色差异大，再并上文字描边（见 _outline_mask）；
     inpaint 两轮，掩码不越 ext（气泡描边/框外画面）。
+
+    `text_mask` 是可选的外部文字掩码（comic-text-detector 的整页分割掩码裁到
+    本 ROI 的部分），与洞检测结果取并集：洞检测负责细微处（省略号下半截、
+    小号注音这些模型常漏的），外部掩码负责洞检测失效的情形（彩色字灰度差
+    <50 阈值后只剩几个像素、极性判反）。两者失效区域基本不重叠，并集严格
+    不劣于任何单边。
 
     返回 `(擦除后的 ROI, stats)`；stats 是这次的取色量测（没找到文字时为 None），
     量测必须在 inpaint 之前做 —— inpaint 之后笔画像素就没了。
     """
     h, w = gray.shape
-    if R is None or not R.any():
-        return bgr_roi, None
-    ext = _edge_reachable(~R)
-    holes = (~R) & (~ext)
-    if not holes.any():
-        return bgr_roi, None
+    have_mask = text_mask is not None and bool(text_mask.any())
 
-    med = float(np.median(gray[R]))
+    if R is not None and R.any():
+        ext = _edge_reachable(~R)
+        holes = (~R) & (~ext)
+        med = float(np.median(gray[R]))
+    else:
+        # R 退化（flood fill 没找到底色）但有外部掩码：照样干活，只是没有
+        # 可靠的 ext 约束和 bg_color 取色。
+        if not have_mask:
+            return bgr_roi, None
+        ext = np.zeros((h, w), bool)
+        holes = np.zeros((h, w), bool)
+        bg = ~text_mask
+        med = float(np.median(gray[bg])) if bg.any() else float(np.median(gray))
+
     # 文字比底色「暗还是亮」**不能**看底色自身的明暗（med >= 128 就当亮底暗字）：
     # 中灰底 + 更亮的字（典型如灰紫气泡 156 + 白字 255）会被判反 ——
     # text = holes & (gray < med - 50) 里只剩个位数像素，整条擦除静默空转。
     # 改成看洞里的证据：两侧都比一遍，哪一侧的像素多就认哪一侧。
     dark = holes & (gray < med - 50)
     light = holes & (gray > med + 50)
-    dark_text = int(dark.sum()) >= int(light.sum())
-    text = dark if dark_text else light
+    if have_mask:
+        # 有外部掩码时极性直接看掩码像素的明暗：模型已经指认了哪些像素是字，
+        # 它们的中位灰度 vs 底色就是字的极性 —— 彩色字靠洞内证据比票本来就弱，
+        # 这正是判反翻车的高发区。
+        dark_text = float(np.median(gray[text_mask])) <= med
+        text = (dark if dark_text else light) | text_mask
+    else:
+        dark_text = int(dark.sum()) >= int(light.sum())
+        text = dark if dark_text else light
     if not text.any():
         return bgr_roi, None
 
@@ -202,6 +223,13 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
     m = cv2.dilate(erase_src.astype(np.uint8),
                    np.ones((dl * 2 + 1, dl * 2 + 1), np.uint8))
     m = (m > 0) & (~ext)
+    if have_mask:
+        # 外部掩码不裁 ext：它是模型逐像素指认的文字。ext 的本职是挡启发式
+        # 洞误啃描边，但 R 不完整时（渐变底的气泡 flood fill 只吞下最亮一块，
+        # 实测 R 只剩 37%），ext 会顺着渐变爬进气泡内部，把半个文字划成
+        # 「外部可达」—— 一个框一半的掩码就这样被杀掉，字全留下来。
+        m |= cv2.dilate(text_mask.astype(np.uint8),
+                        np.ones((dl * 2 + 1, dl * 2 + 1), np.uint8)) > 0
     roi = cv2.inpaint(bgr_roi, (m.astype(np.uint8)) * 255, rad, cv2.INPAINT_TELEA)
 
     # 二轮：清文字附近的浅残留（同样不越 ext）
@@ -211,6 +239,14 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad):
         residue = near & (g2 < med - 35) & (~ext)
     else:
         residue = near & (g2 > med + 35) & (~ext)
+    if have_mask:
+        # 模型掩码周边的残留同样不裁 ext（理由同上）
+        near_m = cv2.dilate(text_mask.astype(np.uint8),
+                            np.ones((5, 5), np.uint8)) > 0
+        if dark_text:
+            residue |= near_m & (g2 < med - 35)
+        else:
+            residue |= near_m & (g2 > med + 35)
     if residue.any():
         roi = cv2.inpaint(roi, (residue.astype(np.uint8)) * 255,
                           max(3, rad - 3), cv2.INPAINT_TELEA)
@@ -261,8 +297,11 @@ def _pick_bubble_bg(gray, seeds):
     return ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0, False
 
 
-def erase_bubble_roi(bgr_roi, dl=3, rad=6):
+def erase_bubble_roi(bgr_roi, dl=3, rad=6, text_mask=None):
     """气泡区域擦除：flood fill 底色 → 洞 = 文字。
+
+    `text_mask`（可选）：comic-text-detector 文字掩码裁到本 ROI 的部分，
+    与洞检测结果取并集后再擦（见 _inpaint_holes），形状须与 bgr_roi 一致。
 
     只用中心平坦种子在「框比文字大一圈」时最稳；框紧贴文字时会失效：框里大半
     是字，中心区中位数就成了文字色，平坦种子落在笔画上 → R 退化成文字本身（实测
@@ -275,7 +314,7 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
     gray = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2GRAY)
 
     R, windowed = _pick_bubble_bg(gray, _flat_seeds_center(gray))
-    roi, stats = _inpaint_holes(bgr_roi, gray, R, dl, rad)
+    roi, stats = _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask)
     # 中心种子找对了底色就到此为止（找到的掩码太小也视为没找对：实测退化的那次
     # text_ratio 只有 0.002，正常情形都在 0.03 以上）。
     if windowed and stats is not None and stats.get('text_ratio', 0) >= 0.01:
@@ -283,13 +322,16 @@ def erase_bubble_roi(bgr_roi, dl=3, rad=6):
 
     R2, windowed2 = _pick_bubble_bg(gray, _border_seeds(gray))
     if windowed2:
-        return _inpaint_holes(bgr_roi, gray, R2, dl, rad)
+        return _inpaint_holes(bgr_roi, gray, R2, dl, rad, text_mask)
     return roi, stats
 
 
-def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):
+def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6, text_mask=None):
     """text_free 擦除：中心+四边中点 5 个种子各自 flood fill 取并集作为背景 R
     → 洞 = 文字。对渐变背景稳。
+
+    `text_mask`（可选）：comic-text-detector 文字掩码裁到本 ROI 的部分，
+    与洞检测结果取并集后再擦（见 _inpaint_holes），形状须与 bgr_roi 一致。
 
     并集而不是"面积最大者"：印在画面上的字，背景常由几块色调不同的区域拼成
     （天空/地面/网点/描线），只留最大的那一块，其余区域就成了"边界可达"的
@@ -303,4 +345,5 @@ def erase_free_roi_floodfill(bgr_roi, dl=3, rad=6):
     h, w = gray.shape
     cy, cx = h // 2, w // 2
     cand = [(cx, cy), (cx, 3), (cx, h - 4), (3, cy), (w - 4, cy)]
-    return _inpaint_holes(bgr_roi, gray, _flood_fill_region(gray, cand, 35), dl, rad)
+    return _inpaint_holes(bgr_roi, gray, _flood_fill_region(gray, cand, 35),
+                          dl, rad, text_mask)

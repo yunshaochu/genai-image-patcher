@@ -20,6 +20,19 @@ export interface RestoreBox {
 export type DetectedClass = 'bubble' | 'text_bubble' | 'text_free';
 
 /**
+ * comic-text-detector 的像素级文字掩码（「高级参数调整 → 文字掩码精准擦除」
+ * 开启时由 /detect 挂到文本框上）。
+ */
+export interface RegionTextMask {
+  /** base64 PNG（0/255 灰度，255=文字像素），裁剪到检测框外扩几像素的范围。 */
+  png: string;
+  /** 掩码 PNG 在整页中的位置（整页宽高的百分比，与 Region.x/y 同一坐标系）。
+   *  检测上传的图可能被缩放过，所以用百分比而不是像素，擦除时按目标图尺寸
+   *  还原即可对齐。 */
+  rect: { x: number; y: number; w: number; h: number };
+}
+
+/**
  * 自动检测气泡在**一页**上最后一次的结果（见 UploadedImage.detectionStatus）。
  *
  * 'done' = 这次请求跑成功了 —— 哪怕一个框都没检出（封面、插图、无字跨页）。
@@ -220,6 +233,9 @@ export interface Region {
    *  context-only markers (reserved for later use); text_bubble / text_free
    *  are the editable text areas in editor mode. */
   detectedClass?: DetectedClass;
+  /** comic-text-detector 像素掩码（见 RegionTextMask）。仅当「文字掩码精准
+   *  擦除」开关开启且检测时后端掩码模型就绪才会存在；擦除时与洞检测取并集。 */
+  textMask?: RegionTextMask;
   /** 「翻译」tab 的选区提示词（历史上也承载过译文缓存块，已迁出到
    *  customTranslation）。仅当 redrawIntent='translate' 时作为该框的提示词生效。 */
   customPrompt?: string; // Image-specific prompt overrides global prompt
@@ -571,6 +587,11 @@ export interface AppConfig {
    *  （用户手框过就当他处理过这页了），关着 = 这类页面照旧检测。已经有文字区的页面
    *  无论开关如何都会被跳过。判定见 types.ts → shouldSkipBubbleDetection。 */
   detectionSkipManualOnlyPages: boolean;
+  /** 文字掩码精准擦除：开启后 /detect 会触发后端加载 comic-text-detector 分割
+   *  模型，给每个文本框挂像素级掩码，擦除时与洞检测取并集（彩色字/小注音这些
+   *  难例擦得更干净）。代价：首次使用后端要下载 ~90MB 模型，检测耗时也增加
+   *  （CPU 约多 2~3 秒/页）。 */
+  detectionTextMask: boolean;
   
   // Manga Module Settings (New Structure)
   enableMangaMode: boolean;        // Master switch

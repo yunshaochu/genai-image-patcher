@@ -56,6 +56,12 @@ interface EraseOptions {
    * 这些纯为了"输出干净图"的步骤。批量吸管取色用它 —— 它只要墨色，不需要画面。
    */
   measureOnly?: boolean;
+  /**
+   * 外部文字掩码（comic-text-detector，见 Region.textMask）：**base64 PNG，
+   * 尺寸必须与传入的 canvas 完全一致**（调用方负责裁剪/缩放对齐）。仅后端
+   * 路径使用——后端把它与洞检测结果取并集；本地兜底算法忽略它。
+   */
+  maskPng?: string;
 }
 
 const DEFAULT_TOLERANCE = 40;
@@ -112,6 +118,9 @@ export const eraseTextInCanvasViaBackend = async (
   form.append('kind', kind);
   form.append('dilate', String(options.dilate ?? DEFAULT_DILATE));
   form.append('inpaint_radius', String(options.inpaintRadius ?? DEFAULT_INPAINT_RADIUS));
+  if (options.maskPng) {
+    form.append('mask', options.maskPng);
+  }
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);

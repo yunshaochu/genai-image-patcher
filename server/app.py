@@ -6,8 +6,10 @@ BananaChange 统一后端服务
 一个端口整合漫画处理所需的 Python 能力：
 
   GET  /health   健康检查（检测模型状态）
-  POST /detect   RT-DETR 文本/气泡检测（与 comic-detector 服务契约一致）
-  POST /erase    区域文字擦除（flood fill 洞检测 + OpenCV inpaint）
+  POST /detect   RT-DETR 文本/气泡检测 + comic-text-detector 文字像素掩码
+                 （每个文本框挂 base64 PNG 掩码；框内无掩码像素的按误检丢弃）
+  POST /erase    区域文字擦除（flood fill 洞检测 + OpenCV inpaint，
+                 可选携带 text_mask 与洞检测取并集）
   GET  /fonts    编辑器可用字体列表（含是否已缓存到本地）
   GET  /fonts/<id>  字体文件：首次请求时从上游下载并缓存到 server/fonts/
 
@@ -20,6 +22,7 @@ import io
 import json
 import os
 import threading
+import time
 import urllib.request
 
 import cv2
@@ -27,6 +30,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request, send_file
 from flask_cors import CORS
 
+import comic_text_seg
 from erase import erase_bubble_roi, erase_free_roi_floodfill
 from inference_rtdetr import CLASS_NAMES, ComicDetector
 
@@ -94,6 +98,66 @@ def init_model():
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+# ── comic-text-detector 文字掩码（/detect 的增强项） ─────────────
+
+# 检测框与掩码取交集时外扩的像素数：贴框边缘的字不外扩会被切掉，
+# 导致整框被误判成"掩码为空 → 误检"丢弃
+_MASK_BOX_PAD = 4
+_MASK_TEXT_CLASSES = ('text_bubble', 'text_free')
+
+
+def attach_text_masks(img, detections):
+    """
+    给每个文本检测结果挂上 comic-text-detector 的像素级文字掩码。
+
+    流程：CTD 对整页跑一次 → 每个框取 `掩码 ∩ 框(外扩4px)` → base64 PNG 挂到
+    检测项上；框内一个掩码像素都没有 → 与模型分割结果互相矛盾，大概率是
+    RT-DETR 误检，直接丢弃。反向亦然：落在所有框外的掩码连通域不返回。
+
+    CTD 不可用（模型未下载完/加载失败/推理异常）时静默降级：原样返回检测框，
+    text_mask_available=False，前端擦除走后端启发式，功能不受影响。
+    """
+    info = {'available': False}
+    t0 = time.time()
+    try:
+        mask = comic_text_seg.detect_text_mask(img)
+    except Exception as e:
+        print(f'[text-seg] detect_text_mask failed: {type(e).__name__}: {e}')
+        info['error'] = f'{type(e).__name__}: {e}'
+        return info
+
+    kept = []
+    dropped = 0
+    h, w = img.shape[:2]
+    for det in detections:
+        if det.class_name not in _MASK_TEXT_CLASSES:
+            kept.append(det)
+            continue
+        x1, y1, x2, y2 = det.bbox
+        ex1, ey1 = max(0, x1 - _MASK_BOX_PAD), max(0, y1 - _MASK_BOX_PAD)
+        ex2, ey2 = min(w, x2 + _MASK_BOX_PAD), min(h, y2 + _MASK_BOX_PAD)
+        sub = mask[ey1:ey2, ex1:ex2]
+        if not sub.any():
+            dropped += 1
+            continue
+        ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
+        if not ok:
+            kept.append(det)
+            continue
+        det.text_mask = base64.b64encode(buf.tobytes()).decode('ascii')
+        det.mask_origin = [int(ex1), int(ey1)]
+        det.mask_size = [int(sub.shape[1]), int(sub.shape[0])]
+        kept.append(det)
+
+    info.update({
+        'available': True,
+        'dropped_empty_mask': dropped,
+        'elapsed_ms': round((time.time() - t0) * 1000, 1),
+    })
+    detections[:] = kept
+    return info
 
 
 def decode_base64_image(image_data):
@@ -226,6 +290,7 @@ def health():
         'device': model_config['device'],
         'model': model_config['model_name'],
         'model_loaded': detector is not None,
+        'text_seg': comic_text_seg.status(),
         'endpoints': ['/detect', '/erase', '/fonts', '/fonts/<id>'],
     })
 
@@ -286,21 +351,29 @@ def detect():
     检测图片中的文本和气泡。
 
     输入：multipart/form-data 上传图片文件，或 JSON base64。
-    参数：conf_threshold (默认0.5)、filter_classes（逗号分隔，可选）。
-    返回：{success, image_size, detections:[{bbox,class_id,class_name,confidence,...}]}
+    参数：conf_threshold (默认0.5)、filter_classes（逗号分隔，可选）、
+          with_masks（默认 true：挂 comic-text-detector 文字像素掩码并过滤误检）
+    返回：{success, image_size, text_mask_info, detections:[...]}
+          每个文本检测项可能带 text_mask（base64 PNG，0/255 灰度）和
+          mask_origin（掩码裁剪区左上角在原图的坐标）。CTD 不可用时
+          text_mask_info.available=false，检测框原样返回。
     """
     try:
         det = init_model()
 
         conf_threshold = model_config['conf_threshold']
         filter_classes = None
+        with_masks = True
 
         if request.is_json:
             data = request.get_json()
             conf_threshold = data.get('conf_threshold', conf_threshold)
             filter_classes = data.get('filter_classes')
+            with_masks = bool(data.get('with_masks', True))
         elif request.form:
             conf_threshold = float(request.form.get('conf_threshold', conf_threshold))
+            with_masks = request.form.get('with_masks', 'true').lower() \
+                not in ('false', '0', 'no')
             filter_classes_str = request.form.get('filter_classes')
             if filter_classes_str:
                 filter_classes = [c.strip() for c in filter_classes_str.split(',')]
@@ -312,6 +385,12 @@ def detect():
         detections = det.detect(img, conf_threshold=conf_threshold,
                                 filter_classes=filter_classes)
 
+        # 挂 CTD 文字掩码 + 误检过滤（模型没就绪/失败时降级为纯检测框）
+        text_mask_info = {'available': False, 'skipped': not with_masks}
+        if with_masks and any(d.class_name in _MASK_TEXT_CLASSES
+                              for d in detections):
+            text_mask_info = attach_text_masks(img, detections)
+
         class_counts = {'bubble': 0, 'text_bubble': 0, 'text_free': 0}
         for d in detections:
             if d.class_name in class_counts:
@@ -322,6 +401,7 @@ def detect():
             'image_size': {'height': int(img.shape[0]), 'width': int(img.shape[1])},
             'conf_threshold': conf_threshold,
             'filter_classes': filter_classes,
+            'text_mask_info': text_mask_info,
             'total_detections': len(detections),
             'class_counts': class_counts,
             'detections': [d.to_dict() for d in detections],
@@ -347,6 +427,9 @@ def erase():
       - kind:  bubble(默认，气泡内文字) | free(印在画面上的文字 text_free)
       - dilate: 文字掩码膨胀核半径，默认 3
       - inpaint_radius: inpaint 修复半径，默认 6
+      - mask: 可选，/detect 返回的 text_mask（base64 PNG）。形状必须与上传的
+        裁剪图一致（前端用同一坐标裁图和掩码）。后端把它与洞检测结果取并集：
+        洞检测保细微处（省略号、小注音），掩码保彩色字/极性难例
 
     返回：image/png 二进制（与原图同尺寸）；失败返回 JSON {success:false,error}
 
@@ -367,10 +450,29 @@ def erase():
         if img.shape[0] < 4 or img.shape[1] < 4:
             return json_error('Image too small')
 
+        # 可选的外部文字掩码（comic-text-detector）：与洞检测结果取并集
+        text_mask = None
+        mask_b64 = request.form.get('mask')
+        if mask_b64:
+            try:
+                mbuf = np.frombuffer(base64.b64decode(mask_b64), np.uint8)
+                m = cv2.imdecode(mbuf, cv2.IMREAD_GRAYSCALE)
+                if m is None:
+                    return json_error('mask is not a valid PNG image')
+                if m.shape != img.shape[:2]:
+                    return json_error(
+                        f'mask shape {m.shape} != image shape {img.shape[:2]}')
+                if m.any():
+                    text_mask = m > 127
+            except Exception as e:
+                return json_error(f'invalid mask: {type(e).__name__}: {e}')
+
         if kind == 'free':
-            out, stats = erase_free_roi_floodfill(img.copy(), dilate, inpaint_radius)
+            out, stats = erase_free_roi_floodfill(
+                img.copy(), dilate, inpaint_radius, text_mask=text_mask)
         else:
-            out, stats = erase_bubble_roi(img.copy(), dilate, inpaint_radius)
+            out, stats = erase_bubble_roi(
+                img.copy(), dilate, inpaint_radius, text_mask=text_mask)
 
         ok, buf = cv2.imencode('.png', out)
         if not ok:
@@ -397,11 +499,12 @@ if __name__ == '__main__':
     print("BananaChange 统一后端服务")
     print("=" * 60)
     print(f"Detection Model: {model_config['model_name']}")
+    print(f"Text Seg Model:  comic-text-detector (ONNX, cv2.dnn)")
     print(f"Device: {model_config['device']}")
     print("Listening on http://0.0.0.0:5001")
     print("\nAvailable endpoints:")
     print("  GET  /health  - 健康检查")
-    print("  POST /detect  - 文本/气泡检测 (RT-DETR)")
+    print("  POST /detect  - 文本/气泡检测 (RT-DETR) + 文字像素掩码")
     print("  POST /erase   - 区域文字擦除 (flood fill + inpaint)")
     print("  GET  /fonts   - 编辑器字体列表")
     print("  GET  /fonts/<id> - 字体文件（首次自动下载并缓存）")
@@ -416,4 +519,7 @@ if __name__ == '__main__':
         print(f"[WARN] 模型预加载失败，将在首次 /detect 时重试: "
               f"{type(e).__name__}: {e}")
 
+    # CTD（comic-text-detector）不在启动时加载：它对应前端的「文字掩码精准
+    # 擦除」开关，缺文件时还要下 ~90MB。用户开了开关后首个 /detect(with_masks)
+    # 才会触发懒加载（attach_text_masks 里），失败自动降级为纯检测框。
     app.run(host='0.0.0.0', port=5001, debug=False, threaded=True)

@@ -25,9 +25,16 @@ class DetectionResult:
     class_id: int             # 类别ID
     class_name: str           # 类别名称
     confidence: float         # 置信度
+    # comic-text-detector 像素掩码（可选，/detect 时挂上）：
+    # base64 PNG（0/255 灰度，255=文字像素），裁剪到 bbox 外扩几像素的范围；
+    # mask_origin 是裁剪区左上角在原图的坐标，mask_size 是 PNG 的像素尺寸，
+    # 前端用它把掩码换算成整页百分比坐标（检测图可能被缩放过，坐标系不同）
+    text_mask: Optional[str] = None
+    mask_origin: Optional[List[int]] = None
+    mask_size: Optional[List[int]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             'bbox': self.bbox,
             'class_id': self.class_id,
             'class_name': self.class_name,
@@ -39,6 +46,11 @@ class DetectionResult:
             'width': self.bbox[2] - self.bbox[0],
             'height': self.bbox[3] - self.bbox[1]
         }
+        if self.text_mask is not None:
+            d['text_mask'] = self.text_mask
+            d['mask_origin'] = self.mask_origin
+            d['mask_size'] = self.mask_size
+        return d
 
 
 class ComicDetector:
