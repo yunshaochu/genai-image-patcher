@@ -62,6 +62,51 @@ export const resolvedVariantIndex = (term: GlossaryTerm): number | null => {
   return term.variants.length === 1 ? 0 : null;
 };
 
+/** 术语当前的译名（有效选定，见 resolvedVariantIndex）；没有则 null。 */
+export const effectiveTranslation = (term: GlossaryTerm): string | null => {
+  const idx = resolvedVariantIndex(term);
+  return idx != null ? term.variants[idx]?.value ?? null : null;
+};
+
+/**
+ * 把 value 作为一个译名变体加进术语（已存在则直接复用），并设为选定项；
+ * 无实际变化时返回原引用。给「导入合并」与「术语组一致」共用——
+ * refs 留空由调用方/后续本地匹配处理，选定后统一替换走 applyUnify。
+ */
+export const addAndSelectVariant = (term: GlossaryTerm, value: string): GlossaryTerm => {
+  const variantIdx = term.variants.findIndex(v => v.value === value);
+  if (variantIdx === -1) {
+    const variants = [...term.variants, { value, refs: [] }];
+    return { ...term, variants, selected: variants.length - 1 };
+  }
+  if (term.selected === variantIdx) return term;
+  return { ...term, selected: variantIdx };
+};
+
+/** 归一化编辑距离相似度 [0,1]：1 = 完全相同，0 = 毫无共同点。字符串短，直接算。 */
+export const stringSimilarity = (a: string, b: string): number => {
+  if (a === b) return 1;
+  const la = a.length;
+  const lb = b.length;
+  if (la === 0 || lb === 0) return 0;
+  let prev: number[] = new Array(lb + 1);
+  let curr: number[] = new Array(lb + 1);
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= lb; j++) {
+      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+      const del = prev[j] + 1;
+      const ins = curr[j - 1] + 1;
+      const sub = prev[j - 1] + cost;
+      curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  return 1 - prev[lb] / Math.max(la, lb);
+};
+
 /**
  * 写入 / 清除术语的用户自定义译名槽位（见 GlossaryVariant.custom），返回新术语；
  * 无实际变化时返回原引用。
@@ -444,16 +489,9 @@ export const mergeImportedEntries = (
       continue;
     }
     const term = list[termIdx];
-    const variantIdx = term.variants.findIndex(v => v.value === value);
-    if (variantIdx === -1) {
-      const copy = ensure();
-      const variants = [...term.variants, { value, refs: [] }];
-      copy[termIdx] = { ...term, variants, selected: variants.length - 1 };
-      continue;
-    }
-    if (term.selected === variantIdx) continue; // 已经选的就是它
-    const copy = ensure();
-    copy[termIdx] = { ...term, selected: variantIdx };
+    const nextTerm = addAndSelectVariant(term, value);
+    if (nextTerm === term) continue; // 已经选的就是它
+    ensure()[termIdx] = nextTerm;
   }
   return next ?? book;
 };
@@ -531,6 +569,238 @@ export const parseAiPickResponse = (content: string): AiPickResult[] => {
     const noteMatch = /"note"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(m[0]);
     const note = noteMatch ? unescape(noteMatch[1]).trim() : '';
     results.push({ key, value, ...(note ? { note } : {}) });
+  }
+  return results;
+};
+
+// =====================================================================
+// 术语组一致（共享词根跨术语统一）
+//
+// 与「AI 选择」互补、且**完全独立**：AI 选择处理「一条术语内部有多种译名」，
+// 这里处理「多条术语共享同一段原文词根，却被译成了不同写法」——比如
+// グランディス城→葛兰迪斯城、グランディス軍→格兰迪斯军，两条各自都只有唯一
+// 译名，单术语那套根本发现不了。
+//
+// 本地先把共享词根（前缀/后缀）聚成组（纯计算），只把组丢给 AI，让它**把同组
+// 当作彼此的参考**，为每个成员给出各自最合适的中文译名——**不强行统一**（强行
+// 统一词根会把「魔王様」误拼成「魔王国王」这类别扭译名）。落地沿用术语表现有
+// 的「新增变体 + 选中」机制（见 addAndSelectVariant），旧译名留在变体列表里，
+// 可回退，替换照走 applyUnify。
+// =====================================================================
+
+/**
+ * 共享词根的最小长度（按内容判定）：CJK/假名 2 个字就有意义（王都/王城），
+ * 纯拉丁字母 2 个太容易误聚（Al/An…），要求 3 个。
+ */
+const minSharedRootLen = (root: string): number => (/^[\x00-\x7f]+$/.test(root) ? 3 : 2);
+/** 单组成员上限：超大组多半是过度聚合，宁缺毋滥。 */
+const MAX_GROUP_SIZE = 20;
+
+/** 一组共享同一段原文词根的术语。 */
+export interface TermGroup {
+  /** 组内原文共享的词根。 */
+  root: string;
+  /** 词根在原文里的位置：prefix = 开头，suffix = 结尾。 */
+  position: 'prefix' | 'suffix';
+  /** 组内术语（≥2 条），每条都能取到当前译名。 */
+  members: GlossaryTerm[];
+}
+
+const commonPrefixLen = (a: string, b: string): number => {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+};
+
+const reverseStr = (s: string): string => [...s].reverse().join('');
+
+interface ScannedGroup { root: string; members: GlossaryTerm[]; }
+
+/**
+ * 在 transform 后的字符串上按「相邻对的公共前缀」聚类（transform = 反转时即公共后缀）。
+ *
+ * 用相邻对而不是"整段公共前缀"：排序后，任意两串共享的前缀都会被某个相邻对覆盖，
+ * 而按**相邻对的共享词根**归类能保留更细的粒度——否则 [グラン, グランディス城,
+ * グランディス軍] 会被整段压成 2 字的 グラン，把不相关的一条也拖进来。
+ */
+const scanSharedGroups = (
+  items: GlossaryTerm[],
+  transform: (s: string) => string
+): ScannedGroup[] => {
+  const sorted = [...items].sort((a, b) => {
+    const ka = transform(a.key);
+    const kb = transform(b.key);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  const byRoot = new Map<string, GlossaryTerm[]>();
+  for (let i = 0; i + 1 < sorted.length; i++) {
+    const a = transform(sorted[i].key);
+    const b = transform(sorted[i + 1].key);
+    const root = a.slice(0, commonPrefixLen(a, b));
+    if (root.length < minSharedRootLen(root)) continue;
+    let members = byRoot.get(root);
+    if (!members) { members = []; byRoot.set(root, members); }
+    if (!members.includes(sorted[i])) members.push(sorted[i]);
+    if (!members.includes(sorted[i + 1])) members.push(sorted[i + 1]);
+  }
+  const groups: ScannedGroup[] = [];
+  for (const [root, members] of byRoot) {
+    if (members.length >= 2 && members.length <= MAX_GROUP_SIZE) {
+      groups.push({ root: transform(root), members });
+    }
+  }
+  return groups;
+};
+
+/**
+ * 找出「共享同一段原文词根」的术语组（本地计算，不调 AI）。
+ *
+ * 前缀与后缀各扫一遍；一条术语最多进一个组（词根长的组优先占用），避免同一
+ * 术语被两组反复改写。只有能取到当前译名的术语参与——未决的交给单术语
+ * 「AI 选择」，两者互不干扰。
+ */
+export const findTermGroups = (book: GlossaryTerm[]): TermGroup[] => {
+  const usable = book.filter(t => effectiveTranslation(t) != null && t.key.length >= 2);
+  if (usable.length < 2) return [];
+
+  const raw: TermGroup[] = [
+    ...scanSharedGroups(usable, s => s).map(g => ({ root: g.root, position: 'prefix' as const, members: g.members })),
+    ...scanSharedGroups(usable, reverseStr).map(g => ({ root: g.root, position: 'suffix' as const, members: g.members })),
+  ];
+
+  // 词根长的优先占用术语；已被占用的组成员不再进其他组。
+  raw.sort((a, b) => b.root.length - a.root.length || b.members.length - a.members.length);
+  const used = new Set<string>();
+  const out: TermGroup[] = [];
+  for (const g of raw) {
+    const keys = g.members.map(m => termKeyOf(m.key));
+    if (keys.some(k => used.has(k))) continue;
+    keys.forEach(k => used.add(k));
+    out.push(g);
+  }
+  return out;
+};
+
+/** 一次调用最多带多少条成员（控制输出长度，超了分批）。 */
+export const GROUP_UNIFY_BATCH_MEMBERS = 240;
+
+/** 发给 AI 的一组（成员带当前译名 + 实际例句）。 */
+export interface GroupUnifyItem {
+  root: string;
+  position: 'prefix' | 'suffix';
+  members: { key: string; value: string; examples: AiPickExample[] }[];
+}
+
+export const buildGroupUnifyPrompt = (items: GroupUnifyItem[]): string => {
+  const payload = JSON.stringify(items, null, 1);
+  return `你是一名漫画翻译审校。下面每组里的多个原文术语共享同一段词根（root；position=prefix 表示词根在原文开头，suffix 表示在结尾），说明它们是同一族（family）的词——例如同一人名/地名配不同后缀，或同一后缀配不同前缀。每个成员带当前中文译文（value）和实际例句（examples：source=原文句子，translation=该句当前译文）。
+
+任务：**把同组成员当作彼此的参考**，为每个成员给出它在全作里最合适的中文译名。同族术语尽量协调，但**不要求强行统一**。
+
+重要：不要为了迁就同组其他成员而给出别扭的译名。如果某个成员按语境/习惯有更贴切的翻译（例如「王様」= 国王大人、「魔王様」= 魔王大人），就保留/给出那个——不要因为同组有个「王様」就把「魔王様」硬拼成「魔王国王」。
+
+判断依据（按优先级）：
+1. 知名作品的角色/地名/招式优先使用官方或通行译名（你的既有知识）；
+2. 结合例句语境（说话对象、敬语、亲疏关系）；
+3. 同族风格协调，但以「每条各自最自然」为准。
+
+规则：
+- value 是重新写过的**完整译名**；
+- 只列出**确实需要改动**的成员；译文已经合适的成员不要列出；
+- 没有更好的写法就跳过该成员，不要为了凑数而改；
+- 整组都不需要改动时，members 返回空数组；
+- 无法判断的组直接跳过，不要放进结果；
+- 只输出 JSON 数组，不要任何解释或 markdown 代码块。
+
+术语组（JSON）：
+${payload}
+
+输出格式：
+[{"root":"原文词根","members":[{"key":"原文","value":"最合适的完整译名"}]}]`;
+};
+
+export interface GroupUnifyMember {
+  key: string;
+  value: string;
+}
+
+export interface GroupUnifyResult {
+  /** 模型回填的组根（用于把结果对回我们发出去的组）。 */
+  root: string;
+  /** 建议改动的成员（空数组 = 这组无需变动）。 */
+  members: GroupUnifyMember[];
+}
+
+const normalizeGroupResult = (raw: any): GroupUnifyResult | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const root = String(raw.root ?? '').trim();
+  const rawMembers = Array.isArray(raw.members) ? raw.members : [];
+  const members: GroupUnifyMember[] = [];
+  for (const m of rawMembers) {
+    if (!m || typeof m !== 'object') continue;
+    const key = String(m.key ?? '').trim();
+    const value = String(m.value ?? '').trim();
+    if (!key || !value) continue;
+    members.push({ key, value });
+  }
+  if (members.length === 0) return null;
+  return { root, members };
+};
+
+/** 从文本里捞顶层 {...} 对象数组（跳过字符串内的括号），半坏 JSON 也能救一部分。 */
+const extractJsonObjects = (text: string): unknown[] => {
+  const out: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      if (depth > 0) depth--;
+      if (depth === 0 && start !== -1) {
+        try { out.push(JSON.parse(text.slice(start, i + 1))); } catch { /* skip bad object */ }
+        start = -1;
+      }
+    }
+  }
+  return out;
+};
+
+/** 解析术语组一致的响应（含嵌套 members）。先整体解析，失败再逐对象捞取。 */
+export const parseGroupUnifyResponse = (content: string): GroupUnifyResult[] => {
+  const cleaned = content.replace(/```[a-zA-Z]*/g, '');
+  const results: GroupUnifyResult[] = [];
+
+  const start = cleaned.indexOf('[');
+  const end = cleaned.lastIndexOf(']');
+  if (start !== -1 && end > start) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(start, end + 1));
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const r = normalizeGroupResult(item);
+          if (r) results.push(r);
+        }
+        if (results.length > 0) return results;
+      }
+    } catch { /* 落回逐对象捞取 */ }
+  }
+
+  for (const obj of extractJsonObjects(cleaned)) {
+    const r = normalizeGroupResult(obj);
+    if (r) results.push(r);
   }
   return results;
 };

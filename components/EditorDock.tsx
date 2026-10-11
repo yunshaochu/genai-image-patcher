@@ -126,12 +126,17 @@ interface EditorDockProps {
     book: GlossaryTerm[];
     aiSelecting: boolean;
     unresolvedCount: number;
+    /** 共享词根的术语组数（「统一相关术语」角标）。 */
+    groupCount: number;
+    groupUnifying: boolean;
     /** 操作结果的一次性提示（AI 选择完成/无可选），几秒后由 App 清掉。 */
     notice?: string | null;
     onSelectVariant: (key: string, variantIndex: number | null) => void;
     /** 写入 / 删除某术语的用户自定义译名槽位（'' = 删除）。 */
     onSetCustomVariant: (key: string, value: string) => void;
     onRunAiSelection: () => void;
+    /** 统一共享词根的一致术语（独立于 onRunAiSelection）。 */
+    onRunGroupUnify: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
     onClear: () => void;
@@ -991,12 +996,15 @@ const EditorDock: React.FC<EditorDockProps> = ({
       book={glossary.book}
       aiSelecting={glossary.aiSelecting}
       unresolvedCount={glossary.unresolvedCount}
+      groupCount={glossary.groupCount}
+      groupUnifying={glossary.groupUnifying}
       autoUnify={config.glossaryAutoUnify}
       autoAiSelect={config.glossaryAutoAiSelect}
       onConfigChange={onConfigChange}
       onSelectVariant={glossary.onSelectVariant}
       onSetCustomVariant={glossary.onSetCustomVariant}
       onRunAiSelection={glossary.onRunAiSelection}
+      onRunGroupUnify={glossary.onRunGroupUnify}
       onExport={glossary.onExport}
       onImport={glossary.onImport}
       onClear={glossary.onClear}

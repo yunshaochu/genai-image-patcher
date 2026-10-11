@@ -202,6 +202,23 @@ export default function App() {
       : t(lang, 'glossaryAiSelectDone', { count: summary.picked }));
   }, [glossary.runAiSelection, config.language, setErrorMsg]);
 
+  /** 统一共享词根的相关术语（独立于单术语 AI 选择）。 */
+  const handleGlossaryGroupUnify = useCallback(async () => {
+    const lang = config.language;
+    const summary = await glossary.runGroupUnify();
+    if (summary.error) {
+      setErrorMsg(t(lang, 'glossaryGroupUnifyFailed', { reason: summary.error }));
+      return;
+    }
+    setGlossaryNotice(
+      summary.groups === 0
+        ? t(lang, 'glossaryGroupUnifyNone')
+        : summary.changed === 0
+          ? t(lang, 'glossaryGroupUnifyNoChange', { count: summary.groups })
+          : t(lang, 'glossaryGroupUnifyDone', { count: summary.changed }),
+    );
+  }, [glossary.runGroupUnify, config.language, setErrorMsg]);
+
   /** 单独导入术语表 JSON（与现有术语按 key 合并，不整本替换）。 */
   const handleGlossaryImport = useCallback(async (file: File) => {
     const lang = config.language;
@@ -1546,10 +1563,13 @@ export default function App() {
               book: glossary.book,
               aiSelecting: glossary.aiSelecting,
               unresolvedCount: glossary.unresolvedCount,
+              groupCount: glossary.groupCount,
+              groupUnifying: glossary.groupUnifying,
               notice: glossaryNotice,
               onSelectVariant: glossary.selectVariant,
               onSetCustomVariant: glossary.setCustomVariant,
               onRunAiSelection: handleGlossaryAiSelect,
+              onRunGroupUnify: handleGlossaryGroupUnify,
               onExport: glossary.exportJson,
               onImport: handleGlossaryImport,
               onClear: glossary.clearBook,

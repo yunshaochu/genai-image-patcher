@@ -1,22 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppConfig, GlossaryTerm, Region, UploadedImage } from '../types';
+import { AppConfig, GlossaryRef, GlossaryTerm, Region, UploadedImage } from '../types';
 import {
   AI_PICK_BATCH_SIZE,
   AiPickExample,
   AiPickItem,
   AiPickResult,
+  GROUP_UNIFY_BATCH_MEMBERS,
+  GroupUnifyItem,
   PageTerm,
+  addAndSelectVariant,
   aiPickCandidates,
   aiVariants,
   buildAiPickPrompt,
+  buildGroupUnifyPrompt,
+  effectiveTranslation,
+  findTermGroups,
   mergeImportedEntries,
   mergePageTerms as mergeIntoBook,
   parseAiPickResponse,
   parseBookExport,
+  parseGroupUnifyResponse,
   regionTranslationText,
+  resolvedVariantIndex,
   sanitizeBook,
   serializeBookExport,
   setCustomVariantValue,
+  stringSimilarity,
   termAnchors,
   termKeyOf,
   unifyRegionsWithTerm,
@@ -37,9 +46,18 @@ import { generateTextCompletion } from '../services/aiService';
  *    手写译名），写入即选定并统一 —— 用户不必先等 AI 译出某个译名才能选它；
  *  - runAiSelection：把未决术语（多变体且未选）分批丢给翻译端点做纯文本
  *    判断（不丢图），选定的译名落地并统一；
+ *  - runGroupUnify：术语组一致（独立于 runAiSelection）——把共享同一段原文
+ *    词根的术语归为一组，让 AI 以它们互为参考、为每条挑最合适的译名（不强求
+ *    统一），把改动过的完整译名作为新变体加入并选中（旧译名留在变体列表里，
+ *    可回退），随即替换；
  *  - exportJson / importJsonFile：单独导出（只带 key + 已选译名）与合并导入；
  *  - restoreBook：工作区备份的术语树还原（全量，整本替换）。
  */
+
+/** 例句里原文 / 译文各自的截断长度。 */
+const EXAMPLE_TEXT_LIMIT = 80;
+/** 每个候选 / 成员最多带几条例句。 */
+const EXAMPLE_PER_MEMBER = 2;
 
 export interface UseGlossaryParams {
   config: AppConfig;
@@ -57,17 +75,31 @@ export interface AiSelectionSummary {
   error?: string;
 }
 
+export interface GroupUnifySummary {
+  /** 本地检测到的「共享词根」术语组数。 */
+  groups: number;
+  /** 实际改写（新增变体并选中）的术语数。 */
+  changed: number;
+  error?: string;
+}
+
 export interface GlossaryApi {
   book: GlossaryTerm[];
   aiSelecting: boolean;
   /** 未决术语数（≥2 变体且未选定）——AI 选择按钮的角标。 */
   unresolvedCount: number;
+  /** 本地检测到的「共享词根」术语组数——统一相关术语按钮的角标。 */
+  groupCount: number;
+  groupUnifying: boolean;
   mergePageTerms: (imageId: string, regions: Region[], terms: PageTerm[]) => Region[];
   selectVariant: (key: string, variantIndex: number | null) => void;
   /** 写入 / 修改 / 删除本术语的用户自定义译名槽位（'' = 删除）。写入即选它
    *  为标准译名并执行统一替换 —— 见 services/glossaryBook.ts。 */
   setCustomVariant: (key: string, value: string) => void;
   runAiSelection: () => Promise<AiSelectionSummary>;
+  /** 术语组一致：把共享同一段原文词根的术语互为参考、各挑最合适的译名（见
+   *  services/glossaryBook.ts 的术语组一节）。独立于 runAiSelection。 */
+  runGroupUnify: () => Promise<GroupUnifySummary>;
   clearBook: () => void;
   /** 单独导出 JSON（可移植格式：只有 key + 译名（已选定或唯一），不含 refs）。 */
   exportJson: () => string;
@@ -88,6 +120,7 @@ export function useGlossary({
 }: UseGlossaryParams): GlossaryApi {
   const [book, setBook] = useState<GlossaryTerm[]>([]);
   const [aiSelecting, setAiSelecting] = useState(false);
+  const [groupUnifying, setGroupUnifying] = useState(false);
 
   // Refs keep callbacks stable while reading the freshest values; bookRef is
   // also written synchronously wherever setBook is called, so rapid successive
@@ -258,6 +291,16 @@ export function useGlossary({
     if (nextTerm.selected != null) applyUnify(nextTerm);
   }, [applyUnify]);
 
+  /** 锚点框 → 一条给 AI 的例句（原文 + 当前译文，各截断）。图/框可能已被删。 */
+  const exampleFromRef = (ref: GlossaryRef): AiPickExample | null => {
+    const r = imagesRef.current.find(i => i.id === ref.imageId)?.regions.find(x => x.id === ref.regionId);
+    if (!r) return null;
+    return {
+      source: (r.sourceText ?? '').slice(0, EXAMPLE_TEXT_LIMIT),
+      translation: regionTranslationText(r).slice(0, EXAMPLE_TEXT_LIMIT),
+    };
+  };
+
   // -------------------- AI 选择 --------------------
 
   const applyAiPick = useCallback((res: AiPickResult): boolean => {
@@ -282,9 +325,6 @@ export function useGlossary({
     if (candidates.length === 0) return { picked: 0, total: 0 };
     setAiSelecting(true);
     try {
-      const findRegion = (imageId: string, regionId: string): Region | undefined =>
-        imagesRef.current.find(i => i.id === imageId)?.regions.find(r => r.id === regionId);
-
       let picked = 0;
       for (let start = 0; start < candidates.length; start += AI_PICK_BATCH_SIZE) {
         const batch = candidates.slice(start, start + AI_PICK_BATCH_SIZE);
@@ -295,15 +335,8 @@ export function useGlossary({
             value: v.value,
             count: v.refs.length,
             examples: v.refs
-              .slice(0, 2)
-              .map((ref): AiPickExample | null => {
-                const r = findRegion(ref.imageId, ref.regionId);
-                if (!r) return null;
-                return {
-                  source: (r.sourceText ?? '').slice(0, 80),
-                  translation: regionTranslationText(r).slice(0, 80),
-                };
-              })
+              .slice(0, EXAMPLE_PER_MEMBER)
+              .map(exampleFromRef)
               .filter((e): e is AiPickExample => e !== null),
           })),
         }));
@@ -321,6 +354,86 @@ export function useGlossary({
       setAiSelecting(false);
     }
   }, [applyAiPick]);
+
+  // -------------------- 术语组一致（共享词根跨术语统一） --------------------
+
+  /** 采纳一条成员改写：把改写后的完整译名作为新变体加入并选中（旧译名留在
+   *  变体列表里），随即跨图统一替换。轻校验挡住明显胡来的回答（与原译名差太远
+   *  的整句重写直接丢弃）。 */
+  const applyGroupChange = useCallback((key: string, value: string): boolean => {
+    const prev = bookRef.current;
+    const idx = prev.findIndex(t => termKeyOf(t.key) === termKeyOf(key));
+    if (idx === -1) return false;
+    const term = prev[idx];
+    const current = effectiveTranslation(term);
+    if (!current || current === value) return false;
+    if (stringSimilarity(current, value) < 0.5) return false;
+    const nextTerm = addAndSelectVariant(term, value);
+    if (nextTerm === term) return false;
+    const next = [...prev];
+    next[idx] = nextTerm;
+    bookRef.current = next;
+    setBook(next);
+    applyUnify(nextTerm);
+    return true;
+  }, [applyUnify]);
+
+  const runGroupUnify = useCallback(async (): Promise<GroupUnifySummary> => {
+    const groups = findTermGroups(bookRef.current);
+    if (groups.length === 0) return { groups: 0, changed: 0 };
+    setGroupUnifying(true);
+    try {
+      // 按成员数分批发，一次调用带多组。
+      const batches: GroupUnifyItem[][] = [];
+      let cur: GroupUnifyItem[] = [];
+      let curMembers = 0;
+      for (const g of groups) {
+        const item: GroupUnifyItem = {
+          root: g.root,
+          position: g.position,
+          members: g.members.map(m => {
+            const idx = resolvedVariantIndex(m);
+            const refs = idx != null ? m.variants[idx]?.refs ?? [] : [];
+            return {
+              key: m.key,
+              value: effectiveTranslation(m) ?? '',
+              examples: refs
+                .slice(0, EXAMPLE_PER_MEMBER)
+                .map(exampleFromRef)
+                .filter((e): e is AiPickExample => e !== null),
+            };
+          }),
+        };
+        if (cur.length > 0 && curMembers + item.members.length > GROUP_UNIFY_BATCH_MEMBERS) {
+          batches.push(cur);
+          cur = [];
+          curMembers = 0;
+        }
+        cur.push(item);
+        curMembers += item.members.length;
+      }
+      if (cur.length > 0) batches.push(cur);
+
+      let changed = 0;
+      for (const batch of batches) {
+        const content = await generateTextCompletion(buildGroupUnifyPrompt(batch), configRef.current);
+        const sentRoots = new Set(batch.map(b => b.root));
+        for (const res of parseGroupUnifyResponse(content)) {
+          if (res.root && !sentRoots.has(res.root)) continue; // 不认识的组，丢弃
+          for (const m of res.members) {
+            if (applyGroupChange(m.key, m.value)) changed++;
+          }
+        }
+      }
+      return { groups: groups.length, changed };
+    } catch (e: any) {
+      if (e?.name === 'AbortError') throw e;
+      console.error('[glossary] group unify failed', e);
+      return { groups: groups.length, changed: 0, error: e?.message || '术语组统一失败' };
+    } finally {
+      setGroupUnifying(false);
+    }
+  }, [applyGroupChange]);
 
   // -------------------- 清空 / 导出 / 还原 --------------------
 
@@ -373,15 +486,19 @@ export function useGlossary({
   }, []);
 
   const unresolvedCount = useMemo(() => aiPickCandidates(book).length, [book]);
+  const groupCount = useMemo(() => findTermGroups(book).length, [book]);
 
   return {
     book,
     aiSelecting,
     unresolvedCount,
+    groupCount,
+    groupUnifying,
     mergePageTerms,
     selectVariant,
     setCustomVariant,
     runAiSelection,
+    runGroupUnify,
     clearBook,
     exportJson,
     restoreBook,

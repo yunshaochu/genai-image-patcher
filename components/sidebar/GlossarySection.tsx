@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppConfig, GlossaryRef, GlossaryTerm, Language } from '../../types';
 import { t } from '../../services/translations';
-import { resolvedVariantIndex } from '../../services/glossaryBook';
+import { resolvedVariantIndex, stringSimilarity } from '../../services/glossaryBook';
 import { HelpTip } from './HelpTip';
 
 /**
@@ -18,9 +18,11 @@ import { HelpTip } from './HelpTip';
  * 手写一个（每术语一个，可改可删），写入即选定为标准译名并统一替换 —— 见
  * services/glossaryBook.ts 的 setCustomVariantValue。
  *
- * 顶部操作：AI 选择（未决术语批量丢给翻译端点挑标准译名）/ 导出 JSON（只带
- * key + 译名：已选定或唯一）/ 导入 JSON（按 key 与现有术语合并，见 onImport）/ 清空
- * （两步确认）。底部两个开关：新页自动统一、批后自动 AI 选择。
+ * 顶部操作分两行：第一行 AI 选择（未决术语批量丢给翻译端点挑标准译名）/ 统一
+ * 相关术语（把共享词根的术语归为一组、让 AI 互为参考各挑最合适的译名，不强求
+ * 统一）；第二行 导出 JSON（只带 key + 译名：已选定或唯一）/ 导入 JSON（按 key
+ * 与现有术语合并，见 onImport）/ 清空（两步确认）。底部两个开关：新页自动统一、
+ * 批后自动 AI 选择。
  */
 
 export interface GlossarySectionProps {
@@ -28,6 +30,9 @@ export interface GlossarySectionProps {
   book: GlossaryTerm[];
   aiSelecting: boolean;
   unresolvedCount: number;
+  /** 共享词根的术语组数（「统一相关术语」的角标）。 */
+  groupCount: number;
+  groupUnifying: boolean;
   autoUnify: boolean;
   autoAiSelect: boolean;
   /** 操作结果的一次性提示（AI 选择完成/无可选），由外层几秒后清掉。 */
@@ -37,6 +42,8 @@ export interface GlossarySectionProps {
   /** 写入 / 删除本术语的用户自定义译名（'' = 删除），写入即选定为标准译名。 */
   onSetCustomVariant: (key: string, value: string) => void;
   onRunAiSelection: () => void;
+  /** 共享词根的术语组互为参考、各挑最合适的译名（独立于 onRunAiSelection）。 */
+  onRunGroupUnify: () => void;
   onExport: () => void;
   /** 单独导入 JSON 文件（与现有术语按 key 合并；导入的译名并进变体并默认选中）。 */
   onImport: (file: File) => void;
@@ -77,31 +84,6 @@ const isUnresolved = (term: GlossaryTerm): boolean =>
 const headTranslation = (term: GlossaryTerm): string | null => {
   const idx = resolvedVariantIndex(term);
   return idx != null ? term.variants[idx]?.value ?? null : null;
-};
-
-/** 归一化编辑距离相似度 [0,1]：1 = 完全相同，0 = 毫无共同点。术语串很短，
- *  直接算即可。 */
-const stringSimilarity = (a: string, b: string): number => {
-  if (a === b) return 1;
-  const la = a.length;
-  const lb = b.length;
-  if (la === 0 || lb === 0) return 0;
-  let prev: number[] = new Array(lb + 1);
-  let curr: number[] = new Array(lb + 1);
-  for (let j = 0; j <= lb; j++) prev[j] = j;
-  for (let i = 1; i <= la; i++) {
-    curr[0] = i;
-    const ca = a.charCodeAt(i - 1);
-    for (let j = 1; j <= lb; j++) {
-      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
-      const del = prev[j] + 1;
-      const ins = curr[j - 1] + 1;
-      const sub = prev[j - 1] + cost;
-      curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
-    }
-    const tmp = prev; prev = curr; curr = tmp;
-  }
-  return 1 - prev[lb] / Math.max(la, lb);
 };
 
 /** 把最相似的字符串串成一条链（贪心最近邻），让相近的术语相邻显示。起点取
@@ -359,6 +341,8 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
   book,
   aiSelecting,
   unresolvedCount,
+  groupCount,
+  groupUnifying,
   autoUnify,
   autoAiSelect,
   notice,
@@ -366,6 +350,7 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
   onSelectVariant,
   onSetCustomVariant,
   onRunAiSelection,
+  onRunGroupUnify,
   onExport,
   onImport,
   onClear,
@@ -437,64 +422,81 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
 
       {open && (
         <div className="flex flex-col min-h-0 max-h-72">
-          {/* 操作行 */}
-          <div className="flex flex-wrap items-center gap-1 px-2 pb-1.5">
-            <button
-              onClick={onRunAiSelection}
-              disabled={aiSelecting || unresolvedCount === 0}
-              title={t(lang, 'glossaryAutoAiSelectDesc')}
-              className="px-2 py-1 text-[10px] font-bold rounded border border-skin-primary/30 text-skin-primary bg-skin-primary/10 hover:bg-skin-primary/20 disabled:opacity-50 transition-colors flex items-center gap-1"
-            >
-              {aiSelecting && (
-                <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
-              )}
-              {aiSelecting
-                ? t(lang, 'glossaryAiSelecting')
-                : `${t(lang, 'glossaryAiSelect')}${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}`}
-            </button>
-            <button
-              onClick={onExport}
-              disabled={book.length === 0}
-              className="px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors"
-            >
-              {t(lang, 'glossaryExport')}
-            </button>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              title={t(lang, 'glossaryImportTip')}
-              className="px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill transition-colors"
-            >
-              {t(lang, 'glossaryImport')}
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,application/json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = ''; // 允许连续两次选同一个文件
-                if (file) onImport(file);
-              }}
-            />
-            <button
-              onClick={() => {
-                if (clearArmed) {
-                  onClear();
-                  setClearArmed(false);
-                } else {
-                  setClearArmed(true);
-                }
-              }}
-              disabled={book.length === 0}
-              className={`ml-auto px-2 py-1 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
-                clearArmed
-                  ? 'border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
-                  : 'border-skin-border text-skin-muted hover:text-rose-500 hover:border-rose-400 hover:bg-rose-500/10'
-              }`}
-            >
-              {clearArmed ? t(lang, 'glossaryClearConfirm') : t(lang, 'glossaryClear')}
-            </button>
+          {/* 操作行：第一行 AI 相关动作，第二行 JSON 导入导出 + 清空 */}
+          <div className="px-2 pb-1.5 space-y-1">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={onRunAiSelection}
+                disabled={aiSelecting || unresolvedCount === 0}
+                title={t(lang, 'glossaryAutoAiSelectDesc')}
+                className="px-2 py-1 text-[10px] font-bold rounded border border-skin-primary/30 text-skin-primary bg-skin-primary/10 hover:bg-skin-primary/20 disabled:opacity-50 transition-colors flex items-center gap-1"
+              >
+                {aiSelecting && (
+                  <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                )}
+                {aiSelecting
+                  ? t(lang, 'glossaryAiSelecting')
+                  : `${t(lang, 'glossaryAiSelect')}${unresolvedCount > 0 ? ` (${unresolvedCount})` : ''}`}
+              </button>
+              <button
+                onClick={onRunGroupUnify}
+                disabled={groupUnifying || groupCount === 0}
+                title={t(lang, 'glossaryGroupUnifyTip')}
+                className="px-2 py-1 text-[10px] font-bold rounded border border-skin-primary/30 text-skin-primary bg-skin-primary/10 hover:bg-skin-primary/20 disabled:opacity-50 transition-colors flex items-center gap-1"
+              >
+                {groupUnifying && (
+                  <svg className="animate-spin w-2.5 h-2.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                )}
+                {groupUnifying
+                  ? t(lang, 'glossaryGroupUnifying')
+                  : `${t(lang, 'glossaryGroupUnify')}${groupCount > 0 ? ` (${groupCount})` : ''}`}
+              </button>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={onExport}
+                disabled={book.length === 0}
+                className="px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors"
+              >
+                {t(lang, 'glossaryExport')}
+              </button>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                title={t(lang, 'glossaryImportTip')}
+                className="px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill transition-colors"
+              >
+                {t(lang, 'glossaryImport')}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = ''; // 允许连续两次选同一个文件
+                  if (file) onImport(file);
+                }}
+              />
+              <button
+                onClick={() => {
+                  if (clearArmed) {
+                    onClear();
+                    setClearArmed(false);
+                  } else {
+                    setClearArmed(true);
+                  }
+                }}
+                disabled={book.length === 0}
+                className={`ml-auto px-2 py-1 text-[10px] font-bold rounded border transition-colors disabled:opacity-50 ${
+                  clearArmed
+                    ? 'border-rose-500 text-white bg-rose-500 hover:bg-rose-600 animate-pulse'
+                    : 'border-skin-border text-skin-muted hover:text-rose-500 hover:border-rose-400 hover:bg-rose-500/10'
+                }`}
+              >
+                {clearArmed ? t(lang, 'glossaryClearConfirm') : t(lang, 'glossaryClear')}
+              </button>
+            </div>
           </div>
 
           {/* 操作结果提示（几秒后由外层清掉） */}
