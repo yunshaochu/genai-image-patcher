@@ -202,7 +202,7 @@ export default function App() {
       : t(lang, 'glossaryAiSelectDone', { count: summary.picked }));
   }, [glossary.runAiSelection, config.language, setErrorMsg]);
 
-  /** 单独导入术语表 JSON（整本替换，与「工作区导入」同语义）。 */
+  /** 单独导入术语表 JSON（与现有术语按 key 合并，不整本替换）。 */
   const handleGlossaryImport = useCallback(async (file: File) => {
     const lang = config.language;
     const res = await glossary.importJsonFile(file);

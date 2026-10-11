@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AppConfig, GlossaryRef, GlossaryTerm, Language } from '../../types';
 import { t } from '../../services/translations';
+import { resolvedVariantIndex } from '../../services/glossaryBook';
 import { HelpTip } from './HelpTip';
 
 /**
@@ -10,12 +11,16 @@ import { HelpTip } from './HelpTip';
  * 未选中的暗显；点击变体即选定/改选（本地字符串替换统一，不重翻）。×N 是
  * 该变体的锚点频次，点击逐个跳到涉及的框。
  *
+ * 收起时行头在原文后附一个「→ 译名」（灰色）：已敲定、或只有唯一译名（唯一
+ * 即等于已定）时显示该译名；多译名未决者只留原文，靠展开去挑。
+ *
  * 变体列表末尾还有**用户自定义槽位**：AI 没译出想要的译名时，用户可以直接
  * 手写一个（每术语一个，可改可删），写入即选定为标准译名并统一替换 —— 见
  * services/glossaryBook.ts 的 setCustomVariantValue。
  *
- * 顶部操作：AI 选择（未决术语批量丢给翻译端点挑标准译名）/ 导出 JSON /
- * 清空（两步确认）。底部两个开关：新页自动统一、批后自动 AI 选择。
+ * 顶部操作：AI 选择（未决术语批量丢给翻译端点挑标准译名）/ 导出 JSON（只带
+ * key + 译名：已选定或唯一）/ 导入 JSON（按 key 与现有术语合并，见 onImport）/ 清空
+ * （两步确认）。底部两个开关：新页自动统一、批后自动 AI 选择。
  */
 
 export interface GlossarySectionProps {
@@ -33,7 +38,7 @@ export interface GlossarySectionProps {
   onSetCustomVariant: (key: string, value: string) => void;
   onRunAiSelection: () => void;
   onExport: () => void;
-  /** 单独导入 JSON 文件（整本替换）。 */
+  /** 单独导入 JSON 文件（与现有术语按 key 合并；导入的译名并进变体并默认选中）。 */
   onImport: (file: File) => void;
   onClear: () => void;
   onJumpToRef: (imageId: string, regionId: string) => void;
@@ -57,13 +62,93 @@ const MiniToggle: React.FC<{ checked: boolean; onChange: (value: boolean) => voi
   </label>
 );
 
+/** AI 译名个数（用户自定义槽位不计入）——与「N 个译名」角标同口径。 */
+const aiVariantCount = (term: GlossaryTerm): number =>
+  term.variants.filter(v => !v.custom).length;
+
 /** 未决 = 有多种 AI 译名且尚未选定标准译名（AI 选择 / 人工最该先处理的）。
  *  口径只数 AI 变体：用户自己写的那个槽位不算"AI 给了多个译名"。 */
 const isUnresolved = (term: GlossaryTerm): boolean =>
-  term.selected == null && term.variants.filter(v => !v.custom).length >= 2;
+  term.selected == null && aiVariantCount(term) >= 2;
 
-const totalRefs = (term: GlossaryTerm): number =>
-  term.variants.reduce((n, v) => n + v.refs.length, 0);
+/** 收起时头部显示的译名：显式选定的，或唯一译名（唯一即等于已选定）。
+ *  多译名未决者没有可显示的——靠展开去挑。判定口径与导出共用，见
+ *  services/glossaryBook.ts 的 resolvedVariantIndex。 */
+const headTranslation = (term: GlossaryTerm): string | null => {
+  const idx = resolvedVariantIndex(term);
+  return idx != null ? term.variants[idx]?.value ?? null : null;
+};
+
+/** 归一化编辑距离相似度 [0,1]：1 = 完全相同，0 = 毫无共同点。术语串很短，
+ *  直接算即可。 */
+const stringSimilarity = (a: string, b: string): number => {
+  if (a === b) return 1;
+  const la = a.length;
+  const lb = b.length;
+  if (la === 0 || lb === 0) return 0;
+  let prev: number[] = new Array(lb + 1);
+  let curr: number[] = new Array(lb + 1);
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    curr[0] = i;
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= lb; j++) {
+      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+      const del = prev[j] + 1;
+      const ins = curr[j - 1] + 1;
+      const sub = prev[j - 1] + cost;
+      curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+    }
+    const tmp = prev; prev = curr; curr = tmp;
+  }
+  return 1 - prev[lb] / Math.max(la, lb);
+};
+
+/** 把最相似的字符串串成一条链（贪心最近邻），让相近的术语相邻显示。起点取
+ *  「与其余项整体最相似」的那条以减少端点偏置；表很大时退化为字典序——相似度
+ *  矩阵是 O(N²)，不值得为超大表付这个开销。 */
+const orderBySimilarity = (
+  items: GlossaryTerm[],
+  keyOf: (term: GlossaryTerm) => string,
+): GlossaryTerm[] => {
+  const n = items.length;
+  if (n <= 1) return items;
+  if (n > 500) return [...items].sort((a, b) => keyOf(a).localeCompare(keyOf(b)));
+
+  const keys = items.map(keyOf);
+  const sim: number[][] = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const s = stringSimilarity(keys[i], keys[j]);
+      sim[i][j] = s;
+      sim[j][i] = s;
+    }
+  }
+
+  let start = 0;
+  let bestSum = -Infinity;
+  for (let i = 0; i < n; i++) {
+    let sum = 0;
+    for (let j = 0; j < n; j++) sum += sim[i][j];
+    if (sum > bestSum) { bestSum = sum; start = i; }
+  }
+
+  const used = new Array<boolean>(n).fill(false);
+  const order: number[] = [start];
+  used[start] = true;
+  for (let step = 1; step < n; step++) {
+    const last = order[order.length - 1];
+    let pick = -1;
+    let pickSim = -Infinity;
+    for (let i = 0; i < n; i++) {
+      if (used[i]) continue;
+      if (sim[last][i] > pickSim) { pickSim = sim[last][i]; pick = i; }
+    }
+    used[pick] = true;
+    order.push(pick);
+  }
+  return order.map(i => items[i]);
+};
 
 /** 变体行（AI 译名 / 用户自定义槽位共用）。 */
 const VariantRow: React.FC<{
@@ -147,6 +232,8 @@ const TermRow: React.FC<{
   const [draft, setDraft] = useState<string | null>(null);
   const customIdx = term.variants.findIndex(v => v.custom);
   const custom = customIdx === -1 ? null : term.variants[customIdx];
+  /** 收起时就展示的译名（已敲定 / 唯一）——展开前就能一眼看到结果。 */
+  const head = headTranslation(term);
 
   const commit = () => {
     const value = (draft ?? '').trim();
@@ -167,7 +254,15 @@ const TermRow: React.FC<{
         >
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
         </svg>
-        <span className="text-[10px] font-bold text-skin-text truncate">{term.key}</span>
+        <span className="flex-1 min-w-0 flex items-center gap-1">
+          <span className="text-[10px] font-bold text-skin-text truncate">{term.key}</span>
+          {head && (
+            <>
+              <span className="text-[10px] text-skin-muted/70 shrink-0">→</span>
+              <span className="text-[10px] text-skin-muted truncate">{head}</span>
+            </>
+          )}
+        </span>
         {isUnresolved(term) && (
           <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700 shrink-0">
             {t(lang, 'glossaryUnresolved')}
@@ -279,8 +374,6 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
   const [open, setOpen] = useState(loadOpen);
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
   const [clearArmed, setClearArmed] = useState(false);
-  /** 当前有术语时点「导入」先武装一步 —— 导入是整本替换，防手滑覆盖。 */
-  const [importArmed, setImportArmed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   /** 变体 → 上次跳转到的锚点下标：点击 ×N 在锚点间轮转。 */
   const jumpIdxRef = useRef<Map<string, number>>(new Map());
@@ -289,22 +382,27 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
     try { localStorage.setItem(OPEN_STORAGE_KEY, open ? '1' : '0'); } catch { /* ignore */ }
   }, [open]);
 
-  // 两步操作（清空 / 覆盖导入）：3 秒不点第二下就解除武装。
+  // 清空是两步操作：3 秒不点第二下就解除武装。
   useEffect(() => {
-    if (!clearArmed && !importArmed) return;
-    const timer = setTimeout(() => { setClearArmed(false); setImportArmed(false); }, 3000);
+    if (!clearArmed) return;
+    const timer = setTimeout(() => setClearArmed(false), 3000);
     return () => clearTimeout(timer);
-  }, [clearArmed, importArmed]);
+  }, [clearArmed]);
 
-  /** 未决的排前面，其余按锚点总频次降序 —— 最影响阅读一致性的术语最先被看到。 */
-  const sortedBook = useMemo(() =>
-    [...book].sort((a, b) => {
-      const ua = isUnresolved(a) ? 0 : 1;
-      const ub = isUnresolved(b) ? 0 : 1;
-      if (ua !== ub) return ua - ub;
-      return totalRefs(b) - totalRefs(a);
-    }),
-  [book]);
+  /** 排序：先按译名个数降序分档（译名最多的排最前），每档内再按字符串相似度串成
+   *  一条链，让相近的原文贴在一起相邻显示（便于一眼对比同一组的术语）。 */
+  const sortedBook = useMemo(() => {
+    const byCount = new Map<number, GlossaryTerm[]>();
+    for (const term of book) {
+      const n = aiVariantCount(term);
+      const bucket = byCount.get(n);
+      if (bucket) bucket.push(term);
+      else byCount.set(n, [term]);
+    }
+    return [...byCount.keys()]
+      .sort((a, b) => b - a)
+      .flatMap(n => orderBySimilarity(byCount.get(n)!, term => term.key));
+  }, [book]);
 
   const jumpToNextAnchor = (termKey: string, value: string, refs: GlossaryRef[]) => {
     if (refs.length === 0) return;
@@ -362,21 +460,11 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
               {t(lang, 'glossaryExport')}
             </button>
             <button
-              onClick={() => {
-                // 空表直接开文件框；非空表先武装一步（导入是整本覆盖）。
-                if (book.length > 0 && !importArmed) {
-                  setImportArmed(true);
-                  return;
-                }
-                fileInputRef.current?.click();
-              }}
-              className={`px-2 py-1 text-[10px] font-bold rounded border transition-colors ${
-                importArmed
-                  ? 'border-amber-500 text-white bg-amber-500 hover:bg-amber-600 animate-pulse'
-                  : 'border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill'
-              }`}
+              onClick={() => fileInputRef.current?.click()}
+              title={t(lang, 'glossaryImportTip')}
+              className="px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill transition-colors"
             >
-              {importArmed ? t(lang, 'glossaryImportConfirm') : t(lang, 'glossaryImport')}
+              {t(lang, 'glossaryImport')}
             </button>
             <input
               ref={fileInputRef}
@@ -386,7 +474,6 @@ export const GlossarySection: React.FC<GlossarySectionProps> = React.memo(({
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = ''; // 允许连续两次选同一个文件
-                setImportArmed(false);
                 if (file) onImport(file);
               }}
             />

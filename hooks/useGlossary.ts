@@ -9,11 +9,13 @@ import {
   aiPickCandidates,
   aiVariants,
   buildAiPickPrompt,
+  mergeImportedEntries,
   mergePageTerms as mergeIntoBook,
   parseAiPickResponse,
+  parseBookExport,
   regionTranslationText,
   sanitizeBook,
-  serializeBook,
+  serializeBookExport,
   setCustomVariantValue,
   termAnchors,
   termKeyOf,
@@ -35,7 +37,8 @@ import { generateTextCompletion } from '../services/aiService';
  *    手写译名），写入即选定并统一 —— 用户不必先等 AI 译出某个译名才能选它；
  *  - runAiSelection：把未决术语（多变体且未选）分批丢给翻译端点做纯文本
  *    判断（不丢图），选定的译名落地并统一；
- *  - exportJson / restoreBook：单独导出与工作区导出还原。
+ *  - exportJson / importJsonFile：单独导出（只带 key + 已选译名）与合并导入；
+ *  - restoreBook：工作区备份的术语树还原（全量，整本替换）。
  */
 
 export interface UseGlossaryParams {
@@ -66,11 +69,13 @@ export interface GlossaryApi {
   setCustomVariant: (key: string, value: string) => void;
   runAiSelection: () => Promise<AiSelectionSummary>;
   clearBook: () => void;
+  /** 单独导出 JSON（可移植格式：只有 key + 译名（已选定或唯一），不含 refs）。 */
   exportJson: () => string;
   /** 工作区导入还原（sanitize 失败返回 false）。只还原树，不做统一替换——
    *  图片里的文本在导出时就已经是统一后的。 */
   restoreBook: (data: unknown) => boolean;
-  /** 单独导入 JSON 文件（整本替换）；ok=false 表示文件不是有效的术语表。 */
+  /** 单独导入 JSON 文件（与现有术语按 key 合并，导入的译名并进变体并默认选中）；
+   *  ok=false 表示文件不是有效的术语表。count = 文件里可用的条目数。 */
   importJsonFile: (file: File) => Promise<{ ok: boolean; count: number }>;
 }
 
@@ -325,7 +330,7 @@ export function useGlossary({
   }, []);
 
   const exportJson = useCallback((): string => {
-    const file = serializeBook(bookRef.current);
+    const file = serializeBookExport(bookRef.current);
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
     const fileName = `genai-patcher-glossary-${stamp}.json`;
     const blob = new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' });
@@ -348,17 +353,24 @@ export function useGlossary({
     return true;
   }, []);
 
-  /** 单独导入（导出 JSON 的回灌口）：整本替换，不走合并 —— 术语表是作品级
-   *  快照，导入语义与「工作区导入」一致。 */
+  /** 单独导入（导出 JSON 的回灌口）：与现有术语按 key 合并 —— 导入的译名并进
+   *  变体列表并默认选中，不覆盖已有统计与其他变体；不做统一替换（图片文本另行
+   *  由「新页自动统一」或手动点选处理）。 */
   const importJsonFile = useCallback(async (file: File): Promise<{ ok: boolean; count: number }> => {
     try {
-      const parsed = JSON.parse(await file.text());
-      if (!restoreBook(parsed)) return { ok: false, count: 0 };
-      return { ok: true, count: bookRef.current.length };
+      const entries = parseBookExport(JSON.parse(await file.text()));
+      if (!entries) return { ok: false, count: 0 };
+      const prev = bookRef.current;
+      const next = mergeImportedEntries(prev, entries);
+      if (next !== prev) {
+        bookRef.current = next;
+        setBook(next);
+      }
+      return { ok: true, count: entries.length };
     } catch {
       return { ok: false, count: 0 };
     }
-  }, [restoreBook]);
+  }, []);
 
   const unresolvedCount = useMemo(() => aiPickCandidates(book).length, [book]);
 

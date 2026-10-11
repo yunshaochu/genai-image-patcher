@@ -52,6 +52,17 @@ export const aiVariants = (term: GlossaryTerm): GlossaryVariant[] =>
   term.variants.filter(v => !v.custom);
 
 /**
+ * 术语「有效选定」的变体下标：显式选定的优先；未显式选定时，**唯一译名即视为
+ * 已定**（只有一种译名时选与不选没有区别）。没有可生效的选定项时返回 null。
+ *
+ * 这是「一条术语当前用哪个译名」的单一判定来源——导出、收起时的头部显示都用它。
+ */
+export const resolvedVariantIndex = (term: GlossaryTerm): number | null => {
+  if (term.selected != null && term.variants[term.selected]) return term.selected;
+  return term.variants.length === 1 ? 0 : null;
+};
+
+/**
  * 写入 / 清除术语的用户自定义译名槽位（见 GlossaryVariant.custom），返回新术语；
  * 无实际变化时返回原引用。
  *
@@ -274,6 +285,8 @@ export interface GlossaryBookFile {
   terms: GlossaryTerm[];
 }
 
+/** 工作区备份用：全量序列化（含 refs）——同工作区还原时锚点依旧有效。
+ *  单独导出的「可移植」格式见 serializeBookExport。 */
 export const serializeBook = (book: GlossaryTerm[]): GlossaryBookFile => ({
   kind: GLOSSARY_BOOK_KIND,
   version: GLOSSARY_BOOK_VERSION,
@@ -330,6 +343,119 @@ export const sanitizeBook = (value: unknown): GlossaryTerm[] | null => {
     terms.push({ key, variants, selected, ...(note ? { note } : {}) });
   }
   return terms;
+};
+
+// =====================================================================
+// 可移植导出 / 导入（单独「导出 JSON」/「导入 JSON」）
+//
+// 与工作区备份（serializeBook/sanitizeBook，全量含 refs）不同：这里只导出
+// key + 当前译名（显式选定，或唯一译名——唯一即等于已选定），不带 refs ——
+// 锚点绑定本工作区的框，换地方就没意义。
+// 导入时按 key 与现有术语合并，导入的译名并进变体列表并默认选中，这样
+// 分享/搬运术语表时既能落地译名，又不破坏本工作区已有的统计与选择。
+// =====================================================================
+
+/** 一条可移植术语：原文 key + 当前译名。 */
+export interface GlossaryExportEntry {
+  key: string;
+  value: string;
+}
+
+/** 单独导出 JSON 的信封格式。 */
+export interface GlossaryExportFile {
+  kind: typeof GLOSSARY_BOOK_KIND;
+  version: number;
+  exportedAt?: string;
+  terms: GlossaryExportEntry[];
+}
+
+export const GLOSSARY_EXPORT_VERSION = 2;
+
+/** 导出「有译名」的术语：显式选定的，以及唯一译名（唯一即等于已选定）。
+ *  多译名且未选定的无处可导——没有确定用哪个。 */
+export const serializeBookExport = (book: GlossaryTerm[]): GlossaryExportFile => ({
+  kind: GLOSSARY_BOOK_KIND,
+  version: GLOSSARY_EXPORT_VERSION,
+  exportedAt: new Date().toISOString(),
+  terms: book.flatMap(t => {
+    const idx = resolvedVariantIndex(t);
+    const value = idx != null ? t.variants[idx]?.value : undefined;
+    return value ? [{ key: t.key, value }] : [];
+  }),
+});
+
+/** 解析「导出 JSON」，返回 key + 译名 条目（同 key 只取第一条）。容忍：
+ *  新格式信封 / 裸数组 / 旧版全量 terms（从中取已选定的译名）。整体不可
+ *  识别时返回 null。 */
+export const parseBookExport = (value: unknown): GlossaryExportEntry[] | null => {
+  const rawTerms: unknown =
+    Array.isArray(value) ? value
+      : value && typeof value === 'object' && Array.isArray((value as GlossaryExportFile).terms)
+        ? (value as GlossaryExportFile).terms
+        : null;
+  if (!Array.isArray(rawTerms)) return null;
+
+  const out: GlossaryExportEntry[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawTerms) {
+    if (!raw || typeof raw !== 'object') continue;
+    const key = String((raw as any).key ?? '').trim();
+    if (!key) continue;
+    let val = typeof (raw as any).value === 'string' ? String((raw as any).value).trim() : '';
+    if (!val) {
+      // 旧格式：从 variants + selected 里取已选定的译名。
+      const variants = Array.isArray((raw as any).variants) ? (raw as any).variants : [];
+      const selected = (raw as any).selected;
+      const picked = typeof selected === 'number' ? variants[selected] : undefined;
+      if (picked && typeof (picked as any).value === 'string') val = String(picked.value).trim();
+    }
+    if (!val) continue; // 没有译名的条目进不来（导入项必须有译名）
+    const norm = termKeyOf(key);
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push({ key, value: val });
+  }
+  return out;
+};
+
+/**
+ * 把导入条目合并进术语树：同 key 的译名并进变体列表（已存在则不重复），并把
+ * 该译名设为选定项（导入即默认选它）；没有的 key 则新建术语。
+ *
+ * 导入的译名以**普通变体**身份加入（不是用户自定义槽位）：它照常参与 AI 选择
+ * 候选，之后某页译文命中时也会叠加锚点。refs 留空 —— 导出时已剥离锚点，导入
+ * 方的锚点由后续本地匹配重新建立。
+ */
+export const mergeImportedEntries = (
+  book: GlossaryTerm[],
+  entries: GlossaryExportEntry[]
+): GlossaryTerm[] => {
+  if (entries.length === 0) return book;
+  let next: GlossaryTerm[] | null = null;
+  /** 惰性复制：只有真正变更的那一层才换新数组/对象。 */
+  const ensure = (): GlossaryTerm[] => (next ??= [...book]);
+
+  for (const { key, value } of entries) {
+    const norm = termKeyOf(key);
+    const list = next ?? book;
+    const termIdx = list.findIndex(t => termKeyOf(t.key) === norm);
+    if (termIdx === -1) {
+      ensure().push({ key: key.trim(), variants: [{ value, refs: [] }], selected: 0 });
+      continue;
+    }
+    const term = list[termIdx];
+    const variantIdx = term.variants.findIndex(v => v.value === value);
+    if (variantIdx === -1) {
+      const copy = ensure();
+      const variants = [...term.variants, { value, refs: [] }];
+      copy[termIdx] = { ...term, variants, selected: variants.length - 1 };
+      continue;
+    }
+    if (term.selected === variantIdx) continue; // 已经选的就是它
+    const copy = ensure();
+    copy[termIdx] = { ...term, selected: variantIdx };
+  }
+  return next ?? book;
 };
 
 // =====================================================================
