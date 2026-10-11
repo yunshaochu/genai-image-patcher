@@ -260,7 +260,25 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
         # 划成「外部可达」，一个框一半的掩码会被这样杀掉）。膨胀环不跟着豁免
         # —— 无约束的膨胀环会把贴近文字的描边/阴影一起吞掉。
         m |= text_mask
-    roi = cv2.inpaint(bgr_roi, (m.astype(np.uint8)) * 255, rad, cv2.INPAINT_TELEA)
+
+    # R 足够平坦（纯白/纯黑泡底）时掩码直接平铺 R 中位色，不扩散：TELEA 的
+    # 采样带里有暗像素时会把灰色晕进填充区 —— 文字在窄气泡里几乎顶到描边，
+    # 四角离描边最近，实测填出四团灰痕。平坦底色下中位色就是正确答案。
+    flat_fill = None
+    if have_mask and R is not None and R.any() and float(gray[R].std()) < 12:
+        flat_fill = np.median(bgr_roi[R], axis=0)
+
+    if flat_fill is not None:
+        roi = bgr_roi.copy()
+        zone = m & ~ext
+        roi[zone] = flat_fill
+        rest = m & ~zone
+        if rest.any():
+            roi = cv2.inpaint(roi, rest.astype(np.uint8) * 255, rad,
+                              cv2.INPAINT_TELEA)
+    else:
+        roi = cv2.inpaint(bgr_roi, (m.astype(np.uint8)) * 255, rad,
+                          cv2.INPAINT_TELEA)
 
     # 二轮：清文字附近的浅残留（同样不越 ext / 保护区）
     g2 = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)

@@ -112,16 +112,21 @@ def ensure_model():
 
 
 def _letterbox(img, size):
-    """等比缩放到 size 内、右/下补灰边到 size×size。
+    """等比缩放到 size 内（只缩小不放大）、右/下补灰边到 size×size。
 
     上游用 YOLOv5 letterbox（上下对称补边）再在还原时做近似裁切；这里改成
     只往右/下补边，掩码还原时 [:nh, :nw] 精确去掉 padding，无对齐误差。
+
+    小图不放大：编辑器裁出来的小 ROI（比如 68×174）放大 ~6 倍后笔画粗了
+    6 倍，远超模型在整页 1024 上见过的文字尺度，分割反而失效（实测 68px
+    宽的气泡只 seg 出 69px 掩码）；原生尺度恰好等于整页缩到 1024 后文字的
+    典型大小，直接 pad 即可。
     """
     h, w = img.shape[:2]
-    scale = min(size / h, size / w)
+    scale = min(1.0, size / h, size / w)
     nh, nw = round(h * scale), round(w * scale)
     interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
-    resized = cv2.resize(img, (nw, nh), interpolation=interp)
+    resized = cv2.resize(img, (nw, nh), interpolation=interp) if scale != 1 else img
     out = np.full((size, size, 3), 114, np.uint8)
     out[:nh, :nw] = resized
     return out, nh, nw
