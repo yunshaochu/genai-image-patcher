@@ -474,6 +474,33 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                     <OffDim off={!config.enableAiPayloadCompression}>
                                         <div className="space-y-3">
                                             <div>
+                                                <label className="text-[10px] uppercase font-bold text-skin-muted flex items-center gap-1 mb-1">
+                                                    {t(lang, 'aiPayloadTranslationMaxPx')}
+                                                    <HelpTip text={t(lang, 'aiPayloadTranslationMaxPxHint')} />
+                                                </label>
+                                                <div className="relative">
+                                                    {/* 0 = 不限：不把 0 当成可编辑的数值填进框里（会挡着直接输入），
+                                                        改成灰色底字提示 —— 想回「不限」把框清空即可。 */}
+                                                    <input
+                                                        type="number" min="0" max="8192" step="64"
+                                                        value={config.aiPayloadTranslationMaxPx > 0 ? config.aiPayloadTranslationMaxPx : ''}
+                                                        placeholder={`0 = ${t(lang, 'aiPayloadUnlimited')}`}
+                                                        onChange={(e) => {
+                                                            const raw = e.target.value;
+                                                            updateConfig(
+                                                                'aiPayloadTranslationMaxPx',
+                                                                raw === '' ? 0 : Math.max(0, Math.min(8192, Number(raw) || 0))
+                                                            );
+                                                        }}
+                                                        className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 pr-10"
+                                                    />
+                                                    {config.aiPayloadTranslationMaxPx > 0 && (
+                                                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-skin-muted pointer-events-none">px</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-[10px] text-skin-muted leading-tight mt-1">{t(lang, 'aiPayloadTranslationMaxPxPresets')}</p>
+                                            </div>
+                                            <div>
                                                 <label className="text-[10px] uppercase font-bold text-skin-muted block mb-1">{t(lang, 'aiPayloadTranslationTargetKB')}</label>
                                                 <div className="relative">
                                                     <input

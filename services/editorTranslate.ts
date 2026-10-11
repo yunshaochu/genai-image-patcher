@@ -365,16 +365,29 @@ export const translateEditorRegions = async (
     if (config.enableAiPayloadCompression) {
       compressedUrl = await compressImageToTargetSize(annotatedUrl, {
         targetSizeKB: config.aiPayloadTranslationTargetKB,
+        // 长边上限才是省 token 的那一半 —— 压体积只省字节，token 只看像素尺寸。
+        // 缩放在这里做（而不是 buildAnnotatedImage 里），编号框跟着一起等比缩。
+        maxDimension: config.aiPayloadTranslationMaxPx || undefined,
       });
       payloadUrl = compressedUrl;
     }
     const imageBase64 = await urlToBase64(payloadUrl);
 
     // Region geometry is stored as percentages (0-100) — convert to pixels.
+    // The prompt's coordinates must describe the image the model ACTUALLY sees,
+    // so they carry the same long-side cap the payload got: a 2480×3508 page
+    // pinned to 1536 has to be listed as [0,0,1086,1536], not [0,0,2480,3508].
+    // compressImageToTargetSize scales by exactly this ratio, so predicting it
+    // here keeps the two in step.
     const iw = imageEl.naturalWidth;
     const ih = imageEl.naturalHeight;
+    const payloadScale = config.enableAiPayloadCompression && config.aiPayloadTranslationMaxPx > 0
+      ? Math.min(1, config.aiPayloadTranslationMaxPx / Math.max(iw, ih))
+      : 1;
+    const pw = Math.round(iw * payloadScale);
+    const ph = Math.round(ih * payloadScale);
     const skeleton = regions
-      .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * iw)}, ${Math.round((r.y / 100) * ih)}, ${Math.round((r.width / 100) * iw)}, ${Math.round((r.height / 100) * ih)}] (${r.detectedClass ?? 'manual'})`)
+      .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * pw)}, ${Math.round((r.y / 100) * ph)}, ${Math.round((r.width / 100) * pw)}, ${Math.round((r.height / 100) * ph)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
     const fontAutoDetect = !!config.enableFontAutoDetect;
     // 用户在设置里改过编辑器提示词就用他的模板，否则用内置默认模板。

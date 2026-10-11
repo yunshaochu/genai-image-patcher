@@ -44,6 +44,10 @@ export interface PayloadRecord {
     prompt: string;
     /** Target size of the re-encode, when one happened. */
     compressionTargetKB?: number;
+    /** Long-side cap (px) the payload was scaled to. Token count is a function
+     *  of this — not of `bytes` — so it is what the inspector reports when the
+     *  question is "why did this call cost that much". */
+    maxDimension?: number;
     /** Size of the bytes that left the machine. */
     bytes: number;
     /** Display URL of the sent image (owned by this module). */
@@ -140,6 +144,11 @@ export const recordPayload = (input: PayloadInput): void => {
                     ? (input.phase === 'redraw'
                         ? input.config.aiPayloadRedrawTargetKB
                         : input.config.aiPayloadTranslationTargetKB)
+                    : undefined,
+                // Only the translation phases scale: redraw payloads must keep
+                // their pixels (stitch / depad geometry is built on them).
+                maxDimension: input.transforms.includes('compress') && input.phase !== 'redraw'
+                    ? (input.config.aiPayloadTranslationMaxPx || undefined)
                     : undefined,
                 bytes: blob.size,
                 imageUrl: URL.createObjectURL(blob),

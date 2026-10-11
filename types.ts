@@ -662,10 +662,37 @@ export interface AppConfig {
    *  译名且尚未人工选择的术语）。默认关：这是一次 API 调用，由用户决定。 */
   glossaryAutoAiSelect: boolean;
 
-  /** When true, images sent to translation/redraw APIs are re-encoded to WebP
-   *  at a target file size (binary search on quality). Preserves pixel
-   *  dimensions — no resampling. When false, raw originals are sent. */
+  /** 把发给 AI 的图片先处理一遍再发送（关掉 = 直发原图）。做两件事，各管一段：
+   *
+   *  1. **长边上限**（`aiPayloadTranslationMaxPx`）：超了就等比缩像素。**这一步才
+   *     真正省 token** —— 视觉模型的输入 token 是「解码后像素尺寸」的函数，跟文件
+   *     多大毫无关系。一张 2480×3508 的整页在 Gemini 上要 20 块 768 tile（≈5160
+   *     token），缩到长边 1536 只剩 4 块（≈1032）；6000×8000 更是从 88 块掉到 2 块。
+   *  2. **目标体积**（`aiPayload*TargetKB`）：二分 WebP 质量压字节数。省的是上传
+   *     时间 / 网关体积上限 / 浏览器内存，**不省 token**。
+   *
+   *  顺序很重要：先缩尺寸，压体积就轻松达标（长边 1536 的 WebP 在 q=0.92 多半就
+   *  过线），不会为了凑体积把质量一路探到下限 —— 只压体积时，6000×8000 要凑
+   *  500KB 的结局是「字糊了，体积还没达标」。 */
   enableAiPayloadCompression: boolean;
+  /** 发给**翻译** API 的图片长边上限（px）。**默认 0 = 不限**（原分辨率直发，与
+   *  升级前完全一致）—— 这是个纯权衡项，不由代码替用户决定。
+   *
+   *  只作用于「读字」那几张图：编辑器整页翻译的标注图、翻译模式的整页 / 切片、
+   *  重绘前翻译的内联 payload 与它的遮罩上下文 —— 都是纯读任务，缩了只掉清晰度，
+   *  不牵动任何几何。
+   *
+   *  重绘 payload 不吃这个值：AI 按输入分辨率出图，缩了再贴回原框就是模糊；全图
+   *  遮罩模式下返回的整页还要按 `paddingInfo` 去 pad，缩了直接算错。
+   *
+   *  调参参考（设置面板上写的是同一套）：
+   *  - 常用值 **2048 / 1536 / 1280**（更小 = 更省 token、字更小）；
+   *  - 300dpi 页面上 45px 高的字，长边 1536 时剩约 20px（够读），1280 剩 16px
+   *    （假名开始出错），1024 剩 13px 基本读不准；
+   *  - 本项目已有的尺子：检测上传上限 1500、预览上限 2048；
+   *  - **最可靠的判据是「发送记录」**：那里能看到真正发出去的图、它的真实 w×h 和
+   *    实际生效的上限。字糊了就调大 —— 比任何换算公式都准。 */
+  aiPayloadTranslationMaxPx: number;
   /** Target size in KB for the translation API payload + context image. */
   aiPayloadTranslationTargetKB: number;
   /** Target size in KB for the redraw (image edit) API payload. */

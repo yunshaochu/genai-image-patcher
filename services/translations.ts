@@ -563,6 +563,7 @@ export const translations = {
     payloadWholePage: "整页",
     payloadRegionCount: "{count} 个选区",
     payloadCompressTarget: "压缩目标 {kb}KB",
+    payloadResizeCap: "长边 ≤{px}px",
     configInitHint: "把全部设置恢复为出厂默认（不影响图库与编辑现场）",
     configInitArmHint: "初始化会把全部设置恢复为出厂默认，包括密钥、提示词与全部 API 配置组；再点一次「初始化配置」确认。图库与编辑现场不受影响。建议先导出备份。",
     configInitialized: "已初始化：全部设置已恢复默认",
@@ -571,10 +572,14 @@ export const translations = {
 
     // AI Payload Compression
     aiPayloadCompression: "压缩发送给 AI 的图片",
-    aiPayloadCompressionDesc: "用 WebP 重新编码后再发送给翻译/重绘 API，节省 token。像素尺寸不变，只降画质命中目标体积。关掉则发送原图。",
+    aiPayloadCompressionDesc: "发送前处理一遍：① 长边缩到上限（这一步才真正省 token —— token 只看像素尺寸，跟文件多大无关）；② 再用 WebP 压到目标体积（省上传体积，不省 token）。关掉则直发原图。",
+    aiPayloadTranslationMaxPx: "翻译图长边上限 (px)",
+    aiPayloadUnlimited: "不限",
+    aiPayloadTranslationMaxPxHint: "0 = 不限（默认）：按原分辨率整页发出去，最贵。视觉模型的输入 token 只看「解码后的像素尺寸」，跟文件多大无关 —— 2480×3508 的整页缩到长边 1536，Gemini 的 tile 从 20 块掉到 4 块，Qwen 的 token 掉到约 1/5。只作用于读字的翻译图，重绘图不受影响（它的像素要参与贴图几何）。",
+    aiPayloadTranslationMaxPxPresets: "0 = 不限，按原分辨率发送。参考值 2048（最清晰）/ 1536（均衡）/ 1280（更省）。拿不准就先去「发送记录」对一眼实际发出去的图 —— 那里标着真实 w×h 和生效的上限，字糊了就调大，比换算公式准。",
     aiPayloadTranslationTargetKB: "翻译图目标体积 (KB)",
     aiPayloadRedrawTargetKB: "重绘图目标体积 (KB)",
-    aiPayloadTargetKBHint: "更小 = 更省 token、画质略降；更大 = 更清晰、token 多",
+    aiPayloadTargetKBHint: "体积：更小 = 上传更省、画质略降；更大 = 更清晰。缩了长边之后这个值通常能轻松达标，不会再为了凑体积压糊字。",
 
     // --- HELP CONTENT ---
     helpTitle: "使用手册 & 技巧",
@@ -625,7 +630,7 @@ export const translations = {
     help_ai_10_title: "反向遮罩：保留主体、重画背景",
     help_ai_10_desc: "把选区涂白让 AI 补背景，合成时仍然使用原图的选区内容，适合换背景。注意它与正方形补全互斥 —— 开启后补方会自动禁用。",
     help_ai_11_title: "压缩发送给 AI",
-    help_ai_11_desc: "「全局设置 → 漫画与重绘」里的「压缩发送给 AI 的图片」会用 WebP 重新编码：像素尺寸不变、只降体积，省 token 也更快。翻译图与重绘图的目标体积可以分别设置。",
+    help_ai_11_desc: "「全局设置 → 漫画与重绘」里的「压缩发送给 AI 的图片」做两件事：① 把长边缩到上限 —— 这一步才真正省 token，因为 token 只看解码后的像素尺寸，跟文件多大无关；② 用 WebP 按目标体积再编码 —— 省的是上传体积与内存，不省 token。长边上限默认 0（不限），改完去「发送记录」看实际发出去的图来微调即可。它只作用于翻译图，重绘图保持原像素。",
     help_ai_12_title: "发送记录：看看 AI 究竟收到了什么",
     help_ai_12_desc: "左栏右上角的飞机图标里保留着最近 12 次真正发出去的图（切片 / 涂白 / 补方 / 压缩后的样子）。效果不对时，先来这里对一眼。",
     help_ai_13_title: "性能模式",
@@ -1272,6 +1277,7 @@ export const translations = {
     payloadWholePage: "whole page",
     payloadRegionCount: "{count} region(s)",
     payloadCompressTarget: "target {kb}KB",
+    payloadResizeCap: "long side ≤{px}px",
     configInitHint: "Restore every setting to factory defaults (the gallery and editing session are untouched)",
     configInitArmHint: "Reset restores every setting to factory defaults — keys, prompts and all API presets included. Click Reset config again to confirm; the gallery and editing session are unaffected. Exporting a backup first is recommended.",
     configInitialized: "Reset complete: all settings are back to defaults",
@@ -1280,10 +1286,14 @@ export const translations = {
 
     // AI Payload Compression
     aiPayloadCompression: "Compress images sent to AI",
-    aiPayloadCompressionDesc: "Re-encode payloads as WebP at a target file size before sending to translation/redraw APIs. Pixel dimensions are preserved — only quality is reduced. Off = send originals.",
+    aiPayloadCompressionDesc: "Two passes before sending: ① long side scaled to the cap (this is what actually saves tokens — token count follows pixel dimensions, never file size); ② re-encoded as WebP at a target file size (saves upload bytes, not tokens). Off = send originals.",
+    aiPayloadTranslationMaxPx: "Translation payload long-side cap (px)",
+    aiPayloadUnlimited: "no cap",
+    aiPayloadTranslationMaxPxHint: "0 = no cap (default): pages go out at source resolution, the most expensive option. Input tokens follow the DECODED pixel dimensions, never the file size — a 2480×3508 page pinned to a 1536 long side drops Gemini from 20 tiles to 4, and Qwen to about 1/5. Translation (read-only) payloads only; redraw payloads keep their pixels (the stitch geometry is built on them).",
+    aiPayloadTranslationMaxPxPresets: "0 = no cap — the page is sent at source resolution. Common values: 2048 (sharpest) / 1536 (balanced) / 1280 (cheapest). If unsure, open the sent-payload inspector first — it reports the real w×h and the cap that was applied, so blurry text simply means raise the cap.",
     aiPayloadTranslationTargetKB: "Translation payload target (KB)",
     aiPayloadRedrawTargetKB: "Redraw payload target (KB)",
-    aiPayloadTargetKBHint: "Smaller = fewer tokens, lower quality; larger = sharper, more tokens",
+    aiPayloadTargetKBHint: "Size: smaller = cheaper upload, softer image; larger = sharper. With the long side capped this target is usually met easily, so quality no longer has to be sacrificed to hit it.",
 
     // --- HELP CONTENT ---
     helpTitle: "Guide & Tricks",
@@ -1334,7 +1344,7 @@ export const translations = {
     help_ai_10_title: "Inverted masking: keep the subject",
     help_ai_10_desc: "Paints the boxes white and lets the AI fill the background, while the composite keeps the original box contents — made for background swaps. It is mutually exclusive with square fill, which auto-disables while it is on.",
     help_ai_11_title: "Compress what you send",
-    help_ai_11_desc: "'Compress images sent to AI' (Global Settings → Manga & Redraw) re-encodes to WebP: same pixel size, smaller payload — fewer tokens, faster uploads. Translation and redraw targets are set separately.",
+    help_ai_11_desc: "'Compress images sent to AI' (Global Settings → Manga & Redraw) does two things: ① scales the long side to the cap — this is what actually saves tokens, since the token count follows the DECODED pixel dimensions and never the file size; ② re-encodes as WebP at a target file size — that saves upload bytes and memory, not tokens. The cap defaults to 0 (no cap); tune it by eyeballing the image in the sent-payload inspector. Translation payloads only — redraw keeps its original pixels.",
     help_ai_12_title: "Sent-payload inspector",
     help_ai_12_desc: "The paper-plane icon at the top-right of the left rail keeps the last 12 images actually sent (cropped / masked / squared / compressed). Check it first whenever a result makes no sense.",
     help_ai_13_title: "Performance mode",

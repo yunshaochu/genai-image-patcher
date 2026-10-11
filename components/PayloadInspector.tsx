@@ -144,6 +144,9 @@ const PayloadInspector: React.FC<{ language: Language; onClose: () => void }> = 
                                         {selected.compressionTargetKB
                                             ? ` · ${t(language, 'payloadCompressTarget', { kb: selected.compressionTargetKB })}`
                                             : ''}
+                                        {selected.maxDimension
+                                            ? ` · ${t(language, 'payloadResizeCap', { px: selected.maxDimension })}`
+                                            : ''}
                                     </MetaRow>
                                     <MetaRow label={t(language, 'payloadModel')}>{selected.model || '—'}</MetaRow>
                                 </div>

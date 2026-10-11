@@ -176,6 +176,10 @@ const DEFAULT_CONFIG: AppConfig = {
 
   // AI Payload Compression Defaults
   enableAiPayloadCompression: true,
+  /** 长边上限默认 0 = 不限：沿用「原分辨率直发」的老行为。清晰度与 token 的取舍
+   *  交给用户自己定 —— 设置面板上列了参考值（2048 / 1536 / 1280），也说了怎么用
+   *  「发送记录」对照微调。 */
+  aiPayloadTranslationMaxPx: 0,
   aiPayloadTranslationTargetKB: 500,
   aiPayloadRedrawTargetKB: 1500,
 };
@@ -353,6 +357,11 @@ export function useConfig() {
         // Ensure AI payload compression settings exist
         if (typeof migratedConfig.enableAiPayloadCompression === 'undefined') {
             migratedConfig.enableAiPayloadCompression = true;
+        }
+        if (typeof migratedConfig.aiPayloadTranslationMaxPx === 'undefined') {
+            // 0 = 不限：与升级前完全一致（原分辨率直发）。不替存量会话改变行为，
+            // 想省 token 自己去设置里调。
+            migratedConfig.aiPayloadTranslationMaxPx = 0;
         }
         if (typeof migratedConfig.aiPayloadTranslationTargetKB === 'undefined') {
             migratedConfig.aiPayloadTranslationTargetKB = 500;

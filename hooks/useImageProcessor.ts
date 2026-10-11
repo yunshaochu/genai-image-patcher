@@ -467,7 +467,10 @@ export function useImageProcessor(
                 if (config.enableAiPayloadCompression) {
                     redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
                     translationPayloadUrl = inlineTranslate
-                        ? await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB })
+                        ? await compressImageToTargetSize(payloadUrl, {
+                            targetSizeKB: config.aiPayloadTranslationTargetKB,
+                            maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                        })
                         : redrawPayloadUrl;
                     // compressImageToTargetSize returns its input when the source
                     // is already small enough / unencodable — never revoke that.
@@ -694,7 +697,10 @@ export function useImageProcessor(
             try {
                 const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, maskRegions);
                 if (config.enableAiPayloadCompression) {
-                    const compressed = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                    const compressed = await compressImageToTargetSize(fullMaskedUrl, {
+                        targetSizeKB: config.aiPayloadTranslationTargetKB,
+                        maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                    });
                     if (compressed !== fullMaskedUrl) releaseObjectURL(fullMaskedUrl);
                     maskedContextUrl = compressed;
                 } else {
@@ -746,7 +752,10 @@ export function useImageProcessor(
                     redrawPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadRedrawTargetKB });
                     redrawActiveUrl = redrawPayloadUrl;
                     if (inlineTranslate) {
-                        translationPayloadUrl = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        translationPayloadUrl = await compressImageToTargetSize(payloadUrl, {
+                            targetSizeKB: config.aiPayloadTranslationTargetKB,
+                            maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                        });
                         translationActiveUrl = translationPayloadUrl;
                     } else {
                         translationActiveUrl = redrawPayloadUrl;
@@ -1308,7 +1317,10 @@ export function useImageProcessor(
                         ? await createInvertedMultiMaskedFullImage(maskImg, paintableRegions)
                         : await createMultiMaskedFullImage(maskImg, paintableRegions);
                     if (config.enableAiPayloadCompression) {
-                        const compressed = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        const compressed = await compressImageToTargetSize(payloadUrl, {
+                            targetSizeKB: config.aiPayloadTranslationTargetKB,
+                            maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                        });
                         if (compressed !== payloadUrl) releaseObjectURL(payloadUrl);
                         payloadUrl = compressed;
                     }
@@ -1376,7 +1388,10 @@ export function useImageProcessor(
                         : imgElement;
                     const fullMaskedUrl = await createMultiMaskedFullImage(maskImg, paintableRegions);
                     if (config.enableAiPayloadCompression) {
-                        const compressed = await compressImageToTargetSize(fullMaskedUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        const compressed = await compressImageToTargetSize(fullMaskedUrl, {
+                            targetSizeKB: config.aiPayloadTranslationTargetKB,
+                            maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                        });
                         if (compressed !== fullMaskedUrl) releaseObjectURL(fullMaskedUrl);
                         contextUrl = compressed;
                     } else {
@@ -1410,7 +1425,10 @@ export function useImageProcessor(
                 try {
                     payloadUrl = await cropRegion(imgElement, region);
                     if (config.enableAiPayloadCompression) {
-                        const compressed = await compressImageToTargetSize(payloadUrl, { targetSizeKB: config.aiPayloadTranslationTargetKB });
+                        const compressed = await compressImageToTargetSize(payloadUrl, {
+                            targetSizeKB: config.aiPayloadTranslationTargetKB,
+                            maxDimension: config.aiPayloadTranslationMaxPx || undefined,
+                        });
                         if (compressed !== payloadUrl) {
                             releaseObjectURL(payloadUrl);
                             payloadUrl = compressed;
