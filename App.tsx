@@ -153,6 +153,7 @@ export default function App() {
       translateImageRegions,
       translateAllImages,
       translateSingleImage,
+      translateSelectedRegions,
       stopTranslation,
       unfreezeTranslation,
       freezeTranslation,
@@ -1514,6 +1515,7 @@ export default function App() {
             onBatchPickInkColor={editorOnBatchPickInkColor}
             batchInkNotice={batchInkNotice}
             onBatchReorder={editorOnBatchReorder}
+            onTranslateRegions={(regionIds) => translateSelectedRegions(selectedImage.id, regionIds)}
             onSelectAll={handleSelectAllRegions}
             busy={editorBusy}
             computedFontSizes={computedFontSizes}

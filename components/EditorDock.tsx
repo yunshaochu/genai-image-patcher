@@ -68,6 +68,8 @@ interface EditorDockProps {
   batchInkNotice?: string | null;
   /** 批量叠放次序：整组置顶 / 置底（组内相对次序不变）。 */
   onBatchReorder?: (dir: 'top' | 'bottom') => void;
+  /** 翻译指定的这些框（单框也是这条路径，传一个 id）。已翻过的框会重新翻译。 */
+  onTranslateRegions?: (regionIds: string[]) => void;
   /** 全选当前页的所有文本框（与 Ctrl+A 同一动作的按钮入口）。 */
   onSelectAll?: () => void;
   busy: boolean;
@@ -856,6 +858,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   selectedRegionIds, onBatchSetDirection, onBatchStepFontSize, onBatchSetColor,
   onBatchSetRotation, onBatchSetOutline, onBatchSetFont, onBatchSetErased, onBatchFreeze,
   onBatchReset, onBatchBrush, onBatchPickInkColor, batchInkNotice, onBatchReorder,
+  onTranslateRegions,
   onSelectAll,
   onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
   onTranslate, onTranslateAll,
@@ -1050,6 +1053,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const brushLayerCount = editableSelected.filter(r => !!r.editorBrushUrl).length;
     /** 「重置」的作用目标：已经有产物（完成 / 失败）的框，与框上 ↺ 的显示条件一致。 */
     const resettableCount = editableSelected.filter(r => r.status === 'completed' || r.status === 'failed').length;
+    /** 选区里已经有译文的框数 —— 只要有一格翻过，按钮就叫「重新翻译」。 */
+    const translatedCount = editableSelected.filter(r => isTranslationHandled(r)).length;
 
     /** 字体下拉的选中值：'' 跟随全局 / EXPLICIT_SYSTEM 系统字体 / 字体 id / 'custom' / 'mixed'。 */
     const batchFontValue = commonFont === 'mixed'
@@ -1127,6 +1132,30 @@ const EditorDock: React.FC<EditorDockProps> = ({
           {editableSelected.length === 0 && (
             <div className="text-[9px] text-skin-muted leading-tight">{t(lang, 'editorMultiNoneEditable')}</div>
           )}
+
+          {/* 翻译选中：只翻这几格，一次视觉调用。已经有译文的框走「重新翻译」
+              （引擎对显式选区不再跳过已处理过的框）。
+              翻译总开关 = 漫画模块（config.enableTranslationMode 是它的镜像）。 */}
+          {config.enableTranslationMode && (translating ? (
+            <button
+              onClick={onStopTranslate}
+              title={t(lang, 'editorStopTranslateTip')}
+              className="w-full px-2 py-1.5 text-[10px] font-bold bg-red-500 text-white rounded hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center gap-1"
+            >
+              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+              {t(lang, 'editorStopTranslate')}
+            </button>
+          ) : (
+            <button
+              onClick={() => onTranslateRegions?.(editableSelected.map(r => r.id))}
+              disabled={!canBatchEdit || editableSelected.length === 0}
+              title={translatedCount > 0 ? t(lang, 'editorRetranslateSelectedTip') : t(lang, 'editorTranslateSelectedTip')}
+              className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-40 transition-colors"
+            >
+              {translatedCount > 0 ? t(lang, 'editorRetranslateSelected') : t(lang, 'editorTranslateSelected')}
+              {editableSelected.length > 0 ? ` (${editableSelected.length})` : ''}
+            </button>
+          ))}
 
           {/* 排版方向：横排 / 竖排 / 自动 */}
           <div className="space-y-1">
@@ -1708,6 +1737,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const regionEditLocked =
     aiLocked || !!translatingImageIds?.has(image.id) || (busy && !translating);
   const text = region.editorText ?? '';
+  /** 这一格是否已经有译文（译文 / 冻结译文 / 手填译文任一存在）—— 决定按钮叫
+   *  「翻译」还是「重新翻译」。 */
+  const translationHandled = isTranslationHandled(region);
   const vertical = region.editorStyle?.isVertical;
   /** 整块文字的旋转角（度，顺时针为正）。0 = 不旋转。 */
   const rotation = region.editorStyle?.rotation ?? 0;
@@ -1875,6 +1907,29 @@ const EditorDock: React.FC<EditorDockProps> = ({
             </button>
           </div>
         )}
+
+        {/* 翻译这一个框：只把这一格送去翻译（一次视觉调用），译文按 AI 的 freeze
+            判定嵌字或挂起。已经翻过的显示「重新翻译」—— 会用新结果覆盖它。
+            跑翻译时这里变成停止按钮：编辑器面板是翻译运行期间唯一能停下来的地方。 */}
+        {config.enableTranslationMode && (translating ? (
+          <button
+            onClick={onStopTranslate}
+            title={t(lang, 'editorStopTranslateTip')}
+            className="w-full px-2 py-1.5 text-[10px] font-bold bg-red-500 text-white rounded hover:bg-red-600 active:scale-95 transition-all flex items-center justify-center gap-1"
+          >
+            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+            {t(lang, 'editorStopTranslate')}
+          </button>
+        ) : (
+          <button
+            onClick={() => onTranslateRegions?.([region.id])}
+            disabled={regionEditLocked || aiLocked}
+            title={translationHandled ? t(lang, 'editorRetranslateBoxTip') : t(lang, 'editorTranslateBoxTip')}
+            className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors"
+          >
+            {translationHandled ? t(lang, 'editorRetranslateBox') : t(lang, 'editorTranslateBox')}
+          </button>
+        ))}
 
         {/* Direction + font size */}
         <div className="flex items-center gap-1.5">

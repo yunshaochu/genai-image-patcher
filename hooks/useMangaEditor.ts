@@ -849,6 +849,21 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
    * 可按、每点一次都整页重发。To force a re-translation of one box, clear its
    * text first (清空后 editorText 为 ''，即回到未处理)。
    */
+  /**
+   * 显式选区翻译（「翻译此框」/「翻译选中」）的目标过滤。
+   *
+   * 与 pickTranslateTargets 同一套排除规则，**只少一条**：不再排除「已经处理过」
+   * 的框 —— 用户点这个按钮就是在明确要求翻译 / 重新翻译这几格，已经翻过的必须
+   * 重新送一遍（否则「重新翻译」点了等于没点）。
+   */
+  const pickExplicitTranslateTargets = useCallback((img: UploadedImage, ids: Set<string>): Region[] =>
+    img.regions.filter(r => {
+      if (!ids.has(r.id)) return false;
+      if (r.contextOnly) return false;
+      if (isAiOwned(r) && intentOf(r) !== 'translate') return false;
+      return true;
+    }), [intentOf]);
+
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
     img.regions.filter(r => {
       if (r.contextOnly) return false;
@@ -892,11 +907,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
      *  translated. The store commit lags behind updateImage, so the batch's
      *  end-retry hands it in to avoid re-translating a page whose update has
      *  not rendered back into imagesRef yet. Undefined = single-page run. */
-    skipRegionIds?: Set<string>
+    skipRegionIds?: Set<string>,
+    /** 只翻这几格（「翻译此框」/「翻译选中」）：给了就用 pickExplicitTranslateTargets
+     *  —— 已翻过的框也重新送一遍（重新翻译）。undefined = 整页翻译。 */
+    onlyRegionIds?: Set<string>
   ) => {
     const img = getImage(imageId);
     if (!img || busy) return;
-    const targets = pickTranslateTargets(img).filter(r => !skipRegionIds?.has(r.id));
+    const targets = (onlyRegionIds
+      ? pickExplicitTranslateTargets(img, onlyRegionIds)
+      : pickTranslateTargets(img)
+    ).filter(r => !skipRegionIds?.has(r.id));
     if (targets.length === 0) return;
 
     // Batch runs share their controller; single-page runs own one.
@@ -1073,7 +1094,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         translateAbortRef.current = null;
       }
     }
-  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets, onPageTerms, markTranslatingImage]);
+  }, [busy, getImage, recompositeRegion, updateImage, setErrorMsg, pickTranslateTargets, pickExplicitTranslateTargets, onPageTerms, markTranslatingImage]);
 
   /**
    * Manual unfreeze (fix an AI false positive): move the frozen translation
@@ -1472,6 +1493,33 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [busy, runTranslateRounds]);
 
   /**
+   * 「翻译此框」/「翻译选中」：只翻选中的那几格，一次视觉调用。
+   *
+   * 与整页翻译共用同一条管线（标注图 + JSON 骨架 + 同一套写回：sourceText /
+   * editorText / editorFrozenText / 术语表），区别只在目标集 —— 整页用
+   * pickTranslateTargets（跳过已翻过的），这里用 pickExplicitTranslateTargets
+   * （已翻过的也重来，即「重新翻译」）。
+   *
+   * 不做整批重试轮：这是用户明确点的一次单页操作，失败了再点一次的成本远低于
+   * 悄悄重发一整轮。stop 按钮照常可用（同一个 abortRef）。
+   */
+  const translateSelectedRegions = useCallback(async (imageId: string, regionIds: string[]) => {
+    if (busy || regionIds.length === 0) return;
+    const ctrl = new AbortController();
+    translateAbortRef.current = ctrl;
+    setBusy(true);
+    setTranslating(true);
+    try {
+      await translateImageRegions(imageId, ctrl.signal, undefined, new Set(regionIds));
+    } finally {
+      setBusy(false);
+      setTranslating(false);
+      setTranslatingImageIds(new Set());
+      if (translateAbortRef.current === ctrl) translateAbortRef.current = null;
+    }
+  }, [busy, translateImageRegions]);
+
+  /**
    * Called after regions change on the canvas (drag/resize in editor mode):
    * any region whose editor content exists but whose composite anchor no
    * longer matches its geometry gets re-laid-out and re-rendered.
@@ -1583,6 +1631,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     translateImageRegions,
     translateAllImages,
     translateSingleImage,
+    translateSelectedRegions,
     stopTranslation,
     unfreezeTranslation,
     freezeTranslation,

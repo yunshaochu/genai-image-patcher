@@ -46,24 +46,22 @@ export interface RegionTranslation {
 }
 
 /**
- * `fontAutoDetect` 打开时才给模型加 `font` 字段和要求——关着的时候不多花
- * token，也不让模型有机会干扰嵌字字体。
+ * 编辑器翻译提示词的**内置默认模板**（用户没自定义时用它）。
+ *
+ * 与「翻译模式」那条纯文本提示词不同，这里是模板：区域清单、字体识别规则、
+ * 规则编号、输出格式示例都是运行时才算得出来的，所以用占位符标出插值位置 ——
+ *   {{regions}}      区域清单（编号 + 像素框 + 类别）
+ *   {{fontRule}}     字体识别规则（「字体自动识别」关闭时为空串）
+ *   {{nJson}}        「只输出 JSON」那条的规则编号
+ *   {{nEvery}}       「每个编号都出现且只出现一次」那条的规则编号
+ *   {{outputFormat}} 输出格式示例（含 font 字段与否随开关变化）
+ * 模板里没写哪个占位符，对应那一段就不会出现（用户的自由）。
+ * 设置面板会把这几个占位符写在使用说明里。
  */
-const buildPrompt = (skeleton: string, fontAutoDetect: boolean): string => {
-  // 字体那条规则插在 terms 之后，后面两条的编号要跟着顺延，所以统一算出来。
-  const fontRule = fontAutoDetect
-    ? `
-8. font 填字符串：看【原文】的字形风格，从下面选一个最接近的（译文会用它来嵌字）。只填引号里的字符串，不要写别的：
-${buildFontChoicePrompt()}
-注意：普通对话文字基本都是常规印刷体；拿不准、看不清、或者风格没有明显特征时，一律填 "default"。`
-    : '';
-  const nJson = fontAutoDetect ? 9 : 8;
-  const nEvery = fontAutoDetect ? 10 : 9;
-
-  return `你是一名漫画翻译。图片中已用红框标出编号区域，每个编号对应一段需要翻译的漫画文字（对白/旁白/音效字等）。
+export const EDITOR_TRANSLATION_PROMPT_TEMPLATE = `你是一名漫画翻译。图片中已用红框标出编号区域，每个编号对应一段需要翻译的漫画文字（对白/旁白/音效字等）。
 
 区域清单（编号: [x, y, 宽, 高] (类别)，像素坐标；类别 text_bubble=气泡内文字，text_free=气泡外自由文字，manual=手动框选）：
-${skeleton}
+{{regions}}
 
 任务：对每个编号区域，识别其中的原文并翻译成简体中文。
 
@@ -84,13 +82,52 @@ ${skeleton}
    - 敬语 / 称呼后缀不要写进术语：くん / ちゃん / さん / 様 / 殿 / 氏 / 先生 / 先輩 / 君 / 大人 / ちゃん付け / 呼び捨て 之类一律去掉，只填名字本身（タナカくん → タナカ，タナカさん → タナカ）。target 同理，只填译名本身，不要带上「小/君/酱/桑/先生」这类称呼（译文若写成「田中君」，target 填「田中」）。
    - 因此同一个人物带不带敬语只算**同一条**术语：タナカくん 和 タナカ 都填 source「タナカ」，不要拆成两条，也不要让它们的 target 不一致。
    - 下面的「タナカ → 田中」只是示范写法（假名姓氏对应的汉字是唯一的），不是本作的术语；本作专名一律按你在 zh 里的实际译法填。
-   - 普通词汇、拟声词不要收；拿不准是不是专有名词的不要收；没有就填 []。${fontRule}
-${nJson}. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
-${nEvery}. 清单中的每个编号都必须出现且只出现一次。
+   - 普通词汇、拟声词不要收；拿不准是不是专有名词的不要收；没有就填 []。{{fontRule}}
+{{nJson}}. 只输出 JSON，不要输出任何其他文字、解释或 markdown 代码块。
+{{nEvery}}. 清单中的每个编号都必须出现且只出现一次。
 
 输出格式：
-{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"タナカ","target":"田中"}]}（terms 里的名字不带敬语后缀，此处只是格式示范）`;
+{{outputFormat}}`;
+
+/**
+ * 把动态片段插进模板。用函数式替换（不是 `$1` 那种）—— 区域清单 / 用户提示词里
+ * 出现 `$` 时不会被当成替换模式解析。
+ */
+const renderPromptTemplate = (
+  template: string,
+  skeleton: string,
+  fontAutoDetect: boolean
+): string => {
+  // 字体那条规则插在 terms 之后，后面两条的编号要跟着顺延，所以统一算出来。
+  const fontRule = fontAutoDetect
+    ? `
+8. font 填字符串：看【原文】的字形风格，从下面选一个最接近的（译文会用它来嵌字）。只填引号里的字符串，不要写别的：
+${buildFontChoicePrompt()}
+注意：普通对话文字基本都是常规印刷体；拿不准、看不清、或者风格没有明显特征时，一律填 "default"。`
+    : '';
+  const nJson = fontAutoDetect ? '9' : '8';
+  const nEvery = fontAutoDetect ? '10' : '9';
+  const outputFormat = `{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"タナカ","target":"田中"}]}（terms 里的名字不带敬语后缀，此处只是格式示范）`;
+
+  return template
+    .replace(/\{\{regions\}\}/g, () => skeleton)
+    .replace(/\{\{fontRule\}\}/g, () => fontRule)
+    .replace(/\{\{nJson\}\}/g, () => nJson)
+    .replace(/\{\{nEvery\}\}/g, () => nEvery)
+    .replace(/\{\{outputFormat\}\}/g, () => outputFormat);
 };
+
+/**
+ * `fontAutoDetect` 打开时才给模型加 `font` 字段和要求——关着的时候不多花
+ * token，也不让模型有机会干扰嵌字字体。
+ * `customTemplate` 非空 = 用户在设置里改过，用它渲染；否则用内置默认模板。
+ */
+const buildPrompt = (skeleton: string, fontAutoDetect: boolean, customTemplate?: string): string =>
+  renderPromptTemplate(
+    customTemplate?.trim() ? customTemplate : EDITOR_TRANSLATION_PROMPT_TEMPLATE,
+    skeleton,
+    fontAutoDetect
+  );
 
 /** Draw the image with numbered boxes for each region; returns a data URL. */
 const buildAnnotatedImage = (imageEl: HTMLImageElement, regions: Region[], maskOutside: boolean): string => {
@@ -340,7 +377,8 @@ export const translateEditorRegions = async (
       .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * iw)}, ${Math.round((r.y / 100) * ih)}, ${Math.round((r.width / 100) * iw)}, ${Math.round((r.height / 100) * ih)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
     const fontAutoDetect = !!config.enableFontAutoDetect;
-    const prompt = buildPrompt(skeleton, fontAutoDetect);
+    // 用户在设置里改过编辑器提示词就用他的模板，否则用内置默认模板。
+    const prompt = buildPrompt(skeleton, fontAutoDetect, config.editorTranslationPrompt);
 
     // Record the annotated page — in this flow the payload IS a drawing of the
     // image (numbered boxes, optionally masked outside), which the canvas never

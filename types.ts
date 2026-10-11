@@ -593,6 +593,14 @@ export interface AppConfig {
   fullImageOpaquePercent: number; // 0-100, default 99. Determines how much of the center is opaque before feathering starts.
 
   // Translation Mode Settings
+  /**
+   * 翻译阶段是否可用。
+   *
+   * **不再是独立开关**：它现在绑死在「启用漫画模块」（enableMangaMode）上，
+   * 由 useConfig 的 setConfig 自动镜像 —— 漫画模块打开 = 翻译可用，关闭 = 翻译
+   * 一起关。设置面板里没有这个开关，保留字段只是为了让所有既有读取点（管线、
+   * DockActions 的按钮判定）不用改。
+   */
   enableTranslationMode: boolean;
   sendMaskedContextForTranslation: boolean;
   /** 字体自动识别（嵌字）：翻译时让视觉模型一并判断每个区域原文的字体风格，
@@ -617,6 +625,16 @@ export interface AppConfig {
   translationPromptNoContext?: string;
   /** User's custom prompt for translation WITH masked context (cached) */
   translationPromptWithContext?: string;
+  /**
+   * 编辑器（整页翻译 / 翻译选中框）的系统提示词**模板**。
+   * '' = 用内置默认（services/editorTranslate.ts → EDITOR_TRANSLATION_PROMPT_TEMPLATE）。
+   *
+   * 与翻译模式那条不同，编辑器这条是「带占位符的模板」：区域清单、字体识别规则、
+   * 规则编号、输出格式示例都是运行时才有的，所以用 {{regions}} / {{fontRule}} /
+   * {{nJson}} / {{nEvery}} / {{outputFormat}} 标记插值位置；模板里没写哪个占位符，
+   * 对应那一段就不会出现。
+   */
+  editorTranslationPrompt?: string;
 
   /** 必须翻译: the redraw pipeline only touches regions whose translation has
    *  already been filled in (image-level cache in full-image-masking mode).

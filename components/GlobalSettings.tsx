@@ -15,11 +15,11 @@ import { SettingsCard } from './sidebar/SettingsCard';
 import { FloatingPanel } from './sidebar/FloatingPanel';
 import { EDITOR_FONTS, SYSTEM_FONT_ID } from '../services/fontService';
 import {
-    TRANSLATION_MODE_IMAGE_PROMPT,
     DEFAULT_TRANSLATION_PROMPT,
     TRANSLATION_CONTEXT_SYSTEM_PROMPT,
     createDefaultConfig,
 } from '../hooks/useConfig';
+import { EDITOR_TRANSLATION_PROMPT_TEMPLATE } from '../services/editorTranslate';
 
 /**
  * Global settings, laid out as one tab per module on a full page width.
@@ -133,6 +133,8 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
     // --- Config backup (export / import / reset) ---
     const [importArmed, setImportArmed] = useState(false);
     const [initArmed, setInitArmed] = useState(false);
+    /** 「翻译系统提示词」区块的两个 tab：重绘阶段的 / 编辑器阶段的。 */
+    const [promptTab, setPromptTab] = useState<'redraw' | 'editor'>('redraw');
     const [backupStatus, setBackupStatus] = useState<{ text: string; tone: 'ok' | 'warn' } | null>(null);
     const configFileRef = useRef<HTMLInputElement>(null);
     const transModelAnchorRef = useRef<HTMLDivElement>(null);
@@ -628,18 +630,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                 <SettingsCard
                                     title={t(lang, 'enableTranslationMode')}
                                     help={t(lang, 'enableTranslationModeDesc')}
-                                    action={
-                                        <Toggle
-                                            checked={config.enableTranslationMode}
-                                            onChange={(enabled) => {
-                                                setConfig(prev => ({
-                                                    ...prev,
-                                                    enableTranslationMode: enabled,
-                                                    prompt: enabled ? TRANSLATION_MODE_IMAGE_PROMPT : prev.prompt,
-                                                }));
-                                            }}
-                                        />
-                                    }
+                                    // 没有独立开关：翻译可用性完全跟随「启用漫画模块」。
+                                    // 这里只把当前状态读出来，避免用户找不到"翻译为什么没开"。
+                                    summary={config.enableMangaMode ? t(lang, 'stateOn') : t(lang, 'stateOff')}
+                                    summaryTone={config.enableMangaMode ? 'on' : 'off'}
                                 >
                                     <SubRow
                                         title={t(lang, 'sendMaskedContextForTranslation')}
@@ -668,32 +662,80 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         }
                                     />
 
+                                    {/* 两个阶段的提示词拆成两个 tab：重绘阶段的（纯文本，
+                                        喂给图生图重绘调用）与编辑器阶段的（模板，喂给整页 /
+                                        选区翻译）。两份都可以改，也都能一键回到出厂文本。 */}
                                     <div>
-                                        <div className="flex justify-between items-center mb-1">
-                                            <label className="text-[10px] text-skin-muted block">{t(lang, 'translationPromptLabel')}</label>
+                                        <div className="flex bg-skin-fill p-0.5 rounded-lg border border-skin-border mb-1.5">
                                             <button
-                                                onClick={() => {
-                                                    const defaultPrompt = config.sendMaskedContextForTranslation ? TRANSLATION_CONTEXT_SYSTEM_PROMPT : DEFAULT_TRANSLATION_PROMPT;
-                                                    const slotKey = config.sendMaskedContextForTranslation ? 'translationPromptWithContext' : 'translationPromptNoContext';
-                                                    setConfig(prev => ({
-                                                        ...prev,
-                                                        translationPrompt: defaultPrompt,
-                                                        [slotKey]: '',
-                                                    }));
-                                                }}
-                                                className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
-                                                title={t(lang, 'resetToDefault')}
+                                                type="button"
+                                                onClick={() => setPromptTab('redraw')}
+                                                className={`flex-1 py-1 text-[10px] rounded-md transition-all font-medium ${promptTab === 'redraw' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
                                             >
-                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                                {t(lang, 'reset')}
+                                                {t(lang, 'translationPromptTabRedraw')}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setPromptTab('editor')}
+                                                className={`flex-1 py-1 text-[10px] rounded-md transition-all font-medium ${promptTab === 'editor' ? 'bg-skin-surface shadow-sm text-skin-primary' : 'text-skin-muted hover:text-skin-text'}`}
+                                            >
+                                                {t(lang, 'translationPromptTabEditor')}
                                             </button>
                                         </div>
-                                        <textarea
-                                            value={config.translationPrompt}
-                                            onChange={(e) => updateConfig('translationPrompt', e.target.value)}
-                                            className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm"
-                                            placeholder={t(lang, 'translationPromptPlaceholder')}
-                                        />
+
+                                        {promptTab === 'redraw' ? (
+                                            <>
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <label className="text-[10px] text-skin-muted block">{t(lang, 'translationPromptLabel')}</label>
+                                                    <button
+                                                        onClick={() => {
+                                                            const defaultPrompt = config.sendMaskedContextForTranslation ? TRANSLATION_CONTEXT_SYSTEM_PROMPT : DEFAULT_TRANSLATION_PROMPT;
+                                                            const slotKey = config.sendMaskedContextForTranslation ? 'translationPromptWithContext' : 'translationPromptNoContext';
+                                                            setConfig(prev => ({
+                                                                ...prev,
+                                                                translationPrompt: defaultPrompt,
+                                                                [slotKey]: '',
+                                                            }));
+                                                        }}
+                                                        className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                                                        title={t(lang, 'resetToDefault')}
+                                                    >
+                                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                        {t(lang, 'reset')}
+                                                    </button>
+                                                </div>
+                                                <textarea
+                                                    value={config.translationPrompt}
+                                                    onChange={(e) => updateConfig('translationPrompt', e.target.value)}
+                                                    className="w-full p-2 text-xs border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-24 resize-none shadow-sm"
+                                                    placeholder={t(lang, 'translationPromptPlaceholder')}
+                                                />
+                                            </>
+                                        ) : (
+                                            <>
+                                                <div className="flex justify-between items-center mb-1">
+                                                    <label className="text-[10px] text-skin-muted block">{t(lang, 'editorTranslationPromptLabel')}</label>
+                                                    <button
+                                                        // '' = 用内置默认模板（见 services/editorTranslate.ts）
+                                                        onClick={() => updateConfig('editorTranslationPrompt', '')}
+                                                        className="text-[9px] text-skin-primary hover:underline bg-transparent border-0 cursor-pointer flex items-center gap-1"
+                                                        title={t(lang, 'resetToDefault')}
+                                                    >
+                                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                                                        {t(lang, 'reset')}
+                                                    </button>
+                                                </div>
+                                                {/* 没改过时显示的就是内置默认模板（占位符原样可见），
+                                                    用户直接在上面改即可 —— 改完 config 里存的是整份自定义文本。 */}
+                                                <textarea
+                                                    value={config.editorTranslationPrompt?.trim() ? config.editorTranslationPrompt : EDITOR_TRANSLATION_PROMPT_TEMPLATE}
+                                                    onChange={(e) => updateConfig('editorTranslationPrompt', e.target.value)}
+                                                    className="w-full p-2 text-[11px] leading-snug border border-skin-border rounded bg-skin-surface focus:ring-1 focus:ring-skin-primary/50 h-56 resize-none shadow-sm font-mono"
+                                                    placeholder={t(lang, 'translationPromptPlaceholder')}
+                                                />
+                                                <p className="mt-1 text-[9px] text-skin-muted leading-snug">{t(lang, 'editorTranslationPromptHint')}</p>
+                                            </>
+                                        )}
                                     </div>
 
                                     {/* Opt-in legacy behaviour: the redraw stage runs the

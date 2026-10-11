@@ -1,5 +1,6 @@
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import { AppConfig, RedrawIntent } from '../types';
 import { EDITOR_FONTS } from '../services/fontService';
 
@@ -166,6 +167,8 @@ const DEFAULT_CONFIG: AppConfig = {
   translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   translationPromptNoContext: '',
   translationPromptWithContext: '',
+  // 编辑器翻译的提示词模板：'' = 用内置默认（见 types.ts → editorTranslationPrompt）
+  editorTranslationPrompt: '',
   requireTranslationForGeneration: false,
   translateBeforeRedraw: false,
   glossaryAutoUnify: true,
@@ -188,7 +191,7 @@ export const createDefaultConfig = (): AppConfig => ({
 });
 
 export function useConfig() {
-  const [config, setConfig] = useState<AppConfig>(() => {
+  const [config, setConfigState] = useState<AppConfig>(() => {
     try {
       const saved = localStorage.getItem(CONFIG_STORAGE_KEY);
       if (saved) {
@@ -299,6 +302,15 @@ export function useConfig() {
         if (typeof migratedConfig.translationPromptWithContext === 'undefined') {
             migratedConfig.translationPromptWithContext = '';
         }
+
+        // 编辑器翻译的提示词模板（'' = 内置默认）
+        if (typeof migratedConfig.editorTranslationPrompt === 'undefined') {
+            migratedConfig.editorTranslationPrompt = '';
+        }
+
+        // 「翻译」不再是独立开关：它绑死在「启用漫画模块」上。存量配置里两者可能
+        // 不一致（老版本分开存），这里强制对齐一次 —— 之后由 setConfig 持续维持。
+        migratedConfig.enableTranslationMode = !!migratedConfig.enableMangaMode;
 
         // Ensure the translation-stage / glossary settings exist
         if (typeof migratedConfig.requireTranslationForGeneration === 'undefined') {
@@ -448,6 +460,36 @@ export function useConfig() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', config.theme || 'light');
   }, [config.theme]);
+
+  /**
+   * 写入配置。除了原样落盘，这里还钉死一条绑定关系：**漫画模块 = 翻译总开关**。
+   *
+   * 「启用翻译模式」在面板上没有自己的开关了 —— 它跟着 enableMangaMode 走。
+   * 放在写入路径（而不是某个 effect）里的好处是：任何修改路径（设置面板、重置为
+   * 默认、导入配置…）都自动带上这条规则，且只在漫画模块**真的变化**时才动手，
+   * 不会在每次无关写入时乱改值。
+   *
+   * 顺带保留旧版独立开关的副作用：打开翻译时把全局提示词切成「翻译模式」那一版。
+   */
+  const setConfig = useCallback<Dispatch<SetStateAction<AppConfig>>>((action) => {
+    setConfigState(prev => {
+      const next = typeof action === 'function'
+        ? (action as (p: AppConfig) => AppConfig)(prev)
+        : action;
+      if (next === prev) return prev;
+      // 漫画模块这一格变了 = 翻译总开关跟着翻；顺带沿用旧版独立开关的副作用
+      //（打开时把全局提示词切成「翻译模式」版）。
+      const mangaChanged = next.enableMangaMode !== prev.enableMangaMode;
+      // 值本身不一致（例如导入了一份老配置）也要修正 —— 这条不变量对任何写入路径
+      // 都成立，不只是开关被点的瞬间。
+      if (!mangaChanged && next.enableTranslationMode === next.enableMangaMode) return next;
+      return {
+        ...next,
+        enableTranslationMode: next.enableMangaMode,
+        ...(mangaChanged && next.enableMangaMode ? { prompt: TRANSLATION_MODE_IMAGE_PROMPT } : {}),
+      };
+    });
+  }, []);
 
   return { config, setConfig };
 }
