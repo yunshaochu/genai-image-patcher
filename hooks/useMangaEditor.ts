@@ -1010,6 +1010,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
             sourceText: res.source ?? r.sourceText,
             editorFrozenText: res.zh,
             customTranslation: res.zh,
+            // 重绘标记：模型给这一格指了场景（艺术字→translate / 普通字体→erase），
+            // 之后重绘管线按它分流。
+            // 两个前提：① 只在真的给了标记时才写 —— 没给就保持该框原有的值，绝不清空
+            // （开关关掉之后，用户以前标好的场景不该被一次翻译抹掉）；② 只给「模型这次
+            // 自己判定要冻结」的框写 —— aiBubbleBase / isAiTranslated 的框是**已经画过**
+            // 的 AI 重绘产物，它们的场景是既成事实，按这次的翻译重新推导会把编辑器的
+            // 显示态（已冻结 / 已擦除 / 已完成）带偏。
+            ...(res.freeze && res.intent ? { redrawIntent: res.intent } : {}),
             // Freeze = pull the translation OUT of the image: drop any
             // previously typeset text / erasure / whiteout so the original
             // artwork is restored untouched.

@@ -44,6 +44,16 @@ export interface RegionTranslation {
    * 字体（继续跟随全局「编辑器字体」）。字段缺失 = 没识别 / 开关关闭。
    */
   font?: string;
+  /**
+   * 重绘标记（AppConfig.enableAiRedrawIntentMarking）：这一格**被冻结**后，交给 AI
+   * 重绘时该跑哪个场景。字段缺失 = 没标记 / 开关关闭（调用方保持该框原有的值不动）。
+   *  - 'translate'：标准字体还原不了它的观感（艺术字 / 装饰字 / 花体…）→ 让 AI 把
+   *    中文**画**上去；
+   *  - 'erase'：标准字体就能还原（普通印刷体）→ 让 AI 只擦干净底图，中文交给编辑器排。
+   *
+   *  判断只看「标准字体能不能还原观感」，**与擦除效果无关**（擦除效果管的是 freeze）。
+   */
+  intent?: Region['redrawIntent'];
 }
 
 /**
@@ -97,7 +107,9 @@ export const EDITOR_TRANSLATION_PROMPT_TEMPLATE = `你是一名漫画翻译。�
 const renderPromptTemplate = (
   template: string,
   skeleton: string,
-  fontAutoDetect: boolean
+  fontAutoDetect: boolean,
+  /** 重绘标记打开时，给输出格式示范补的 intent 片段（'' = 不出现这个字段）。 */
+  intentExample: string
 ): string => {
   // 字体那条规则插在 terms 之后，后面两条的编号要跟着顺延，所以统一算出来。
   const fontRule = fontAutoDetect
@@ -108,7 +120,7 @@ ${buildFontChoicePrompt()}
     : '';
   const nJson = fontAutoDetect ? '9' : '8';
   const nEvery = fontAutoDetect ? '10' : '9';
-  const outputFormat = `{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}}],"terms":[{"source":"タナカ","target":"田中"}]}（terms 里的名字不带敬语后缀，此处只是格式示范）`;
+  const outputFormat = `{"regions":[{"id":1,"source":"原文","zh":"译文","vertical":true,"color":"black","freeze":false${fontAutoDetect ? ',"font":"default"' : ''}${intentExample}}],"terms":[{"source":"タナカ","target":"田中"}]}（terms 里的名字不带敬语后缀，此处只是格式示范）`;
 
   return template
     .replace(/\{\{regions\}\}/g, () => skeleton)
@@ -119,15 +131,21 @@ ${buildFontChoicePrompt()}
 };
 
 /**
- * `fontAutoDetect` 打开时才给模型加 `font` 字段和要求——关着的时候不多花
- * token，也不让模型有机会干扰嵌字字体。
+ * 三个可选字段（font / intent）都是「对应开关打开时才要求」，关着的时候不多花
+ * token，也不让模型有机会干扰；它们都体现在输出格式示范里，规则文字另有一段。
  * `customTemplate` 非空 = 用户在设置里改过，用它渲染；否则用内置默认模板。
  */
-const buildPrompt = (skeleton: string, fontAutoDetect: boolean, customTemplate?: string): string =>
+const buildPrompt = (
+  skeleton: string,
+  fontAutoDetect: boolean,
+  customTemplate: string | undefined,
+  intentExample: string
+): string =>
   renderPromptTemplate(
     customTemplate?.trim() ? customTemplate : EDITOR_TRANSLATION_PROMPT_TEMPLATE,
     skeleton,
-    fontAutoDetect
+    fontAutoDetect,
+    intentExample
   );
 
 /**
@@ -167,6 +185,35 @@ ${sfxFollowsErase
 
 （本段只是给 freeze 多加一个判断依据，输出格式完全不变 —— 照旧只输出 JSON，不要输出
 任何其他文字、解释或 markdown 代码块。）`;
+
+/**
+ * 「重绘标记」的附加说明 —— 总开关打开、且至少有一个子开关打开时才追加。
+ *
+ * 和擦除判定那段同一个道理：**不进 `{{...}}` 占位符体系**、追加在渲染结果末尾 ——
+ * 不新增规则编号（`{{nJson}}` / `{{nEvery}}` 不用顺延），用户改过的自由模板也照样
+ * 生效。字段本身还有 `{{outputFormat}}` 里的示范与之呼应（见 buildPrompt 的
+ * intentExample），两处一起给，模型不容易漏掉。
+ *
+ * 只描述**开着的那一侧**：关掉的一侧连取值都不出现在提示词里；解析端另外兜一道
+ * （模型自己回了一个被关掉的 intent 也不采信）。
+ */
+const redrawIntentPrompt = (allowTranslate: boolean, allowErase: boolean): string => {
+  const choices: string[] = [];
+  if (allowTranslate) {
+    choices.push('- "translate"：标准字体**还原不了**这一格的观感 —— 艺术字、装饰字、手写花字、花体；拟声词 / 音效字通常也在这一类（大多是画上去的花字）。让 AI 把中文**画**上去。');
+  }
+  if (allowErase) {
+    choices.push('- "erase"：文字是普通印刷体，标准字体**能还原** —— 让 AI 只把原文擦干净、留出干净底图，中文由编辑器用标准字体排上去（比让 AI 直接写中文更不容易出错字）。');
+  }
+  return `
+
+【重绘标记】
+除了 freeze，每个编号还要多给一个 intent 字段，说明这一格**如果被冻结**、之后交给 AI 重绘时该跑哪个场景：
+${choices.join('\n')}
+- ""：这一格没有被冻结，或者你拿不准 —— 一律填空串，交回默认场景。
+
+判断 intent 只看一件事：**这一格的文字，标准字体能不能还原它的观感** —— 与擦除效果无关，不要把两件事混在一起。`;
+};
 
 /**
  * Draw the image with numbered boxes for each region; returns the data URL plus
@@ -364,10 +411,29 @@ const parsePageTerms = (parsed: any): PageTerm[] => {
  * malformed JSON response is exactly the transient model failure this
  * budget exists for, not a reason to fail the whole page.
  */
+/** 重绘标记允许采信哪几侧（总开关与对应子开关都开才算 true）。 */
+export interface IntentMarking {
+  translate: boolean;
+  erase: boolean;
+}
+
+/**
+ * 解析模型回的 intent 并按开关过滤 —— 任何不认识的值、或者被关掉的那一侧，都当成
+ * 「没有标记」（调用方据此保持该框原有的场景不变）。与 `font` 同一个道理：关掉开关
+ * 之后，即使模型自己回了一个字段也不生效。
+ */
+const parseIntent = (raw: any, marking: IntentMarking): Region['redrawIntent'] => {
+  if (raw === 'translate' && marking.translate) return 'translate';
+  if (raw === 'erase' && marking.erase) return 'erase';
+  return undefined;
+};
+
 const parseTranslationResponse = (
   content: string,
   regions: Region[],
-  fontAutoDetect: boolean
+  fontAutoDetect: boolean,
+  /** 重绘标记：允许采信哪几个 intent 值（两侧都 false = 总开关关着或没开子开关）。 */
+  marking: IntentMarking
 ): EditorTranslateOutcome => {
   if (!content.trim()) throw new Error('AI 返回了空响应');
   const parsed = extractJson(content);
@@ -384,6 +450,7 @@ const parseTranslationResponse = (
       vertical: typeof item.vertical === 'boolean' ? item.vertical : undefined,
       // 只在开关打开时采信：关掉后即使模型自己回了一个 font 也不生效。
       font: fontAutoDetect ? resolveFontIdFromAi(item.font) : undefined,
+      intent: parseIntent(item.intent, marking),
     });
   }
   // We always send ≥1 region and the prompt demands every id back, so a valid
@@ -470,15 +537,27 @@ export const translateEditorRegions = async (
       .map((r, i) => `${i + 1}: [${Math.round((r.x / 100) * annotated.width)}, ${Math.round((r.y / 100) * annotated.height)}, ${Math.round((r.width / 100) * annotated.width)}, ${Math.round((r.height / 100) * annotated.height)}] (${r.detectedClass ?? 'manual'})`)
       .join('\n');
     const fontAutoDetect = !!config.enableFontAutoDetect;
+    // 重绘标记：总开关与子开关**都**要开才算数（关掉的那一侧连取值都不出现在提示词里，
+    // 解析端也不采信）。
+    const markTranslate = !!config.enableAiRedrawIntentMarking && !!config.enableMarkTranslateIntent;
+    const markErase = !!config.enableAiRedrawIntentMarking && !!config.enableMarkEraseIntent;
+    const markingOn = markTranslate || markErase;
     // 用户在设置里改过编辑器提示词就用他的模板，否则用内置默认模板。
-    const basePrompt = buildPrompt(skeleton, fontAutoDetect, config.editorTranslationPrompt);
+    const basePrompt = buildPrompt(
+      skeleton,
+      fontAutoDetect,
+      config.editorTranslationPrompt,
+      // 输出格式示范里补一个 intent；两侧都开时用 erase 当示范（更少见、更容易被漏掉的那个）。
+      markingOn ? `,"intent":"${markErase ? 'erase' : 'translate'}"` : ''
+    );
     // 擦除判定那段只在第二张图真的发出去时才追加 —— 说了「见图 2」却没图会把模型带偏。
     // 子开关（拟声词是否也看擦除效果）只改那一段的措辞，不改图片；它的值不随主开关
     // 清空，所以这里必须自己带上主开关 —— 生效与否是两者的与，不是子开关单独说了算。
     const sfxFreedFromFreeze = !!config.enableEraseJudgedFreeze && !!config.enableEraseJudgedFreezeForSfx;
-    const prompt = erasedBase64
-      ? basePrompt + eraseCheckPrompt(sfxFreedFromFreeze)
-      : basePrompt;
+    // 两段附加说明各自独立：擦除判定看的是「有没有第二张图」，重绘标记看的是它的开关。
+    const prompt = basePrompt
+      + (erasedBase64 ? eraseCheckPrompt(sfxFreedFromFreeze) : '')
+      + (markingOn ? redrawIntentPrompt(markTranslate, markErase) : '');
 
     // Record the annotated page — in this flow the payload IS a drawing of the
     // image (numbered boxes, optionally masked outside), which the canvas never
@@ -610,7 +689,7 @@ export const translateEditorRegions = async (
       // retried too: it is a transient model failure, not a reason to fail the
       // whole page.
       try {
-        return parseTranslationResponse(content, regions, fontAutoDetect);
+        return parseTranslationResponse(content, regions, fontAutoDetect, { translate: markTranslate, erase: markErase });
       } catch (e: any) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
         if (errorRetries >= MAX_ERROR_RETRIES) throw e;

@@ -648,6 +648,35 @@ export interface AppConfig {
    *  它只放宽「拟声词」这一类。艺术字 / 装饰性文字仍照旧冻结 —— 那类的问题不是
    *  「擦不擦得干净」，而是标准字体还原不了（留给 AI 重绘的「翻译」场景处理）。 */
   enableEraseJudgedFreezeForSfx: boolean;
+  /** 重绘标记（翻译时）—— 总开关，默认关。
+   *
+   *  打开后，翻译时额外让模型给**每个被冻结的框**标一个 `redrawIntent`：这一格之后
+   *  交给 AI 重绘时该跑哪个场景。它解决的是：冻结框今天一律跟随全局「默认场景」，而
+   *  默认场景只有一种 —— 艺术字和普通印刷体被送进同一个场景，总有一半是错的。
+   *
+   *  判断依据只有一条（**与擦除效果无关**）：标准字体能不能还原这段文字的观感。
+   *  - 还原不了（艺术字 / 装饰字 / 花体，拟声词通常也在这一类）→ 见 enableMarkTranslateIntent
+   *  - 能还原（普通印刷体）→ 见 enableMarkEraseIntent
+   *
+   *  只给**冻结**的框写标记：没冻结的框由编辑器嵌字、不会进 AI 重绘，标了也没用。
+   *  总开关关着时什么都不写，冻结框继续跟随默认场景（与升级前一致）。 */
+  enableAiRedrawIntentMarking: boolean;
+  /** 重绘标记的子开关：把「标准字体还原不了观感」的框标成 `redrawIntent='translate'`
+   *  —— 让 AI 把中文**画**上去。
+   *
+   *  它主要在全局默认场景**不是** translate 时才起作用（默认本来就是 translate），
+   *  相当于给这类框上一道保险。 */
+  enableMarkTranslateIntent: boolean;
+  /** 重绘标记的子开关：把「标准字体就能还原」的框标成 `redrawIntent='erase'` ——
+   *  让 AI 只把原文擦干净、留出干净底图，中文由编辑器用标准字体排上去。
+   *
+   *  这是重绘标记的主要收益：生图模型写中文偶尔出错字、字体也不受控，而「AI 擦底图 +
+   *  编辑器嵌字」让两边各干自己最擅长的。消费端已经现成 —— AI 擦除产物一落地，编辑器
+   *  就会把这个框解冻并排版（见 useMangaEditor 的 erased-base 效果）。
+   *
+   *  前提是该框真的冻结了，而「擦不干净」这件事：开着「擦除判定」时是看出来的，
+   *  关着时只能由模型从文字类型猜。 */
+  enableMarkEraseIntent: boolean;
   translationBaseUrl: string;
   translationApiKey: string;
   translationModel: string;

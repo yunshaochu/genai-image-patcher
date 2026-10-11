@@ -720,6 +720,48 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         </div>
                                     )}
 
+                                    {/* 重绘标记：冻结的框之后交给 AI 重绘时该跑哪个场景。
+                                        同样只在总开关打开时露出子开关（值都留着，不会
+                                        因为隐藏而被重置）。 */}
+                                    <SubRow
+                                        title={t(lang, 'aiRedrawIntentMarking')}
+                                        help={t(lang, 'aiRedrawIntentMarkingDesc')}
+                                        control={
+                                            <Toggle
+                                                size="sm"
+                                                checked={config.enableAiRedrawIntentMarking}
+                                                onChange={(enabled) => updateConfig('enableAiRedrawIntentMarking', enabled)}
+                                            />
+                                        }
+                                    />
+
+                                    {config.enableAiRedrawIntentMarking && (
+                                        <div className="pl-4 space-y-3">
+                                            <SubRow
+                                                title={t(lang, 'markTranslateIntent')}
+                                                help={t(lang, 'markTranslateIntentDesc')}
+                                                control={
+                                                    <Toggle
+                                                        size="sm"
+                                                        checked={config.enableMarkTranslateIntent}
+                                                        onChange={(enabled) => updateConfig('enableMarkTranslateIntent', enabled)}
+                                                    />
+                                                }
+                                            />
+                                            <SubRow
+                                                title={t(lang, 'markEraseIntent')}
+                                                help={t(lang, 'markEraseIntentDesc')}
+                                                control={
+                                                    <Toggle
+                                                        size="sm"
+                                                        checked={config.enableMarkEraseIntent}
+                                                        onChange={(enabled) => updateConfig('enableMarkEraseIntent', enabled)}
+                                                    />
+                                                }
+                                            />
+                                        </div>
+                                    )}
+
                                     {/* 两个阶段的提示词拆成两个 tab：重绘阶段的（纯文本，
                                         喂给图生图重绘调用）与编辑器阶段的（模板，喂给整页 /
                                         选区翻译）。两份都可以改，也都能一键回到出厂文本。 */}

@@ -178,6 +178,10 @@ const DEFAULT_CONFIG: AppConfig = {
   enableEraseJudgedFreeze: false,
   /** 子开关也默认关 = 拟声词/语气词照旧一律冻结（与不开擦除判定时一致）。 */
   enableEraseJudgedFreezeForSfx: false,
+  /** 重绘标记默认关：它会决定冻结框之后走哪个重绘场景，不该替用户决定。 */
+  enableAiRedrawIntentMarking: false,
+  enableMarkTranslateIntent: false,
+  enableMarkEraseIntent: false,
 
   // AI Payload Compression Defaults
   enableAiPayloadCompression: true,
@@ -390,6 +394,18 @@ export function useConfig() {
             // 注意：这个值**不跟着主开关清空** —— 主开关只是让它不生效/不显示，
             // 下次主开关打开时按记着的样子恢复（见 types 里该字段的说明）。
             migratedConfig.enableEraseJudgedFreezeForSfx = false;
+        }
+
+        // 重绘标记（翻译时）：同样是新功能，存量会话一律关 —— 它决定冻结框之后走哪个
+        // 重绘场景，属于用户该自己拍板的事。
+        if (typeof migratedConfig.enableAiRedrawIntentMarking === 'undefined') {
+            migratedConfig.enableAiRedrawIntentMarking = false;
+        }
+        if (typeof migratedConfig.enableMarkTranslateIntent === 'undefined') {
+            migratedConfig.enableMarkTranslateIntent = false;
+        }
+        if (typeof migratedConfig.enableMarkEraseIntent === 'undefined') {
+            migratedConfig.enableMarkEraseIntent = false;
         }
 
         // 整批「跑完再重试」轮数：老配置没有 → 3（重试机制引入时的默认值）。
