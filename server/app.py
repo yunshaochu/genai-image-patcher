@@ -32,7 +32,7 @@ from flask_cors import CORS
 
 import comic_text_seg
 from erase import erase_bubble_roi, erase_free_roi_floodfill
-from inference_rtdetr import CLASS_NAMES, ComicDetector
+from inference_rtdetr import CLASS_NAMES, ComicDetector, DetectionResult
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -106,6 +106,79 @@ def allowed_file(filename):
 # 导致整框被误判成"掩码为空 → 误检"丢弃
 _MASK_BOX_PAD = 4
 _MASK_TEXT_CLASSES = ('text_bubble', 'text_free')
+# 补框：孤儿掩码连通域的最小像素数（低于此视为 CTD 幻觉噪点）
+_ORPHAN_MIN_AREA = 50
+# 孤儿掩码聚合半径：同一行/列的文字字符互相离得近，先膨胀再取连通域，
+# 免得一个文本行被拆成一堆单字小框
+_ORPHAN_GROUP_RADIUS = 10
+# 补出来的框没有检测器置信度可言，给个固定值：低于默认阈值 0.3 的场景不存
+# 在（必然通过），用户把置信度阈值调到 0.5 以上时这些框会被一并过滤 ——
+# 「调严就少框」的语义对无置信度的框同样成立
+_ORPHAN_CONFIDENCE = 0.5
+
+
+def _resolve_nested_text_boxes(detections, mask):
+    """文本框嵌套仲裁：用 CTD 掩码证据决定留外层还是留内层。
+
+    ogkalu 会输出嵌套的文本框，两类场景的诉求相反：
+    - 冗余分组（近重复双框；两颗近邻气泡被第三个大框一起罩住）：内层框已
+      覆盖全部文字，外层是多余的 —— 该删外层（用户的历史痛点，前端
+      dropEnclosingBoxes 的既有语义）
+    - 碎片内层（整段大框 ⊃ 单行小框，02.webp 实测）：内层只盖住一小部分
+      文字，删外层会让其余行没有框 —— 该删内层
+
+    判据：外层框的「独占掩码」= 外层框内、但不在任何内层框矩形里的掩码
+    像素。独占占比高 → 外层是唯一完整的文字区域，删内层；几乎为零 → 外层
+    冗余，删外层。无掩码时本函数不会被调用（前端规则照旧）。
+
+    只仲裁 text_bubble/text_free 之间的嵌套；bubble⊃text 仍交给前端
+    dropEnclosingBoxes（删冗余 bubble 的既有语义不变）。
+    """
+    def area(b):
+        return (b[2] - b[0]) * (b[3] - b[1])
+
+    def contains(outer, inner):
+        tol_x = max(2, (outer[2] - outer[0]) * 0.02)
+        tol_y = max(2, (outer[3] - outer[1]) * 0.02)
+        return (inner[0] >= outer[0] - tol_x and inner[1] >= outer[1] - tol_y
+                and inner[2] <= outer[2] + tol_x
+                and inner[3] <= outer[3] + tol_y)
+
+    def rect_bool(b):
+        r = np.zeros_like(mask)
+        x1, y1 = max(0, b[0]), max(0, b[1])
+        x2, y2 = min(mask.shape[1], b[2]), min(mask.shape[0], b[3])
+        if x2 > x1 and y2 > y1:
+            r[y1:y2, x1:x2] = True
+        return r
+
+    text = [d for d in detections if d.class_name in _MASK_TEXT_CLASSES]
+    drop_ids = set()
+    for outer in sorted(text, key=lambda d: -area(d.bbox)):
+        if id(outer) in drop_ids or area(outer.bbox) <= 0:
+            continue
+        inners = [d for d in text
+                  if d is not outer and id(d) not in drop_ids
+                  and 0 < area(d.bbox) < area(outer.bbox)
+                  and contains(outer.bbox, d.bbox)]
+        if not inners:
+            continue
+        outer_m = mask & rect_bool(outer.bbox)
+        inner_union = np.zeros_like(mask)
+        for inner in inners:
+            inner_union |= rect_bool(inner.bbox)
+        exclusive = outer_m & ~inner_union
+        # 独占掩码几乎为零 → 外层冗余，删外层（内层已覆盖全部文字）；
+        # 否则外层是唯一完整的文字区域，内层是碎片，删内层
+        if exclusive.sum() < max(_ORPHAN_MIN_AREA, 0.2 * outer_m.sum()):
+            drop_ids.add(id(outer))
+        else:
+            drop_ids.update(id(d) for d in inners)
+    if drop_ids:
+        detections[:] = [d for d in detections
+                         if d.class_name not in _MASK_TEXT_CLASSES
+                         or id(d) not in drop_ids]
+    return len(drop_ids)
 
 
 def attach_text_masks(img, detections):
@@ -114,7 +187,11 @@ def attach_text_masks(img, detections):
 
     流程：CTD 对整页跑一次 → 每个框取 `掩码 ∩ 框(外扩4px)` → base64 PNG 挂到
     检测项上；框内一个掩码像素都没有 → 与模型分割结果互相矛盾，大概率是
-    RT-DETR 误检，直接丢弃。反向亦然：落在所有框外的掩码连通域不返回。
+    RT-DETR 误检，直接丢弃。
+
+    反向补框：不落在任何文本框内的掩码连通域 = ogkalu 漏检的文字（双向过滤
+    的另一半），按掩码形状补一个框返回，掩码直接现成。类别猜测：质心落在
+    ogkalu 的 bubble 框里 → text_bubble，否则 text_free。
 
     CTD 不可用（模型未下载完/加载失败/推理异常）时静默降级：原样返回检测框，
     text_mask_available=False，前端擦除走后端启发式，功能不受影响。
@@ -128,9 +205,13 @@ def attach_text_masks(img, detections):
         info['error'] = f'{type(e).__name__}: {e}'
         return info
 
+    # 先仲裁文本框嵌套（详见 _resolve_nested_text_boxes），再做掩码认领
+    info['nested_dropped'] = _resolve_nested_text_boxes(detections, mask)
+
     kept = []
     dropped = 0
     h, w = img.shape[:2]
+    claimed = np.zeros_like(mask)
     for det in detections:
         if det.class_name not in _MASK_TEXT_CLASSES:
             kept.append(det)
@@ -142,6 +223,7 @@ def attach_text_masks(img, detections):
         if not sub.any():
             dropped += 1
             continue
+        claimed[ey1:ey2, ex1:ex2] |= sub
         ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
         if not ok:
             kept.append(det)
@@ -151,9 +233,45 @@ def attach_text_masks(img, detections):
         det.mask_size = [int(sub.shape[1]), int(sub.shape[0])]
         kept.append(det)
 
+    # ── 补框：孤儿掩码（ogkalu 漏检的文字）───────────────────────
+    added = 0
+    orphan = mask & ~claimed
+    if orphan.any():
+        grouped = cv2.dilate(orphan.astype(np.uint8), np.ones(
+            (_ORPHAN_GROUP_RADIUS * 2 + 1,) * 2, np.uint8), iterations=1)
+        num, labels = cv2.connectedComponents(grouped, connectivity=8)
+        bubble_boxes = [d.bbox for d in detections if d.class_name == 'bubble']
+        for i in range(1, num):
+            comp = orphan & (labels == i)
+            px = int(comp.sum())
+            if px < _ORPHAN_MIN_AREA:
+                continue
+            ys, xs = np.where(comp)
+            x1, y1 = int(xs.min()), int(ys.min())
+            x2, y2 = int(xs.max()) + 1, int(ys.max()) + 1
+            cy, cx = (y1 + y2) / 2, (x1 + x2) / 2
+            in_bubble = any(bx1 <= cx <= bx2 and by1 <= cy <= by2
+                            for bx1, by1, bx2, by2 in bubble_boxes)
+            cls = 'text_bubble' if in_bubble else 'text_free'
+            sub = comp[y1:y2, x1:x2]
+            ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
+            if not ok:
+                continue
+            kept.append(DetectionResult(
+                bbox=[x1, y1, x2, y2],
+                class_id=1 if cls == 'text_bubble' else 2,
+                class_name=cls,
+                confidence=_ORPHAN_CONFIDENCE,
+                text_mask=base64.b64encode(buf.tobytes()).decode('ascii'),
+                mask_origin=[x1, y1],
+                mask_size=[int(sub.shape[1]), int(sub.shape[0])],
+            ))
+            added += 1
+
     info.update({
         'available': True,
         'dropped_empty_mask': dropped,
+        'added_from_mask': added,
         'elapsed_ms': round((time.time() - t0) * 1000, 1),
     })
     detections[:] = kept
