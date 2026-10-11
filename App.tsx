@@ -63,6 +63,9 @@ export default function App() {
     selectedImageId,
     selectedRegionId,
     setSelectedRegionId,
+    selectedRegionIds,
+    selectRegionIds,
+    toggleRegionSelection,
     viewMode,
     setViewMode,
     addImageFiles,
@@ -113,6 +116,7 @@ export default function App() {
       translatingImageIds: editorTranslatingImageIds,
       computedFontSizes,
       updateEditorRegion,
+      updateEditorRegions,
       setBrushLayer,
       dropRegionCache,
       translateImageRegions,
@@ -492,27 +496,52 @@ export default function App() {
     return () => window.removeEventListener('paste', handlePaste);
   }, [addImageFiles]); 
 
-  // Delete / Backspace removes the selected box — mirrors the canvas' ✕ button.
+  /** 全选当前页的所有文本框（Ctrl+A / 面板按钮共用同一份目标集）。 */
+  const handleSelectAllRegions = useCallback(() => {
+      if (!selectedImage) return;
+      const ids = selectedImage.regions.filter(r => !r.contextOnly).map(r => r.id);
+      if (ids.length > 0) selectRegionIds(ids);
+  }, [selectedImage, selectRegionIds]);
+
+  // Delete / Backspace removes the selected box(es) — mirrors the canvas' ✕ button.
+  // 多选时一次删掉整个选区（处理中的框照旧跳过）。
   const handleDeleteSelectedRegion = useCallback(() => {
-      if (!selectedImage || !selectedRegionId) return;
-      const region = selectedImage.regions.find(r => r.id === selectedRegionId);
-      // Processing boxes stay locked (same rule as the in-canvas delete button).
-      if (!region || region.status === 'processing') return;
-      dropRegionCache(selectedImage.id, selectedRegionId);
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const removable = new Set(
+        selectedImage.regions
+          .filter(r => selectedRegionIds.includes(r.id) && r.status !== 'processing')
+          .map(r => r.id)
+      );
+      if (removable.size === 0) return;
+      removable.forEach((id) => dropRegionCache(selectedImage.id, id));
       handleUpdateRegions(
         selectedImage.id,
-        selectedImage.regions.filter(r => r.id !== selectedRegionId)
+        selectedImage.regions.filter(r => !removable.has(r.id))
       );
       setSelectedRegionId(null);
-  }, [selectedImage, selectedRegionId, dropRegionCache, handleUpdateRegions, setSelectedRegionId]);
+  }, [selectedImage, selectedRegionIds, dropRegionCache, handleUpdateRegions, setSelectedRegionId]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
         const target = e.target as HTMLElement;
+        // 焦点在输入框 / 可编辑区里时一律放行：Ctrl+A 在那儿是「选中该字段
+        // 的文字」，是正常编辑操作，不该被抢。
         if (target.matches('input, textarea') || target.isContentEditable) return;
+        // Ctrl+A：**无条件拦掉浏览器的「全选网页文字」**（应用界面里选中页面文字
+        // 没有任何意义，还盖住画布）。拦截之后再决定要不要选框 —— 编辑器编辑页
+        // 顺手全选本页所有框，其它视图只拦截、不做事。
+        // 关键：preventDefault 必须在任何条件判断**之前**执行，否则一旦某个条件
+        // 不成立就 return，浏览器的默认全选就漏过去了。
+        // 键位判定同时认 e.code —— 中文输入法 / 非拉丁键盘布局下 e.key 可能不是
+        // 'a'（甚至被输入法吃掉），e.code === 'KeyA' 与布局无关，最保险。
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A' || e.code === 'KeyA')) {
+            e.preventDefault();
+            if (isEditorMode && viewMode === 'edit') handleSelectAllRegions();
+            return;
+        }
         if (e.ctrlKey || e.metaKey || e.altKey) return;
         if (e.key === 'Delete' || e.key === 'Backspace') {
-            if (!selectedRegionId) return;
+            if (selectedRegionIds.length === 0) return;
             e.preventDefault();
             handleDeleteSelectedRegion();
             return;
@@ -536,9 +565,11 @@ export default function App() {
             }
         }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [images, selectedImageId, handleSelectImage, selectedRegionId, handleDeleteSelectedRegion]);
+    // 捕获阶段：抢在任何 DOM 内的处理器（含 React 根容器上的）之前拿到按键，
+    // 避免被某个 stopPropagation 的输入框 / 面板把 Ctrl+A 半路吞掉。
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [images, selectedImageId, handleSelectImage, isEditorMode, viewMode, handleSelectAllRegions, selectedRegionIds, handleDeleteSelectedRegion]);
 
   // --- RESTORE BOXES HANDLER ---
   const handleUpdateRestoreBoxes = useCallback((regionId: string, boxes: RestoreBox[]) => {
@@ -896,6 +927,61 @@ export default function App() {
       );
   }, [selectedImage, selectedRegionId, updateEditorRegion]);
 
+  // ── 编辑器多选：批量操作 ────────────────────────────────────────
+  // Ctrl+点击 / Ctrl+A 选中多个框后，这三条把单框面板的同一套设置应用到**整个
+  // 选区**。字号按每格各自的基准步进（一个 20px、一个 30px，一起 +5 → 25/35）。
+  // AI 独占框由 updateEditorRegions 内部跳过。
+  const editorOnBatchSetDirection = useCallback((isVertical: boolean | undefined) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          () => ({ editorStyle: { isVertical } }),
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  const editorOnBatchStepFontSize = useCallback((delta: number) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const img = selectedImage;
+      updateEditorRegions(
+          img.id,
+          selectedRegionIds,
+          (region) => {
+              const base = region.editorStyle?.fontSize
+                  ?? computedFontSizes[region.id]
+                  ?? resolveAutoFontSize(
+                      region,
+                      img.originalWidth,
+                      img.originalHeight,
+                      !!config.enableVerticalTextDefault,
+                      img.previewUrl !== img.originalUrl
+                  )
+                  ?? 16;
+              const next = Math.min(400, Math.max(6, Math.round(base + delta)));
+              if (next === Math.round(base)) return null;
+              return { editorStyle: { fontSize: next } };
+          },
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, computedFontSizes, config.enableVerticalTextDefault, updateEditorRegions]);
+
+  const editorOnBatchSetColor = useCallback((mode: 'auto' | 'black' | 'white') => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          () => ({
+              editorStyle: mode === 'auto'
+                  ? { color: undefined, outlineColor: undefined, outlineWidth: undefined, colorSource: undefined }
+                  : mode === 'black'
+                      ? { color: '#000000', outlineColor: '#ffffff', outlineWidth: undefined, colorSource: 'manual' }
+                      : { color: '#ffffff', outlineColor: '#000000', outlineWidth: undefined, colorSource: 'manual' },
+          }),
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
   // 两点（拖线）测角：armed 时画布进入测角模式，沿原文斜字拖一条线定 rotation
   // （交互细节见 EditorCanvas 的 angleMeasureMode）。
   const [angleMeasureArmed, setAngleMeasureArmed] = useState(false);
@@ -1147,6 +1233,9 @@ export default function App() {
                     language={config.language}
                     selectedRegionId={selectedRegionId}
                     onSelectRegion={setSelectedRegionId}
+                    // 多选（编辑器编辑页专用）：Ctrl+点击加/减，Ctrl+A 全选本页。
+                    selectedRegionIds={isEditorMode && viewMode === 'edit' ? selectedRegionIds : undefined}
+                    onToggleRegionSelection={isEditorMode && viewMode === 'edit' ? toggleRegionSelection : undefined}
                     onAdjustRegionSize={editorOnAdjustRegionSize}
                     onResetRegion={editorOnResetRegion}
                     onInteractionStart={handleInteractionStart}
@@ -1222,6 +1311,11 @@ export default function App() {
             config={config}
             selectedRegionId={selectedRegionId}
             onSelectRegion={setSelectedRegionId}
+            selectedRegionIds={selectedRegionIds}
+            onBatchSetDirection={editorOnBatchSetDirection}
+            onBatchStepFontSize={editorOnBatchStepFontSize}
+            onBatchSetColor={editorOnBatchSetColor}
+            onSelectAll={handleSelectAllRegions}
             busy={editorBusy}
             computedFontSizes={computedFontSizes}
             onConfigChange={updateConfig}

@@ -40,6 +40,11 @@ interface EditorCanvasProps {
   language: Language;
   selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
+  /** 多选：当前选区全部框 id（编辑器模式下由 Ctrl+点击 / Ctrl+A 维护）。
+   *  长度 >1 时每个选中框都高亮，但只在单选时显示缩放柄与框操作条。 */
+  selectedRegionIds?: string[];
+  /** Ctrl+点击：把框加入 / 移出选区。不传 = 画布不支持多选（点框仍是单选）。 */
+  onToggleRegionSelection?: (regionId: string) => void;
   onAdjustRegionSize?: (regionId: string, isExpand: boolean) => void;
   onInteractionStart?: () => void;
   viewMode?: ViewMode;
@@ -125,6 +130,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     language,
     selectedRegionId,
     onSelectRegion,
+    selectedRegionIds,
+    onToggleRegionSelection,
     onAdjustRegionSize,
     onInteractionStart,
     viewMode = 'original',
@@ -1014,7 +1021,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
             // Only the boxes relevant to this display context are drawn —
             // editor: text regions; generation: paintable classes per source.
             if (!isRegionVisible(region)) return null;
-            const isSelected = selectedRegionId === region.id && boxesInteractive;
+            // 多选（编辑器模式 Ctrl+点击 / Ctrl+A）：选区里的每个框都高亮；只有
+            // 单选时才显示缩放柄与框操作条（多选时拖拽/缩放让位给批量操作）。
+            const multiSelectActive = (selectedRegionIds?.length ?? 0) > 1;
+            const isSelected = boxesInteractive && !multiSelectActive && selectedRegionId === region.id;
+            const isInSelection = isSelected
+              || (boxesInteractive && multiSelectActive && !!selectedRegionIds?.includes(region.id));
             const isEditable = boxesInteractive && !disabled && region.status !== 'processing';
 
             const isManipulating = (interaction.type === 'moving' || interaction.type === 'resizing') && interaction.regionId === region.id;
@@ -1046,18 +1058,18 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                      // violet (已冻结) instead of the generic green "completed".
                      const display = isEditMode ? editorRegionDisplay(region, defaultRedrawIntent) : 'completed';
                      styleClasses = display === 'frozen'
-                       ? (isSelected
+                       ? (isInSelection
                            ? 'border-2 border-violet-500 bg-violet-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#8b5cf6] z-30 cursor-move'
                            : 'border-2 border-violet-500 bg-violet-500/10 z-10 cursor-pointer')
                        : display === 'erased'
-                         ? (isSelected
+                         ? (isInSelection
                              ? 'border-2 border-sky-500 bg-sky-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#0ea5e9] z-30 cursor-move'
                              : 'border-2 border-sky-500 bg-sky-500/10 z-10 cursor-pointer')
-                         : (isSelected
+                         : (isInSelection
                              ? 'border-2 border-emerald-500 bg-emerald-500/20 shadow-[0_0_0_2px_rgba(255,255,255,0.8),0_0_0_4px_#10b981] z-30 cursor-move'
                              : 'border-2 border-emerald-500 bg-emerald-500/10 z-10 cursor-pointer');
                 } else {
-                    if (isSelected) {
+                    if (isInSelection) {
                         styleClasses = 'border-2 border-skin-primary bg-skin-primary/10 shadow-[0_0_0_1px_rgba(255,255,255,0.5)] z-20 cursor-move';
                     } else {
                         styleClasses = 'border-2 border-skin-primary hover:border-skin-primary bg-skin-primary/5 z-10 cursor-pointer';
@@ -1147,6 +1159,15 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                       handleRestoreRegionClick(e, region);
                     }
                   } else {
+                    // Ctrl+点击 = 多选：把框加入 / 移出选区，不进入拖拽。
+                    // 刻意**不** preventDefault：让焦点按常规离开输入框（点画布 =
+                    // 失焦），否则焦点会滞留在右侧面板的文本框里，随后的 Ctrl+A /
+                    // Delete 等快捷键就全被那个输入框吃掉了。
+                    if (e.button === 0 && (e.ctrlKey || e.metaKey) && onToggleRegionSelection) {
+                      e.stopPropagation();
+                      onToggleRegionSelection(region.id);
+                      return;
+                    }
                     // Block region interaction when panning with space or alt
                     if (e.button === 0 && (e.altKey || spaceHeldRef.current)) return;
                     handleRegionMouseDown(e, region);

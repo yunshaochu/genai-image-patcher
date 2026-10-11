@@ -39,6 +39,17 @@ interface EditorDockProps {
   config: AppConfig;
   selectedRegionId: string | null;
   onSelectRegion: (regionId: string | null) => void;
+  /** 多选：当前选区全部框 id（编辑器编辑页由 Ctrl+点击 / Ctrl+A 维护）。
+   *  长度 >1 时面板切换为批量操作（横排/竖排、字号加减、字色）。 */
+  selectedRegionIds?: string[];
+  /** 批量：把选中的框全部设为横排 / 竖排 / 自动（undefined = 自动）。 */
+  onBatchSetDirection?: (isVertical: boolean | undefined) => void;
+  /** 批量：按各自基准字号一起加 / 减（delta 为 ±5）。 */
+  onBatchStepFontSize?: (delta: number) => void;
+  /** 批量：把选中的框字色统一设为黑 / 白 / 自动。 */
+  onBatchSetColor?: (mode: 'auto' | 'black' | 'white') => void;
+  /** 全选当前页的所有文本框（与 Ctrl+A 同一动作的按钮入口）。 */
+  onSelectAll?: () => void;
   busy: boolean;
   /** regionId → last resolved font size (auto-fit or manual), shown as the
    *  font-size input placeholder so users have a reference for manual sizing. */
@@ -790,6 +801,8 @@ const RegionFontPicker: React.FC<{
 // ---------------------------------------------------------------------------
 const EditorDock: React.FC<EditorDockProps> = ({
   image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
+  selectedRegionIds, onBatchSetDirection, onBatchStepFontSize, onBatchSetColor,
+  onSelectAll,
   onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
   onTranslate, onTranslateAll,
   translating, translatingImageIds, onStopTranslate,
@@ -846,7 +859,13 @@ const EditorDock: React.FC<EditorDockProps> = ({
   useEffect(() => { setConfirmDir(null); }, [imageScope]);
 
   const editableRegions = image.regions.filter(r => !r.contextOnly);
-  const idx = editableRegions.findIndex(r => r.id === selectedRegionId);
+  /** 当前选区（多选数组优先；未传数组就退回单选 id）。 */
+  const selectionIds = selectedRegionIds && selectedRegionIds.length > 0
+    ? selectedRegionIds
+    : (selectedRegionId ? [selectedRegionId] : []);
+  /** 多选：选区里至少两个框 → 面板切到批量操作（不再显示单框详情）。 */
+  const multiSelection = selectionIds.length > 1;
+  const idx = !multiSelection ? editableRegions.findIndex(r => r.id === selectionIds[0]) : -1;
   const region = idx >= 0 ? editableRegions[idx] : null;
 
   // 吸管是「这一个框」的工具：换框就收起，免得在上一个框的原图裁剪上取色。
@@ -925,6 +944,141 @@ const EditorDock: React.FC<EditorDockProps> = ({
       notice={glossary.notice}
     />
   );
+
+  // ── 多选：批量操作面板 ────────────────────────────────────────────
+  // Ctrl+点击 / Ctrl+A 选中多个框后，这里对**整个选区**统一下达横排/竖排、
+  // 字号加减、字色；每格按自己的当前值算（字号步进各加各的基准）。
+  // AI 独占的框会被编辑引擎跳过（按钮据此禁用 / 计数提示）。
+  if (multiSelection) {
+    const selectedRegions = image.regions.filter(r => selectionIds.includes(r.id) && !r.contextOnly);
+    const editableSelected = selectedRegions.filter(r => !isAiOwned(r));
+    const lockedCount = selectedRegions.length - editableSelected.length;
+    /** 与单框面板的 regionEditLocked 同一套：整批翻译时只有正在翻的这页锁住。 */
+    const batchLocked = (busy && !translating) || !!translatingImageIds?.has(image.id);
+    const canBatchEdit = editableSelected.length > 0 && !batchLocked;
+
+    /** 所有选中框共同的排版方向（混合 = 'mixed'，此时三个按钮都不高亮）。 */
+    const commonDir: boolean | undefined | 'mixed' = editableSelected.length === 0
+      ? undefined
+      : editableSelected.every(r => r.editorStyle?.isVertical === true) ? true
+        : editableSelected.every(r => r.editorStyle?.isVertical === false) ? false
+          : editableSelected.every(r => r.editorStyle?.isVertical === undefined) ? undefined
+            : 'mixed';
+    const colorModeOf = (r: Region): 'auto' | 'black' | 'white' =>
+      r.editorStyle?.color === '#000000' ? 'black'
+        : r.editorStyle?.color === '#ffffff' ? 'white'
+          : 'auto';
+    /** 所有选中框共同的字色档位（混合 = 'mixed'）。 */
+    const commonColor: 'auto' | 'black' | 'white' | 'mixed' = editableSelected.length === 0
+      ? 'auto'
+      : editableSelected.every(r => colorModeOf(r) === 'black') ? 'black'
+        : editableSelected.every(r => colorModeOf(r) === 'white') ? 'white'
+          : editableSelected.every(r => colorModeOf(r) === 'auto') ? 'auto'
+            : 'mixed';
+
+    const groupLabel = 'text-[9px] font-bold text-skin-muted';
+    const stepBtn = 'flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-40 disabled:hover:text-skin-muted disabled:hover:border-skin-border transition-colors';
+
+    return (
+      <aside className="h-full w-[272px] shrink-0 bg-skin-surface border-l border-skin-border shadow-2xl flex flex-col animate-in fade-in slide-in-from-right-4">
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-skin-border">
+          <span className="text-[10px] font-bold text-skin-text">{t(lang, 'editorMultiTitle')}</span>
+          <span className="text-[9px] font-mono text-skin-muted">{t(lang, 'editorMultiCount', { count: selectionIds.length })}</span>
+          <div className="ml-auto flex items-center gap-0.5">
+            <button
+              onClick={() => onSelectRegion(null)}
+              className="p-1 rounded text-skin-muted hover:text-rose-500 hover:bg-skin-fill transition-colors"
+              title={t(lang, 'editorMultiClearTip')}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+            <button
+              onClick={() => setCollapsed(true)}
+              className="p-1 rounded text-skin-muted hover:text-skin-primary hover:bg-skin-fill transition-colors"
+              title={t(lang, 'editorDockCollapse')}
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 5l7 7-7 7" /></svg>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-3">
+          <p className="text-[10px] text-skin-muted leading-relaxed border border-dashed border-skin-border rounded-lg p-2 bg-skin-fill/20">
+            {t(lang, 'editorMultiHint')}
+          </p>
+          {lockedCount > 0 && (
+            <div className="text-[9px] text-amber-600 leading-tight">{t(lang, 'editorMultiLocked', { count: lockedCount })}</div>
+          )}
+          {editableSelected.length === 0 && (
+            <div className="text-[9px] text-skin-muted leading-tight">{t(lang, 'editorMultiNoneEditable')}</div>
+          )}
+
+          {/* 排版方向：横排 / 竖排 / 自动 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiDir')}</span>
+            <div className="flex bg-skin-fill p-0.5 rounded border border-skin-border">
+              {([undefined, true, false] as const).map((v, i) => (
+                <button
+                  key={i}
+                  onClick={() => onBatchSetDirection?.(v)}
+                  disabled={!canBatchEdit}
+                  className={`flex-1 px-1 py-1 text-[9px] rounded transition-all disabled:opacity-40 ${commonDir === v ? 'bg-skin-surface shadow-sm text-skin-primary font-bold' : 'text-skin-muted'}`}
+                >
+                  {v === undefined ? t(lang, 'editorDirAuto') : v ? t(lang, 'editorDirVertical') : t(lang, 'editorDirHorizontal')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 字号：按各自基准一起加 / 减 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiFontSize')}</span>
+            <div className="flex items-stretch gap-1">
+              <button onClick={() => onBatchStepFontSize?.(-5)} disabled={!canBatchEdit} className={stepBtn}>−5</button>
+              <button onClick={() => onBatchStepFontSize?.(5)} disabled={!canBatchEdit} className={stepBtn}>+5</button>
+            </div>
+          </div>
+
+          {/* 字色：黑 / 白 / 自动 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiColor')}</span>
+            <div className="flex border border-skin-border rounded overflow-hidden">
+              {(['auto', 'black', 'white'] as const).map(v => (
+                <button
+                  key={v}
+                  onClick={() => onBatchSetColor?.(v)}
+                  disabled={!canBatchEdit}
+                  className={`flex-1 px-2 py-1 text-[9px] font-bold transition-colors disabled:opacity-40 ${
+                    commonColor === v ? 'bg-skin-primary text-white' : 'text-skin-muted hover:bg-skin-primary/10'
+                  }`}
+                >
+                  {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'black' ? 'editorColorBlack' : 'editorColorWhite')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {batchLocked && (
+            <div className="flex items-center justify-center gap-2 text-[10px] text-skin-primary">
+              <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+              {t(lang, 'editorWorking')}
+            </div>
+          )}
+        </div>
+
+        {glossarySection}
+        <DockActions
+          resultOnly
+          config={config}
+          images={images}
+          currentImage={image}
+          processAll={imageScope === 'all'}
+          onDownload={onDownload}
+          onApplyAsOriginal={onApplyAsOriginal}
+        />
+      </aside>
+    );
+  }
 
   // Global view: no box selected → batch operations for the whole image.
   if (!region) {
@@ -1199,6 +1353,17 @@ const EditorDock: React.FC<EditorDockProps> = ({
           <p className="text-[10px] text-skin-muted leading-relaxed border border-dashed border-skin-border rounded-lg p-2 bg-skin-fill/20">
             {t(lang, 'editorEditHint')}
           </p>
+
+          {/* 全选本页框：Ctrl+A 的鼠标入口。输入法正在组字、焦点在文本框里等
+              情况下快捷键可能到不了画布，这个按钮永远可用。 */}
+          <button
+            onClick={onSelectAll}
+            disabled={!onSelectAll || editableRegions.length === 0}
+            title={t(lang, 'editorMultiSelectAllTip')}
+            className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-50 transition-colors"
+          >
+            {t(lang, 'editorMultiSelectAll')}
+          </button>
         </div>
 
         {/* Result actions pinned to the dock's bottom edge — the editor's own

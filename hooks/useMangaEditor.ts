@@ -757,6 +757,47 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [getImage, updateImage, scheduleRecomposite, dropErasedCache]);
 
   /**
+   * 批量编辑：对一批框施加同一套 editor 字段更新（多选面板用）。
+   *
+   * 与单框的 updateEditorRegion 同一套规则，只是"更新内容"由调用方按每个框的
+   * **当前值**现算 —— 字号步进这类操作必须按各自的基准走（一个框 20px、另一个
+   * 30px，一起 +5 应该是 25 / 35，不是统一成某一个值）。`buildUpdates` 返回
+   * null / {} 表示这一框跳过（例如字号已到边界）。
+   *
+   * AI 独占框一律跳过（与单框路径同一规则）；每个被改动的框单独排队合成。
+   * 返回实际改动的框数（0 = 什么都没做，调用方据此决定是否提示）。
+   */
+  const updateEditorRegions = useCallback((
+    imageId: string,
+    regionIds: string[],
+    buildUpdates: (region: Region) => EditorFieldUpdates | null,
+    opts?: { debounceMs?: number }
+  ): number => {
+    const img = getImage(imageId);
+    if (!img || regionIds.length === 0) return 0;
+    const idSet = new Set(regionIds);
+    const nextById = new Map<string, Region>();
+    for (const r of img.regions) {
+      if (!idSet.has(r.id) || isAiOwned(r)) continue;
+      const updates = buildUpdates(r);
+      if (!updates || Object.keys(updates).length === 0) continue;
+      // 撤回擦除（editorErased: false）与单框路径一样要丢掉擦除缓存。
+      if (updates.editorErased === false) dropErasedCache(r.id);
+      nextById.set(r.id, mergeEditorUpdates(r, updates));
+    }
+    if (nextById.size === 0) return 0;
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => nextById.get(r.id) ?? r),
+    }));
+    // 每个框单独排队合成（防抖键是 imageId|regionId，互不影响）。
+    for (const [id, nr] of nextById) {
+      scheduleRecomposite(imageId, id, opts?.debounceMs, nr);
+    }
+    return nextById.size;
+  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache]);
+
+  /**
    * Replace (or clear) the brush-stroke layer of a region.
    *
    * The recomposite runs immediately with the explicitly-built next region
@@ -1536,6 +1577,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     translatingImageIds,
     computedFontSizes,
     updateEditorRegion,
+    updateEditorRegions,
     setBrushLayer,
     dropRegionCache,
     translateImageRegions,

@@ -149,6 +149,8 @@ const TOPICS: HelpTopic[] = [
                     { keysKey: 'help_k7_keys', titleKey: 'help_k7_title', descKey: 'help_k7_desc' },
                     { keysKey: 'help_k8_keys', titleKey: 'help_k8_title', descKey: 'help_k8_desc' },
                     { icon: '📐', titleKey: 'help_k9_title', descKey: 'help_k9_desc' },
+                    { keysKey: 'help_k10_keys', titleKey: 'help_k10_title', descKey: 'help_k10_desc' },
+                    { keysKey: 'help_k11_keys', titleKey: 'help_k11_title', descKey: 'help_k11_desc' },
                 ],
             },
         ],

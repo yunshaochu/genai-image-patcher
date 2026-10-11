@@ -28,7 +28,33 @@ const promptPatch = (field: PromptField, value: string): Partial<Region & Upload
 export function useImageManager(performanceMode: PerformanceMode, enableSessionPersistence: boolean = false) {
   const [store, setStore] = useState<ImageStore>(EMPTY_STORE);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
-  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
+  /**
+   * 选区（多选）—— 编辑器模式的框选中就是这一个数组：
+   *  - 长度 1：单选，与以前完全一样（属性面板显示那一框的详情）；
+   *  - 长度 >1：多选（Ctrl+点击累加 / 剔除，Ctrl+A 全选本页），面板显示批量操作；
+   *  - 空：未选中，面板显示整页批量操作。
+   *
+   * `selectedRegionId` 是它的派生值（最后加入的框 = 主导框），所有既有的单选
+   * 调用点（滚轮调字号 / 拖线测角 / 框定位器…）语义保持不变。
+   */
+  const [selectedRegionIds, setSelectedRegionIdsState] = useState<string[]>([]);
+  const selectedRegionId = selectedRegionIds.length > 0
+    ? selectedRegionIds[selectedRegionIds.length - 1]
+    : null;
+  /** 单选（点框 / 点空白）：整段选区替换成这一个框；null = 清空。 */
+  const setSelectedRegionId = useCallback((id: string | null) => {
+    setSelectedRegionIdsState(id ? [id] : []);
+  }, []);
+  /** 直接替换整个选区（Ctrl+A 全选当前页等）。 */
+  const selectRegionIds = useCallback((ids: string[]) => {
+    setSelectedRegionIdsState(ids);
+  }, []);
+  /** Ctrl+点击：已选中则剔除，否则追加到选区末尾（成为主导框）。 */
+  const toggleRegionSelection = useCallback((id: string) => {
+    setSelectedRegionIdsState((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }, []);
   const [viewMode, setViewMode] = useState<ViewMode>('original');
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
 
@@ -317,7 +343,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     // viewMode is intentionally preserved so the "已完成" tab stays selected
     // when switching images; the guard effect above reverts it if the newly
     // selected image has no result to show.
-  }, []);
+  }, [setSelectedRegionId]);
 
   const handleUpdateRegions = useCallback((imageId: string, regions: Region[]) => {
     updateImage(imageId, (img) => {
@@ -412,7 +438,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     void clearSession(); // wipe the persisted session so it isn't restored next launch
     setSelectedImageId(null);
     setSelectedRegionId(null);
-  }, []);
+  }, [setSelectedRegionId]);
 
   /**
    * Replace the whole gallery with `newImages` (work-state import).
@@ -438,7 +464,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     stitchCacheRef.current.clear();
     setSelectedImageId(newSelectedId ?? newImages[0]?.id ?? null);
     setSelectedRegionId(null);
-  }, []);
+  }, [setSelectedRegionId]);
 
   // --- HISTORY ACTIONS ---
 
@@ -536,6 +562,9 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     selectedImageId,
     selectedRegionId,
     setSelectedRegionId,
+    selectedRegionIds,
+    selectRegionIds,
+    toggleRegionSelection,
     viewMode,
     setViewMode,
     addImageFiles,
