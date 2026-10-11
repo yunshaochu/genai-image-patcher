@@ -51,6 +51,11 @@ interface EraseOptions {
   dilate?: number;
   /** Inpaint radius sent to the backend (whiten_regions.py: 7). */
   inpaintRadius?: number;
+  /**
+   * 只量色、不擦除：算完文字掩码的统计值立刻返回，跳过 inpaint / 残留清理
+   * 这些纯为了"输出干净图"的步骤。批量吸管取色用它 —— 它只要墨色，不需要画面。
+   */
+  measureOnly?: boolean;
 }
 
 const DEFAULT_TOLERANCE = 40;
@@ -572,6 +577,9 @@ export const eraseTextInCanvas = (
       if (bn > 0) stats.bgColor = hex(br / bn, bg2 / bn, bb / bn);
     }
   }
+
+  // 只量色：统计已算完（掩码最终形态），后面全是"把画面擦干净"的活儿，跳过。
+  if (options.measureOnly) return stats;
 
   inpaint(mask);
 

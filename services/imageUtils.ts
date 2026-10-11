@@ -338,6 +338,34 @@ export const cropRegion = async (
 };
 
 /**
+ * 把一个选区裁成**离屏 canvas**（1:1，或按 maxPx 等比缩小）。
+ *
+ * 给"只读像素"的用途用（原图吸管取色、墨色统计…）：cropRegion 会走一遍
+ * toBlob + Object URL，调用方还得记得 release；这里直接给 canvas，没有生命周期
+ * 负担。maxPx > 0 时长边被限制在它以内 —— 取样不需要原分辨率，而像泛洪统计这类
+ * O(n) 算法在小图上快得多。
+ */
+export const cropRegionToCanvas = (
+  imageElement: HTMLImageElement,
+  region: Region,
+  maxPx = 0
+): HTMLCanvasElement | null => {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const sx = (region.x / 100) * imageElement.naturalWidth;
+  const sy = (region.y / 100) * imageElement.naturalHeight;
+  const sw = Math.max(1, (region.width / 100) * imageElement.naturalWidth);
+  const sh = Math.max(1, (region.height / 100) * imageElement.naturalHeight);
+  const scale = maxPx > 0 ? Math.min(1, maxPx / Math.max(sw, sh)) : 1;
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  ctx.drawImage(imageElement, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+};
+
+/**
  * Creates a full-size image where only the specified region is visible,
  * and the rest is masked with white.
  * Returns an Object URL.

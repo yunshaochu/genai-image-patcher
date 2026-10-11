@@ -3,10 +3,14 @@ import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profil
 import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, ViewMode, workViewOf, clampRedrawIntent, effectiveIntentOf } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
-import EditorDock from './components/EditorDock';
+import EditorDock, { outlinePatchOf, makeSolidBrushUrl } from './components/EditorDock';
+// Type-only: mixing the alias into the value import above would make the dev
+// server emit a runtime import for a name that does not exist.
+import type { EditorOutlineMode } from './components/EditorDock';
 import WorkflowDock from './components/WorkflowDock';
 import RegionLocator from './components/RegionLocator';
-import { stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl } from './services/imageUtils';
+import { stitchImage, createInvertedMultiMaskedFullImage, extractCropFromFullImage, stitchImageInverted, releaseObjectURL, cloneObjectUrl, loadImage, cropRegionToCanvas } from './services/imageUtils';
+import { eraseTextInCanvas } from './services/textErase';
 import { downloadImagesAsZip } from './services/downloadZip';
 // Type-only: mixing an interface into a value import makes the dev server emit a
 // runtime import for a name that does not exist ('does not provide an export named …').
@@ -14,13 +18,13 @@ import type { ResolvedResultUrl } from './services/downloadZip';
 import { downloadWorkStateZip, readWorkStateZip } from './services/workStateTransfer';
 import { fetchOpenAIModels } from './services/aiService';
 import { t } from './services/translations';
-import { resolveAutoFontSize, moveRegionLayer, LayerDirection } from './services/mangaEditor';
+import { resolveAutoFontSize, moveRegionLayer, moveRegionsLayer, LayerDirection } from './services/mangaEditor';
 import { setDefaultFontFamily } from './services/textLayout';
 import { editorFontStack, getEditorFont, ensureEditorFontLoaded } from './services/fontService';
 import { useConfig } from './hooks/useConfig';
 import { useImageManager } from './hooks/useImageManager';
 import { useImageProcessor } from './hooks/useImageProcessor';
-import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn } from './hooks/useMangaEditor';
+import { useMangaEditor, DISCRETE_RECOMPOSITE_DEBOUNCE_MS, editorPerfOn, isAiOwned } from './hooks/useMangaEditor';
 import { useGlossary } from './hooks/useGlossary';
 import type { PageTerm } from './services/glossaryBook';
 
@@ -50,6 +54,33 @@ const targetIntentOf = (
   return config.useFullImageMasking
     ? effectiveIntentOf(image ?? {}, fallback, config.enableMangaMode)
     : effectiveIntentOf(region ?? {}, fallback, config.enableMangaMode);
+};
+
+/** 批量吸管的取样上限（长边 px）：取色不需要原分辨率，而泛洪统计是 O(n)。 */
+const INK_SAMPLE_MAX_PX = 400;
+
+/**
+ * 从**原图**量一个框的原文墨色（编辑器多选的「吸取原文墨色」用它）。
+ *
+ * 直接复用本地擦除算法的统计值：它本来就要把"与底色差异大"的像素分离成文字掩码，
+ * 掩码均值就是墨色；measureOnly 跳过 inpaint，所以只花掩码那一步的时间。
+ * 返回 null = 量不出来（无文字 / 文字像素太少 / 裁剪过小），调用方跳过该框。
+ *
+ * 和单框吸管一样认 `image.originalUrl`：编辑标签页显示的底图上面盖着已擦除 /
+ * 已嵌字的贴图，文字像素早被抹掉了，只有在未编辑的源图上才量得到真墨色。
+ */
+const measureInkColorOf = (source: HTMLImageElement, region: Region): string | null => {
+  const crop = cropRegionToCanvas(source, region, INK_SAMPLE_MAX_PX);
+  if (!crop) return null;
+  const kind = region.detectedClass === 'text_free' ? 'free' : 'bubble';
+  const stats = eraseTextInCanvas(crop, { kind, measureOnly: true });
+  if (!stats?.textColor || stats.textRatio === undefined) return null;
+  // 保守闸门：只在文字像素占比合理时才认这个色。占比几乎为 0 = 没量到字；
+  // 占比接近 1 = 这次"与底色差异大"的像素其实是整块画面（框里根本没有气泡底 /
+  // 文字的那种裁剪），量出来的多半是图案色 —— 两种情况都宁可跳过，别把一批框
+  // 涂成一片乱色（编辑器的样式改动没有撤销栈）。
+  if (stats.textRatio < 0.002 || stats.textRatio > 0.5) return null;
+  return stats.textColor;
 };
 
 export default function App() {
@@ -870,6 +901,18 @@ export default function App() {
           return { ...img, regions, history: currentHistory };
       });
   }, [updateImage]);
+  /** 多选版：整组置顶 / 置底（组内相对次序不变），history 同步同 reorderRegion。 */
+  const reorderRegions = useCallback((imageId: string, regionIds: string[], dir: 'top' | 'bottom') => {
+      updateImage(imageId, img => {
+          const regions = moveRegionsLayer(img.regions, regionIds, dir);
+          if (regions === img.regions) return img;
+          const currentHistory = [...img.history];
+          if (currentHistory[img.historyIndex]) {
+              currentHistory[img.historyIndex] = { ...currentHistory[img.historyIndex], regions };
+          }
+          return { ...img, regions, history: currentHistory };
+      });
+  }, [updateImage]);
   // 编辑器面板只认识 regionId（目标图 = 当前选中图）。
   const editorOnReorderRegion = useCallback((regionId: string, dir: LayerDirection) => {
       if (selectedImageId_safe) reorderRegion(selectedImageId_safe, regionId, dir);
@@ -981,6 +1024,152 @@ export default function App() {
           { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
       );
   }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  // 批量旋转：把选中的框统一拧到同一个角度（0 = 归零；夹到 ±180，保留 0.1°）。
+  const editorOnBatchSetRotation = useCallback((rotation: number) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const value = Math.max(-180, Math.min(180, Math.round(rotation * 10) / 10));
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          () => ({ editorStyle: { rotation: value } }),
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  // 批量描边：档位 → editorStyle 补丁（补丁形状只在 EditorDock 的 outlinePatchOf
+  // 里定义一份，面板高亮与实际写入因此不会漂移）。
+  const editorOnBatchSetOutline = useCallback((mode: EditorOutlineMode) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          () => ({ editorStyle: outlinePatchOf(mode) }),
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  // 批量字体：字体文件已在面板侧下载就绪（ensureEditorFontLoaded），这里只写值。
+  const editorOnBatchSetFont = useCallback((fontFamily: string | undefined) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          () => ({ editorStyle: { fontFamily } }),
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  // 批量擦除 / 撤回擦除。aiErasedBase = AI 产出的干净底图，编辑器不许再擦
+  // （与单框面板同一规则，直接跳过）；已经在目标状态的框也跳过，省一次合成。
+  const editorOnBatchSetErased = useCallback((erased: boolean) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      updateEditorRegions(
+          selectedImage.id,
+          selectedRegionIds,
+          (region) => {
+              if (erased) {
+                  if (region.aiErasedBase || region.editorErased) return null;
+              } else if (!region.editorErased) {
+                  return null;
+              }
+              return { editorErased: erased };
+          },
+          { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+      );
+  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+
+  // 批量冻结 / 解冻：逐框调用现成的单框路径 —— 各自会重新读一次当前状态，
+  // 且自带 AI 独占 / 空文字的守卫；顺序执行，避免同一张图并发重合成。
+  const editorOnBatchFreeze = useCallback((freeze: boolean) => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const imageId = selectedImage.id;
+      const ids = [...selectedRegionIds];
+      const run = freeze ? freezeTranslation : unfreezeTranslation;
+      void (async () => {
+          for (const id of ids) await run(imageId, id);
+      })();
+  }, [selectedImage, selectedRegionIds, freezeTranslation, unfreezeTranslation]);
+
+  /** 批量吸管取色的一次性提示（几秒后自动消失）。 */
+  const [batchInkNotice, setBatchInkNotice] = useState<string | null>(null);
+  useEffect(() => {
+      if (!batchInkNotice) return;
+      const timer = setTimeout(() => setBatchInkNotice(null), 5000);
+      return () => clearTimeout(timer);
+  }, [batchInkNotice]);
+
+  // 批量重置：逐框走 resetRegion。它内部是「按 id 替换」的 updateImage，所以顺序
+  // 调用互不干扰 —— 后面的调用虽然读到的还是未提交的快照，但每个框只碰自己那一份。
+  const editorOnBatchReset = useCallback(() => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const imageId = selectedImage.id;
+      for (const id of [...selectedRegionIds]) resetRegion(imageId, id);
+  }, [selectedImage, selectedRegionIds, resetRegion]);
+
+  // 批量画笔层：整框涂白 / 涂黑 / 清空。逐框串行 —— setBrushLayer 自己会回收旧
+  // URL 并重合成。每个框各生成一份 blob：共用一份的话，某框换层时 revoke 会把
+  // 其它框正在用的那份一起弄坏。
+  const editorOnBatchBrush = useCallback((action: 'white' | 'black' | 'clear') => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const imageId = selectedImage.id;
+      const ids = [...selectedRegionIds];
+      void (async () => {
+          for (const id of ids) {
+              if (action === 'clear') {
+                  await setBrushLayer(imageId, id, null);
+                  continue;
+              }
+              const url = await makeSolidBrushUrl(action === 'white' ? '#ffffff' : '#000000');
+              if (url) await setBrushLayer(imageId, id, url);
+          }
+      })();
+  }, [selectedImage, selectedRegionIds, setBrushLayer]);
+
+  // 批量叠放次序：整组置顶 / 置底。
+  const editorOnBatchReorder = useCallback((dir: 'top' | 'bottom') => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      reorderRegions(selectedImage.id, selectedRegionIds, dir);
+  }, [selectedImage, selectedRegionIds, reorderRegions]);
+
+  // 批量吸管：从各自的原图量出原文墨色，钉成手动字色（量不出的框原样跳过）。
+  const editorOnBatchPickInkColor = useCallback(() => {
+      if (!selectedImage || selectedRegionIds.length === 0) return;
+      const img = selectedImage;
+      const ids = [...selectedRegionIds];
+      const lang = config.language;
+      void (async () => {
+          let picked = 0;
+          try {
+              // 原图只解码一次，所有框共用这一张。
+              const source = await loadImage(img.originalUrl);
+              for (const id of ids) {
+                  const region = img.regions.find(r => r.id === id);
+                  if (!region || isAiOwned(region)) continue;
+                  const hex = measureInkColorOf(source, region);
+                  if (!hex) continue;
+                  updateEditorRegions(
+                      img.id,
+                      [id],
+                      () => ({
+                          editorStyle: {
+                              color: hex,
+                              colorSource: 'manual',
+                              // 描边交回自动推导（跟着新字色走）。
+                              outlineColor: undefined,
+                              outlineWidth: undefined,
+                          },
+                      }),
+                      { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+                  );
+                  picked++;
+              }
+          } catch (e) {
+              console.error('Batch ink pick failed', e);
+          }
+          setBatchInkNotice(t(lang, picked > 0 ? 'editorMultiInkPicked' : 'editorMultiInkNone', { count: picked }));
+      })();
+  }, [selectedImage, selectedRegionIds, updateEditorRegions, config.language]);
 
   // 两点（拖线）测角：armed 时画布进入测角模式，沿原文斜字拖一条线定 rotation
   // （交互细节见 EditorCanvas 的 angleMeasureMode）。
@@ -1315,6 +1504,16 @@ export default function App() {
             onBatchSetDirection={editorOnBatchSetDirection}
             onBatchStepFontSize={editorOnBatchStepFontSize}
             onBatchSetColor={editorOnBatchSetColor}
+            onBatchSetRotation={editorOnBatchSetRotation}
+            onBatchSetOutline={editorOnBatchSetOutline}
+            onBatchSetFont={editorOnBatchSetFont}
+            onBatchSetErased={editorOnBatchSetErased}
+            onBatchFreeze={editorOnBatchFreeze}
+            onBatchReset={editorOnBatchReset}
+            onBatchBrush={editorOnBatchBrush}
+            onBatchPickInkColor={editorOnBatchPickInkColor}
+            batchInkNotice={batchInkNotice}
+            onBatchReorder={editorOnBatchReorder}
             onSelectAll={handleSelectAllRegions}
             busy={editorBusy}
             computedFontSizes={computedFontSizes}

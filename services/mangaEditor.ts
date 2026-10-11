@@ -279,6 +279,30 @@ export const moveRegionLayer = (
 };
 
 /**
+ * 多选版的叠放次序：把整组框一起搬到最上 / 最下，**组内相对次序不变**。
+ *
+ * 只提供 top/bottom，不提供 up/down：一组框的"上移一层"没有唯一解（组内每个框
+ * 的邻居都在动，结果取决于处理顺序），而"整组置顶 / 置底"语义明确 —— 这也正是
+ * 选中一堆框时真正想要的操作。单框的 ⤒↑↓⤓ 仍走 moveRegionLayer。
+ *
+ * 返回原数组（同一引用）= 没动（组本来就在那一端，或被整页选中、没有参照物），
+ * 调用方据此跳过无意义的 updateImage。
+ */
+export const moveRegionsLayer = (
+  regions: Region[],
+  regionIds: string[],
+  dir: 'top' | 'bottom'
+): Region[] => {
+  const ids = new Set(regionIds);
+  const picked = regions.filter(r => ids.has(r.id));
+  const rest = regions.filter(r => !ids.has(r.id));
+  // 一个都没命中，或整页都被选中（没有可挪动的参照物）：不动。
+  if (picked.length === 0 || rest.length === 0) return regions;
+  const next = dir === 'top' ? [...rest, ...picked] : [...picked, ...rest];
+  return next.every((r, i) => r === regions[i]) ? regions : next;
+};
+
+/**
  * The completed, AI-redrawn bubble whose box contains `region`'s centre
  * (closest centre wins). Used by the aiBubbleBase flow: after a whole-bubble
  * redraw the editor typesets the contained text regions ON TOP of this

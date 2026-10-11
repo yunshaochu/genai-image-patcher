@@ -48,6 +48,26 @@ interface EditorDockProps {
   onBatchStepFontSize?: (delta: number) => void;
   /** 批量：把选中的框字色统一设为黑 / 白 / 自动。 */
   onBatchSetColor?: (mode: 'auto' | 'black' | 'white') => void;
+  /** 批量：把选中的框旋转统一设成同一个角度（度，顺时针为正；0 = 归零）。 */
+  onBatchSetRotation?: (rotation: number) => void;
+  /** 批量：把选中的框描边统一设成某个档位（见 EditorOutlineMode）。 */
+  onBatchSetOutline?: (mode: EditorOutlineMode) => void;
+  /** 批量：把选中的框字体统一设成本字体栈；undefined = 跟随全局。 */
+  onBatchSetFont?: (fontFamily: string | undefined) => void;
+  /** 批量：擦除 / 撤回擦除选中的框（aiErasedBase 的框会被引擎跳过）。 */
+  onBatchSetErased?: (erased: boolean) => void;
+  /** 批量：冻结 / 解冻选中的框（译文在 editorText ⇄ editorFrozenText 之间搬运）。 */
+  onBatchFreeze?: (freeze: boolean) => void;
+  /** 批量：重置选中的框（交回 AI 重绘；已嵌的字转成冻结译文，不丢）。 */
+  onBatchReset?: () => void;
+  /** 批量画笔层：整框涂白 / 涂黑 / 清空。 */
+  onBatchBrush?: (action: 'white' | 'black' | 'clear') => void;
+  /** 批量：从各自的原图吸取原文墨色，钉成手动字色。 */
+  onBatchPickInkColor?: () => void;
+  /** 批量吸管取色的一次性结果提示（几秒后由 App 清掉）。 */
+  batchInkNotice?: string | null;
+  /** 批量叠放次序：整组置顶 / 置底（组内相对次序不变）。 */
+  onBatchReorder?: (dir: 'top' | 'bottom') => void;
   /** 全选当前页的所有文本框（与 Ctrl+A 同一动作的按钮入口）。 */
   onSelectAll?: () => void;
   busy: boolean;
@@ -116,6 +136,28 @@ interface EditorDockProps {
     onJumpToRef: (imageId: string, regionId: string) => void;
   };
 }
+
+/**
+ * 描边档位（单框面板与多选批量共用同一套语义）：
+ *  - 'auto'  不指定 —— 合成器按字色推导（白字黑边，其余白边），描边宽度也随之自动
+ *  - 'white' / 'black'  钉死描边色（宽度仍自动跟随字号）
+ *  - 'none'  关掉描边
+ */
+export type EditorOutlineMode = 'auto' | 'white' | 'black' | 'none';
+
+/** 描边色 / 宽 → 档位（与 EditorOutlineMode 一一对应）。 */
+const outlineModeOf = (style: Region['editorStyle']): EditorOutlineMode =>
+  style?.outlineWidth === 0 ? 'none'
+    : style?.outlineColor === '#ffffff' ? 'white'
+      : style?.outlineColor === '#000000' ? 'black'
+        : 'auto';
+
+/** 档位 → 要写进 editorStyle 的补丁（App 的批量回调也用这一份，避免两处漂移）。 */
+export const outlinePatchOf = (mode: EditorOutlineMode): Region['editorStyle'] =>
+  mode === 'none' ? { outlineColor: undefined, outlineWidth: 0 }
+    : mode === 'white' ? { outlineColor: '#ffffff', outlineWidth: undefined }
+      : mode === 'black' ? { outlineColor: '#000000', outlineWidth: undefined }
+        : { outlineColor: undefined, outlineWidth: undefined };
 
 const COLLAPSE_STORAGE_KEY = 'genai_patcher_editor_dock_collapsed_v1';
 
@@ -240,6 +282,26 @@ const perfProbe = (label: string, startedAt: number) => {
  * composite needed. The painter re-seeds its preview from `editorBrushUrl`
  * whenever these change it, so the two never disagree.
  */
+/**
+ * 生成一张纯色小图的 Object URL —— 画笔层的「整框涂白 / 涂黑」用它。
+ * 8×8 就够：合成时这个纯色层会被拉伸铺满整个裁剪，尺寸没有意义。
+ *
+ * 每次调用都产出**独立的** URL。不要为了省事把一份 URL 塞给多个框：某个框换掉
+ * 画笔层时 setBrushLayer 会 revoke 它的旧 URL，共用的那份当场失效。
+ */
+export const makeSolidBrushUrl = async (color: string): Promise<string | null> => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 8;
+  canvas.height = 8;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return new Promise<string | null>((resolve) => {
+    canvas.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
+  });
+};
+
 const BrushActions: React.FC<{
   region: Region;
   lang: 'zh' | 'en';
@@ -247,19 +309,9 @@ const BrushActions: React.FC<{
   /** AI「擦除」产物优先：本框不许再用画笔修补（会盖住干净底图）。 */
   locked?: boolean;
 }> = ({ region, lang, onBrushChange, locked }) => {
-  /** One-click whole-box white / black out. A solid colour is stretched onto
-   *  the crop when compositing, so a tiny canvas is all that is needed. */
+  /** One-click whole-box white / black out. */
   const fillWholeRegion = async (color: string) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = 8;
-    canvas.height = 8;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.fillStyle = color;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    const url = await new Promise<string | null>((resolve) => {
-      canvas.toBlob(b => resolve(b ? URL.createObjectURL(b) : null), 'image/png');
-    });
+    const url = await makeSolidBrushUrl(color);
     if (url) onBrushChange(region.id, url);
   };
 
@@ -802,6 +854,8 @@ const RegionFontPicker: React.FC<{
 const EditorDock: React.FC<EditorDockProps> = ({
   image, images, config, selectedRegionId, onSelectRegion, busy, computedFontSizes,
   selectedRegionIds, onBatchSetDirection, onBatchStepFontSize, onBatchSetColor,
+  onBatchSetRotation, onBatchSetOutline, onBatchSetFont, onBatchSetErased, onBatchFreeze,
+  onBatchReset, onBatchBrush, onBatchPickInkColor, batchInkNotice, onBatchReorder,
   onSelectAll,
   onConfigChange, onUpdateRegion, buildBrushBase, onBrushChange,
   onTranslate, onTranslateAll,
@@ -823,6 +877,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const [brushColor, setBrushColor] = useState(loadBrushColor);
   /** 原图吸管面板是否展开（选中的框一变就收起）。 */
   const [pickColorOpen, setPickColorOpen] = useState(false);
+  /** 多选面板的批量字体：下载中 / 失败提示（与单框面板同一套反馈）。 */
+  const [batchFontLoading, setBatchFontLoading] = useState(false);
+  const [batchFontError, setBatchFontError] = useState<string | null>(null);
   /** Batch scope of the no-selection actions: the current image only, or every
    *  loaded image (translate / 临时预览 both respect it). */
   const [imageScope, setImageScope] = useState<'current' | 'all'>('current');
@@ -869,7 +926,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const region = idx >= 0 ? editableRegions[idx] : null;
 
   // 吸管是「这一个框」的工具：换框就收起，免得在上一个框的原图裁剪上取色。
-  useEffect(() => { setPickColorOpen(false); setBrushPickOpen(false); }, [selectedRegionId, image.id]);
+  useEffect(() => { setPickColorOpen(false); setBrushPickOpen(false); setBatchFontError(null); }, [selectedRegionId, image.id]);
 
   /** 旋转数字框的本地草稿：非 null 时输入框显示草稿而不是规范值，这样 "-"
    *  等中间态不会被受控组件打回（见属性面板的旋转输入框）。 */
@@ -975,6 +1032,64 @@ const EditorDock: React.FC<EditorDockProps> = ({
         : editableSelected.every(r => colorModeOf(r) === 'white') ? 'white'
           : editableSelected.every(r => colorModeOf(r) === 'auto') ? 'auto'
             : 'mixed';
+    /** 某个取值在所有选中框上一致时返回它，否则 'mixed'（空选区 = undefined）。 */
+    const commonOf = <T,>(fn: (r: Region) => T): T | 'mixed' | undefined => {
+      if (editableSelected.length === 0) return undefined;
+      const first = fn(editableSelected[0]);
+      return editableSelected.every(r => fn(r) === first) ? first : 'mixed';
+    };
+    const commonRotation = commonOf(r => r.editorStyle?.rotation ?? 0);
+    const commonOutline = commonOf(r => outlineModeOf(r.editorStyle));
+    /** 共同字体栈（'' = 跟随全局；'mixed' = 不一致）。 */
+    const commonFont = commonOf(r => r.editorStyle?.fontFamily ?? '');
+    const commonErased = commonOf(r => !!r.editorErased);
+    const commonFrozen = commonOf(r => !!r.editorFrozenText?.trim());
+    /** 能用画笔层修补的框（AI「擦除」产出的干净底图不许被笔画盖住）。 */
+    const brushTargetCount = editableSelected.filter(r => !r.aiErasedBase).length;
+    /** 选区里已经有画笔层的框数 —— 「清空」没有它就没意义。 */
+    const brushLayerCount = editableSelected.filter(r => !!r.editorBrushUrl).length;
+    /** 「重置」的作用目标：已经有产物（完成 / 失败）的框，与框上 ↺ 的显示条件一致。 */
+    const resettableCount = editableSelected.filter(r => r.status === 'completed' || r.status === 'failed').length;
+
+    /** 字体下拉的选中值：'' 跟随全局 / EXPLICIT_SYSTEM 系统字体 / 字体 id / 'custom' / 'mixed'。 */
+    const batchFontValue = commonFont === 'mixed'
+      ? 'mixed'
+      : !commonFont
+        ? ''
+        : commonFont === SYSTEM_FONT_STACK || commonFont === 'sans-serif'
+          ? EXPLICIT_SYSTEM
+          : (EDITOR_FONTS.find(f => editorFontStack(f.id) === commonFont)?.id ?? 'custom');
+
+    /** 批量旋转草稿提交（数字框回车 / 失焦）；空值 / 非法值不写，避免逐键触发整批合成。 */
+    const commitBatchRotation = () => {
+      const raw = rotationDraft;
+      setRotationDraft(null);
+      if (raw === null || raw.trim() === '') return;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      onBatchSetRotation?.(n);
+    };
+
+    /** 批量字体：先把文件取回来（后端首次会下载并缓存）再写进所有选中框。 */
+    const handleBatchFontChange = async (value: string) => {
+      setBatchFontError(null);
+      if (value === 'mixed') return;
+      if (value === '') { onBatchSetFont?.(undefined); return; }
+      if (value === EXPLICIT_SYSTEM) { onBatchSetFont?.(SYSTEM_FONT_STACK); return; }
+      const meta = EDITOR_FONTS.find(f => f.id === value);
+      if (!meta) return;
+      setBatchFontLoading(true);
+      try {
+        await ensureEditorFontLoaded(meta.id, config.pythonBackendUrl);
+      } catch (e) {
+        console.error('Editor font load failed', e);
+        setBatchFontError(t(lang, 'editorFontLoadFailed', { name: meta.label[lang] }));
+        setBatchFontLoading(false);
+        return;
+      }
+      setBatchFontLoading(false);
+      onBatchSetFont?.(editorFontStack(meta.id));
+    };
 
     const groupLabel = 'text-[9px] font-bold text-skin-muted';
     const stepBtn = 'flex-1 px-2 py-1 text-[10px] font-bold border border-skin-border rounded text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-40 disabled:hover:text-skin-muted disabled:hover:border-skin-border transition-colors';
@@ -1057,6 +1172,198 @@ const EditorDock: React.FC<EditorDockProps> = ({
               ))}
             </div>
           </div>
+
+          {/* 批量吸管：从**各自的原图**量出原文墨色，钉成手动字色。
+              走的是本地擦除算法的统计值（它本来就要分离文字像素），量不出可靠
+              样本的框会原样跳过。 */}
+          <div className="space-y-1">
+            <button
+              onClick={() => onBatchPickInkColor?.()}
+              disabled={!canBatchEdit}
+              title={t(lang, 'editorMultiPickInkTip')}
+              className="w-full px-2 py-1 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary hover:bg-skin-fill disabled:opacity-40 transition-colors"
+            >
+              {t(lang, 'editorMultiPickInk')}
+            </button>
+            {batchInkNotice && <p className="text-[9px] text-skin-muted leading-tight">{batchInkNotice}</p>}
+          </div>
+
+          {/* 旋转：把选中的框统一拧到同一个角度（斜排原文对齐常用）。写数字后回车 /
+              失焦才提交 —— 逐键提交会让 N 个框各合成一次。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorRotation')}</span>
+            <div className="flex items-center gap-1">
+              <input
+                type="number"
+                min={-180}
+                max={180}
+                value={rotationDraft ?? (typeof commonRotation === 'number' ? commonRotation : '')}
+                disabled={!canBatchEdit}
+                placeholder={commonRotation === 'mixed' ? t(lang, 'editorMultiMixed') : '0'}
+                onChange={(e) => setRotationDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                onBlur={commitBatchRotation}
+                className="flex-1 min-w-0 px-1 py-0.5 text-[10px] text-center border border-skin-border rounded bg-skin-surface disabled:opacity-50 [appearance:textfield] [&::-webkit-outer-spin-button]:hidden [&::-webkit-inner-spin-button]:hidden"
+              />
+              <span className="text-[9px] text-skin-muted shrink-0">°</span>
+              <button
+                onClick={() => { setRotationDraft(null); onBatchSetRotation?.(0); }}
+                disabled={!canBatchEdit}
+                title={t(lang, 'editorRotationReset')}
+                className="shrink-0 px-1.5 py-0.5 text-[9px] font-bold rounded border border-skin-border text-skin-muted hover:text-skin-primary hover:border-skin-primary disabled:opacity-40 transition-colors"
+              >
+                0°
+              </button>
+            </div>
+          </div>
+
+          {/* 描边：自动 = 合成器按字色推；白边 / 黑边 = 钉死描边色；无 = 关掉描边。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorOutline')}</span>
+            <div className="flex border border-skin-border rounded overflow-hidden">
+              {(['auto', 'white', 'black', 'none'] as const).map(v => (
+                <button
+                  key={v}
+                  onClick={() => onBatchSetOutline?.(v)}
+                  disabled={!canBatchEdit}
+                  className={`flex-1 px-1 py-1 text-[9px] font-bold transition-colors disabled:opacity-40 ${
+                    commonOutline === v ? 'bg-skin-primary text-white' : 'text-skin-muted hover:bg-skin-primary/10'
+                  }`}
+                >
+                  {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'white' ? 'editorOutlineWhite' : v === 'black' ? 'editorOutlineBlack' : 'editorOutlineNone')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 字体：与单框面板同一套选项（跟随全局 / 系统字体 / 内置字体）。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorFont')}</span>
+            <select
+              value={batchFontValue}
+              disabled={!canBatchEdit || batchFontLoading}
+              onChange={(e) => handleBatchFontChange(e.target.value)}
+              className="w-full min-w-0 px-1 py-1 text-[10px] border border-skin-border rounded bg-skin-surface text-skin-text disabled:opacity-50"
+            >
+              {batchFontValue === 'mixed' && <option value="mixed">{t(lang, 'editorMultiMixed')}</option>}
+              <option value="">{t(lang, 'editorFontDefault')}</option>
+              <option value={EXPLICIT_SYSTEM}>{t(lang, 'editorFontSystem')}</option>
+              {EDITOR_FONTS.map(f => (
+                <option key={f.id} value={f.id}>{f.label[lang]}</option>
+              ))}
+              {batchFontValue === 'custom' && typeof commonFont === 'string' && (
+                <option value="custom">{commonFont}</option>
+              )}
+            </select>
+            {batchFontLoading && <p className="text-[9px] text-skin-primary">{t(lang, 'editorFontDownloading')}</p>}
+            {batchFontError && <p className="text-[9px] text-rose-500 leading-tight">{batchFontError}</p>}
+          </div>
+
+          {/* 擦除状态：整批擦 / 整批撤回（AI 独占底图的框由引擎跳过）。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiEraseState')}</span>
+            <div className="flex items-stretch gap-1">
+              <button
+                onClick={() => onBatchSetErased?.(true)}
+                disabled={!canBatchEdit || commonErased === true}
+                className={stepBtn}
+              >
+                {t(lang, 'editorEraseRegion')}
+              </button>
+              <button
+                onClick={() => onBatchSetErased?.(false)}
+                disabled={!canBatchEdit || commonErased === false}
+                className={stepBtn}
+              >
+                {t(lang, 'editorRestoreRegion')}
+              </button>
+            </div>
+          </div>
+
+          {/* 冻结状态：译文在 editorText ⇄ editorFrozenText 之间搬运。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiFreezeState')}</span>
+            <div className="flex items-stretch gap-1">
+              <button
+                onClick={() => onBatchFreeze?.(true)}
+                disabled={!canBatchEdit || commonFrozen === true}
+                className={stepBtn}
+              >
+                {t(lang, 'editorFreeze')}
+              </button>
+              <button
+                onClick={() => onBatchFreeze?.(false)}
+                disabled={!canBatchEdit || commonFrozen === false}
+                className={stepBtn}
+              >
+                {t(lang, 'editorUnfreeze')}
+              </button>
+            </div>
+          </div>
+
+          {/* 画笔层：整框涂白 / 涂黑 / 清空。AI「擦除」产出的干净底图会被引擎
+              拒绝（不许用笔画盖住它），所以目标是可修补的那些框。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorBrushSection')}</span>
+            <div className="flex items-stretch gap-1">
+              <button
+                onClick={() => onBatchBrush?.('white')}
+                disabled={!canBatchEdit || brushTargetCount === 0}
+                title={t(lang, 'editorBrushFillTip')}
+                className={stepBtn}
+              >
+                {t(lang, 'editorBrushFillWhite')}
+              </button>
+              <button
+                onClick={() => onBatchBrush?.('black')}
+                disabled={!canBatchEdit || brushTargetCount === 0}
+                title={t(lang, 'editorBrushFillTip')}
+                className={stepBtn}
+              >
+                {t(lang, 'editorBrushFillBlack')}
+              </button>
+              <button
+                onClick={() => onBatchBrush?.('clear')}
+                disabled={!canBatchEdit || brushLayerCount === 0}
+                title={t(lang, 'editorBrushClearTip')}
+                className={stepBtn}
+              >
+                {t(lang, 'editorBrushClear')}
+              </button>
+            </div>
+          </div>
+
+          {/* 叠放次序：整组置顶 / 置底（组内相对次序不变）。谁盖谁 = regions 数组
+              下标，只有贴图互相重叠时才看得出差别。 */}
+          <div className="space-y-1">
+            <span className={groupLabel}>{t(lang, 'editorMultiLayer')}</span>
+            <div className="flex items-stretch gap-1">
+              <button
+                onClick={() => onBatchReorder?.('top')}
+                disabled={!canBatchEdit}
+                className={stepBtn}
+              >
+                {t(lang, 'editorMultiLayerTop')}
+              </button>
+              <button
+                onClick={() => onBatchReorder?.('bottom')}
+                disabled={!canBatchEdit}
+                className={stepBtn}
+              >
+                {t(lang, 'editorMultiLayerBottom')}
+              </button>
+            </div>
+          </div>
+
+          {/* 重置：交回 AI 重绘（产物丢掉、原图复原，已嵌的字转冻结不丢）。 */}
+          <button
+            onClick={() => onBatchReset?.()}
+            disabled={!canBatchEdit || resettableCount === 0}
+            title={t(lang, 'editorMultiResetTip')}
+            className="w-full px-2 py-1.5 text-[10px] font-bold rounded border border-skin-border text-skin-muted hover:text-rose-500 hover:border-rose-400 hover:bg-rose-500/5 disabled:opacity-40 disabled:hover:text-skin-muted disabled:hover:border-skin-border transition-colors"
+          >
+            {t(lang, 'editorMultiReset')}{resettableCount > 0 ? ` (${resettableCount})` : ''}
+          </button>
 
           {batchLocked && (
             <div className="flex items-center justify-center gap-2 text-[10px] text-skin-primary">
@@ -1801,6 +2108,34 @@ const EditorDock: React.FC<EditorDockProps> = ({
               />
             </div>
           )}
+        </div>
+
+        {/* 描边：自动 = 合成器按字色推（白字黑边，其余白边）；白边 / 黑边 = 钉死
+            描边色（宽度仍自动跟随字号）；无 = 关掉描边。
+            与多选面板的「批量描边」共用同一套档位语义（outlineModeOf /
+            outlinePatchOf），所以这里显示的档位与批量写入的值永远一致。 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] font-bold text-skin-muted w-8 shrink-0">{t(lang, 'editorOutline')}</span>
+          <div className="flex flex-1 border border-skin-border rounded overflow-hidden">
+            {(['auto', 'white', 'black', 'none'] as const).map(v => (
+              <button
+                key={v}
+                onClick={() => onUpdateRegion(
+                  region.id,
+                  { editorStyle: outlinePatchOf(v) },
+                  { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
+                )}
+                disabled={regionEditLocked}
+                className={`flex-1 px-1 py-1 text-[9px] font-bold transition-colors disabled:opacity-50 ${
+                  outlineModeOf(region.editorStyle) === v
+                    ? 'bg-skin-primary text-white'
+                    : 'text-skin-muted hover:bg-skin-primary/10'
+                }`}
+              >
+                {t(lang, v === 'auto' ? 'editorDirAuto' : v === 'white' ? 'editorOutlineWhite' : v === 'black' ? 'editorOutlineBlack' : 'editorOutlineNone')}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Font: follow the global editor font, or override it for this box. */}
