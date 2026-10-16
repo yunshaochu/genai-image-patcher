@@ -1819,9 +1819,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
           if (display === 'completed') {
             return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">{t(lang, 'status_completed')}</span>;
           }
-          if (display === 'erased') {
-            return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-sky-100 text-sky-700">{t(lang, 'editorErasedBadge')}</span>;
-          }
+          // 「已擦除」不再在面板头部显示（擦除状态看画面 / 按钮即可）。
           if (display === 'frozen') {
             return <span className="text-[8px] font-bold px-1 py-0.5 rounded bg-violet-100 text-violet-700">{t(lang, 'editorFrozenBadge')}</span>;
           }

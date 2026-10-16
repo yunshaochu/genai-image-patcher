@@ -295,9 +295,12 @@ export const eraseRegionRoi = async (
     /** 被气泡框包住的文字按「泡内」处理（见 findCoveringBubbleBox）。 */
     contextBubbles?: Region[];
     pythonBackendUrl?: string;
+    /** 「文字掩码精准擦除」开关（AppConfig.detectionTextMask）：**关闭时即使框上
+     *  存着检测阶段的掩码也绝不发给后端**，擦除完全走洞检测。默认 false = 不用掩码。 */
+    useTextMask?: boolean;
   }
 ): Promise<ErasedRoi> => {
-  const { imgW, imgH, contextBubbles, pythonBackendUrl } = options;
+  const { imgW, imgH, contextBubbles, pythonBackendUrl, useTextMask = false } = options;
   // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
   // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
   // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
@@ -318,7 +321,8 @@ export const eraseRegionRoi = async (
   // 检测上传的图可能被缩放过，所以 Region.textMask.rect 存的是百分比；
   // drawImage 的自动缩放正好消化掉检测图与原图的分辨率差。
   let maskPng: string | undefined;
-  const tm = region.textMask;
+  // 开关关着 → 丢弃已有掩码，绝不随 /erase 发出去（洞检测照常工作）。
+  const tm = useTextMask ? region.textMask : undefined;
   if (tm && pythonBackendUrl) {
     try {
       const bmp = await maskBitmap(tm.png);
@@ -379,9 +383,11 @@ export const buildErasedPageCanvas = async (
     concurrency?: number;
     /** 用户点了停止就不要再往下排新任务（在途的请求拦不住，见 textErase）。 */
     signal?: AbortSignal;
+    /** 「文字掩码精准擦除」开关，透传给 eraseRegionRoi（关闭 = 不用掩码）。 */
+    useTextMask?: boolean;
   }
 ): Promise<HTMLCanvasElement> => {
-  const { imgW, imgH, contextBubbles, pythonBackendUrl, concurrency = 4, signal } = options;
+  const { imgW, imgH, contextBubbles, pythonBackendUrl, useTextMask = false, concurrency = 4, signal } = options;
   const canvas = document.createElement('canvas');
   canvas.width = imgW;
   canvas.height = imgH;
@@ -391,7 +397,7 @@ export const buildErasedPageCanvas = async (
 
   const eraseOne = async (region: Region): Promise<void> => {
     try {
-      const erased = await eraseRegionRoi(source, region, { imgW, imgH, contextBubbles, pythonBackendUrl });
+      const erased = await eraseRegionRoi(source, region, { imgW, imgH, contextBubbles, pythonBackendUrl, useTextMask });
       const cropX = (region.x / 100) * imgW;
       const cropY = (region.y / 100) * imgH;
       const patch = erasedPatchRect(erased.roi, {
@@ -719,7 +725,10 @@ export const compositeRegionPatch = async (
   /** Optional stage sink for the editor's recomposite timing instrumentation. */
   onStage?: (stage: string) => void,
   /** Optional 擦除缓存持久化：缓存未命中时先查、擦完落盘（见 EraseCachePersist）。 */
-  erasePersist?: EraseCachePersist
+  erasePersist?: EraseCachePersist,
+  /** 「文字掩码精准擦除」开关（AppConfig.detectionTextMask）：关闭时擦除不带掩码
+   *  （见 eraseRegionRoi）。**照进擦除缓存键** —— 切换开关必须让已缓存的擦除结果失效。 */
+  useTextMask = false
 ): Promise<CompositeResult | null> => {
   // AI「擦除」产物本身就是这一格的画面：即使这一格现在没有字、没有擦除、没有
   // 画笔（例如刚点了「冻结翻译」把译文撤出来），也必须继续出图 —— 否则贴图会被
@@ -755,7 +764,7 @@ export const compositeRegionPatch = async (
     // The base token keeps erased-ROI caches from crossing bases: a region
     // erased on the ORIGINAL pixels must not reuse that cache once it is
     // composited onto an AI-redrawn bubble (aiBubbleBase), and vice versa.
-    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}`;
+    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}|mask${useTextMask ? 1 : 0}`;
     let entry = erasedCache.get(region.id);
     if (!entry || entry.geomKey !== key) {
       // 持久层优先：同一几何上次会话已经擦过（图库是恢复出来的，几何一模一样），
@@ -774,6 +783,7 @@ export const compositeRegionPatch = async (
           imgH,
           contextBubbles,
           pythonBackendUrl,
+          useTextMask,
         });
         // 编码成 WebP（见 ERASE_IMAGE_TYPE）：这份 ROI 只算一次、之后被反复重画，
         // 但只会被编码这一次，所以有损编码不会累积；PNG 的编码耗时和落盘体积都不划算。

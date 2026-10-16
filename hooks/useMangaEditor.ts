@@ -401,7 +401,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         true,
         configRef.current.editorAutoTextColor,
         onStage,
-        buildErasePersist(imageId, !!img.appliedAsOriginal)
+        buildErasePersist(imageId, !!img.appliedAsOriginal),
+        !!configRef.current.detectionTextMask
       );
       const url = result?.url ?? null;
       // 自动取色量到的墨色写回区域：本版贴图已经用它画过了（合成器先擦除再
@@ -948,6 +949,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
             imgH: imageEl.naturalHeight,
             contextBubbles: getContextBubbles(img),
             pythonBackendUrl: configRef.current.pythonBackendUrl,
+            useTextMask: !!configRef.current.detectionTextMask,
             signal,
           });
         } catch (e) {
@@ -1623,7 +1625,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       false,
       undefined,
       undefined,
-      buildErasePersist(imageId, !!img.appliedAsOriginal)
+      buildErasePersist(imageId, !!img.appliedAsOriginal),
+      !!configRef.current.detectionTextMask
     );
     return result?.url ?? null;
   }, [getImage, buildErasePersist]);
