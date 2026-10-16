@@ -1,5 +1,5 @@
 
-import { Region, UploadedImage, RestoreBox } from '../types';
+import { Region, UploadedImage, RestoreBox, isRegionAboveThreshold } from '../types';
 
 export interface PaddingInfo {
     originalWidth: number;
@@ -722,7 +722,12 @@ export const stitchImage = async (
    * patch back to its box so the overflow is not visible there. Default true
    * preserves the historical behaviour for any other caller.
    */
-  honorPatchOverflow: boolean = true
+  honorPatchOverflow: boolean = true,
+  /**
+   * 置信度阈值（0-1，可选，默认 0 = 不过滤）：低于它的自动检测框视为无效，
+   * 不进成品（见 types.ts → isRegionAboveThreshold）。
+   */
+  confidenceThreshold: number = 0
 ): Promise<string> => {
   const baseImg = await loadImage(originalImageUrl);
   
@@ -735,7 +740,10 @@ export const stitchImage = async (
 
   ctx.drawImage(baseImg, 0, 0);
 
-  const eligible = regions.filter(r => r.processedImageUrl && r.status === 'completed');
+  const eligible = regions.filter(r =>
+    r.processedImageUrl && r.status === 'completed'
+    && isRegionAboveThreshold(r, confidenceThreshold)
+  );
 
   // Parallel: produce each region's displayUrl (optional restore render) and decode the
   // patch image. With N regions this collapses 2N sequential async waits into one barrier.
@@ -825,7 +833,12 @@ export const stitchImage = async (
 export const stitchImageInverted = async (
   originalImageUrl: string,
   aiFullResultUrl: string,
-  regions: Region[]
+  regions: Region[],
+  /**
+   * 置信度阈值（0-1，可选，默认 0 = 不过滤）：低于它的自动检测框视为无效，
+   * 不进成品（见 types.ts → isRegionAboveThreshold）。
+   */
+  confidenceThreshold: number = 0
 ): Promise<string> => {
   const originalImg = await loadImage(originalImageUrl);
   const aiImg = await loadImage(aiFullResultUrl);
@@ -845,6 +858,7 @@ export const stitchImageInverted = async (
   ctx.drawImage(aiImg, 0, 0, canvas.width, canvas.height);
 
   for (const region of regions) {
+      if (!isRegionAboveThreshold(region, confidenceThreshold)) continue;
       const x = (region.x / 100) * originalImg.naturalWidth;
       const y = (region.y / 100) * originalImg.naturalHeight;
       const w = (region.width / 100) * originalImg.naturalWidth;

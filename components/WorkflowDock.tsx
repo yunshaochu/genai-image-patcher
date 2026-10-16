@@ -1,6 +1,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, imageApiSupportsIntent } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, imageApiSupportsIntent, effectiveDetectionThreshold } from '../types';
 import { t } from '../services/translations';
 import { fetchOpenAIModels } from '../services/aiService';
 import { Section } from './sidebar/Section';
@@ -357,7 +357,7 @@ export const WorkflowDock: React.FC<WorkflowDockProps> = ({
                   const region = currentImage.regions.find(r => r.id === selectedRegionId);
                   // Regions the pipeline would never paint (bubble outlines)
                   // have no patch zone.
-                  if (!region || !isRegionPaintable(region)) {
+                  if (!region || !isRegionPaintable(region, effectiveDetectionThreshold(currentImage, config.detectionConfidenceThreshold))) {
                     return !config.useFullImageMasking ? (
                       <div className="text-center py-8 text-skin-muted italic text-xs">
                         {t(lang, 'noRegions')}

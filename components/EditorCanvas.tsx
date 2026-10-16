@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback, useMemo } from 'react';
-import { UploadedImage, Region, Language, RestoreBox, RedrawIntent, ViewMode, isRegionPaintable, isWorkView } from '../types';
+import { UploadedImage, Region, Language, RestoreBox, RedrawIntent, ViewMode, isRegionPaintable, isWorkView, isRegionAboveThreshold, effectiveDetectionThreshold, DETECTION_CONFIDENCE_FLOOR } from '../types';
 import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
@@ -104,6 +104,10 @@ interface EditorCanvasProps {
    * user just cleared. Undefined = the canvas' own plain reset.
    */
   onResetRegion?: (regionId: string) => void;
+  /** 全局「置信度过滤」阈值（0-100，同 AppConfig.detectionConfidenceThreshold）。
+   *  与图片级覆盖（image.detectionConfidenceThreshold）合成后，低于阈值的自动检测
+   *  框不渲染、不参与交互（见 types.ts → effectiveDetectionThreshold）。 */
+  detectionConfidenceThreshold?: number;
 }
 
 /**
@@ -153,6 +157,7 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     preferVerticalDefault = false,
     allowPatchOverflow = false,
     onResetRegion,
+    detectionConfidenceThreshold = DETECTION_CONFIDENCE_FLOOR,
 }: EditorCanvasProps) => {
   // --- Refs ---
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -890,10 +895,12 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
   // Which region boxes are drawn at all. Editor workflow: text regions
   // (bubble outlines stay hidden visual context). Generation workflows:
   // only paintable regions (text boxes + manual).
+  // 置信度过滤：低于该图有效阈值的自动检测框视为无效 —— 不画框、不参与交互。
+  const confidenceThreshold = effectiveDetectionThreshold(image, detectionConfidenceThreshold);
   const isRegionVisible = (region: Region): boolean =>
     regionDisplay === 'editor'
-      ? !region.contextOnly
-      : isRegionPaintable(region);
+      ? !region.contextOnly && isRegionAboveThreshold(region, confidenceThreshold)
+      : isRegionPaintable(region, confidenceThreshold);
 
   // Zoom compensation: inverse scale factor so overlay UI elements maintain
   // consistent screen-pixel size regardless of zoom level.
@@ -957,8 +964,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               Z-order: AI patches first, editor-composited patches last so
               typeset text always sits on top of the AI-redrawn base. */}
           {showPatchOverlays && image.regions.filter(r =>
-            r.status === 'completed' && r.processedImageUrl ||
-            (isWorkTab && r.editorComposited && r.processedImageUrl)
+            // 置信度过滤同样作用于已完成的贴图：低于阈值的框当成无效，不画。
+            isRegionAboveThreshold(r, confidenceThreshold) &&
+            (r.status === 'completed' && r.processedImageUrl ||
+              (isWorkTab && r.editorComposited && r.processedImageUrl))
           ).sort((a, b) =>
             Number(a.editorComposited ?? false) - Number(b.editorComposited ?? false)
           ).map((region) => {

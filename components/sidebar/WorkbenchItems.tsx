@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, effectiveIntentOf } from '../../types';
+import { UploadedImage, AppConfig, Region, Language, RedrawIntent, isRegionPaintable, availableRedrawIntents, clampRedrawIntent, effectiveIntentOf, effectiveDetectionThreshold } from '../../types';
 import { defaultRegionPrompt } from '../../hooks/useConfig';
 import { t } from '../../services/translations';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, releaseObjectURL, PaddingInfo } from '../../services/imageUtils';
@@ -171,7 +171,10 @@ export const FullImageMaskRow: React.FC<{
         const imgEl = await loadImage(image.previewUrl);
         // Only paintable regions (text boxes + manual) are whited out of the
         // masked copy — everything else stays visible.
-        const maskRegions = image.regions.filter(r => isRegionPaintable(r));
+        const maskRegions = image.regions.filter(r => isRegionPaintable(
+          r,
+          effectiveDetectionThreshold(image, config.detectionConfidenceThreshold)
+        ));
         let preview: string;
         if (config.useInvertedMasking) {
             preview = await createInvertedMultiMaskedFullImage(imgEl, maskRegions);

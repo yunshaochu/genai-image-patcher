@@ -1,6 +1,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Language, Region, UploadedImage, isRegionPaintable } from '../types';
+import { Language, Region, UploadedImage, isRegionPaintable, effectiveDetectionThreshold, DETECTION_CONFIDENCE_FLOOR } from '../types';
 import { t } from '../services/translations';
 
 /**
@@ -52,16 +52,19 @@ const matchesKind = (r: Region, kind: LocateKind): boolean =>
 /** 阅读顺序：先图库顺序，再框内自上而下、自左而右 —— 与翻页的直觉一致。 */
 const readingOrder = (a: Region, b: Region) => a.y - b.y || a.x - b.x;
 
-/** 收集可定位的框：跳过被跳过的页面，忽略不可绘制的框（气泡外轮廓等）。 */
+/** 收集可定位的框：跳过被跳过的页面，忽略不可绘制的框（气泡外轮廓等），
+ *  以及低于当前有效置信度阈值的无效框。 */
 export const collectLocateTargets = (
   images: UploadedImage[],
-  kind: LocateKind
+  kind: LocateKind,
+  globalThresholdPercent: number = DETECTION_CONFIDENCE_FLOOR
 ): RegionNavTarget[] => {
   const out: RegionNavTarget[] = [];
   for (const img of images) {
     if (img.isSkipped) continue;
+    const threshold = effectiveDetectionThreshold(img, globalThresholdPercent);
     const hits = img.regions
-      .filter(r => isRegionPaintable(r) && matchesKind(r, kind))
+      .filter(r => isRegionPaintable(r, threshold) && matchesKind(r, kind))
       .sort(readingOrder);
     for (const r of hits) out.push({ imageId: img.id, regionId: r.id });
   }
@@ -75,6 +78,8 @@ interface RegionLocatorProps {
   selectedRegionId: string | null;
   /** 跳转：切换图片并选中该框（与术语表的锚点跳转同一套语义）。 */
   onJump: (imageId: string, regionId: string) => void;
+  /** 全局「置信度过滤」阈值（0-100）：低于有效阈值的无效框不进清单。 */
+  detectionConfidenceThreshold?: number;
 }
 
 export const RegionLocator: React.FC<RegionLocatorProps> = ({
@@ -82,10 +87,11 @@ export const RegionLocator: React.FC<RegionLocatorProps> = ({
   language,
   selectedRegionId,
   onJump,
+  detectionConfidenceThreshold = DETECTION_CONFIDENCE_FLOOR,
 }) => {
   const [kind, setKind] = useState<LocateKind>('pending');
-  const pending = useMemo(() => collectLocateTargets(images, 'pending'), [images]);
-  const completed = useMemo(() => collectLocateTargets(images, 'completed'), [images]);
+  const pending = useMemo(() => collectLocateTargets(images, 'pending', detectionConfidenceThreshold), [images, detectionConfidenceThreshold]);
+  const completed = useMemo(() => collectLocateTargets(images, 'completed', detectionConfidenceThreshold), [images, detectionConfidenceThreshold]);
   const list = kind === 'pending' ? pending : completed;
 
   /**

@@ -46,6 +46,38 @@ export interface RegionTextMask {
 export type DetectionStatus = 'done' | 'failed';
 
 /**
+ * 检测置信度的**下限**（0-100，与 AppConfig.detectionConfidenceThreshold 同单位）。
+ *
+ * 它同时是两件事的下限：
+ *  - /detect 请求下发给后端的 conf_threshold —— 检测永远按这个下限取框，把「低分
+ *    框」也一并取回来，交由前端按用户阈值实时取舍（见 isRegionAboveThreshold）；
+ *  - 「置信度过滤」滑块的物理下限 —— 数据里没有比它更低的框，滑不到那儿。
+ */
+export const DETECTION_CONFIDENCE_FLOOR = 30;
+
+/**
+ * 某张图当前生效的置信度阈值（0-1）。
+ *
+ * 图片级覆盖（UploadedImage.detectionConfidenceThreshold）优先，未设置时跟随全局
+ * `AppConfig.detectionConfidenceThreshold`。分属两套单位：配置是 0-100，这里是 0-1。
+ */
+export const effectiveDetectionThreshold = (
+  image: Pick<UploadedImage, 'detectionConfidenceThreshold'>,
+  globalThresholdPercent: number
+): number => (image.detectionConfidenceThreshold ?? globalThresholdPercent) / 100;
+
+/**
+ * 这一框是否达到置信度阈值。
+ *
+ * 没有 confidence 的框（手画框、老会话遗留框）一律放行 —— 过滤只针对「自动检测
+ * 产生的、带分数的框」。达到阈值才显示 / 参与处理 / 进导出。
+ */
+export const isRegionAboveThreshold = (
+  r: Pick<Region, 'confidence'>,
+  threshold: number
+): boolean => r.confidence === undefined || r.confidence >= threshold;
+
+/**
  * Decides whether a region enters the AI redraw pipeline (masked + painted)
  * and is shown as a working box in the AI-generation canvas. Editor-mode
  * visibility is NOT governed by this — the editor always works on text
@@ -55,10 +87,16 @@ export type DetectionStatus = 'done' | 'failed';
  * `bubble` outlines are context-only markers, never painted — and a bubble
  * that encloses text was already dropped by detection before it could become a
  * region (services/detectionService.ts → dropEnclosingBoxes).
+ *
+ * `threshold`（0-1，可选）= 当前生效的置信度阈值（见 effectiveDetectionThreshold）。
+ * 传来的框低于它就算「无效」：不渲染、不参与翻译/重绘/擦除、不进导出。不传 = 不过滤
+ * （老调用点保持原语义）。
  */
 export const isRegionPaintable = (
-  r: Pick<Region, 'source' | 'detectedClass' | 'contextOnly'>
+  r: Pick<Region, 'source' | 'detectedClass' | 'contextOnly' | 'confidence'>,
+  threshold?: number
 ): boolean => {
+  if (threshold !== undefined && !isRegionAboveThreshold(r, threshold)) return false;
   if (r.source === 'auto' && r.detectedClass) {
     return r.detectedClass === 'text_bubble' || r.detectedClass === 'text_free';
   }
@@ -233,6 +271,11 @@ export interface Region {
    *  context-only markers (reserved for later use); text_bubble / text_free
    *  are the editable text areas in editor mode. */
   detectedClass?: DetectedClass;
+  /** 自动检测的置信度（0-1，见 DetectedClass）。手画框没有这个字段。
+   *  「置信度过滤」（见 isRegionAboveThreshold）据此决定这一框是否显示 /
+   *  参与翻译重绘 / 进导出 —— 低于当前有效阈值时该框视为无效（数据仍保留，
+   *  阈值调低即复活）。 */
+  confidence?: number;
   /** comic-text-detector 像素掩码（见 RegionTextMask）。仅当「文字掩码精准
    *  擦除」开关开启且检测时后端掩码模型就绪才会存在；擦除时与洞检测取并集。 */
   textMask?: RegionTextMask;
@@ -352,6 +395,10 @@ export interface UploadedImage {
    *  的页面 —— 哪怕是「一个框都没检出」的空结果页。'应用为原图' 会把内容换掉，那时
    *  标记随之清空（旧记忆描述的是旧画面）。 */
   detectionStatus?: DetectionStatus;
+  /** 图片级「置信度过滤」阈值（0-100，同 AppConfig.detectionConfidenceThreshold）。
+   *  undefined = 跟随全局设置；设置后这张图用独立阈值，可再清空回跟随
+   *  （见 effectiveDetectionThreshold / isRegionAboveThreshold）。 */
+  detectionConfidenceThreshold?: number;
   /** 全图遮罩模式下的「图片级意图 / 三套 tab 提示词 / 图片级译文」。语义同 Region。 */
   redrawIntent?: RedrawIntent;
   customPromptErase?: string;
@@ -582,6 +629,9 @@ export interface AppConfig {
   detectionInflationPercent: number; // e.g. 10 for 10% expansion
   detectionOffsetXPercent: number; // e.g. 0
   detectionOffsetYPercent: number; // e.g. 0
+  /** 置信度过滤阈值（0-100，e.g. 30 = 0.3）：低于它的自动检测框不显示 / 不参与
+   *  翻译重绘 / 不进导出。这是「全部图片」的默认值；某张图可用
+   *  UploadedImage.detectionConfidenceThreshold 单独覆盖。下限 = DETECTION_CONFIDENCE_FLOOR。 */
   detectionConfidenceThreshold: number; // e.g. 30 for 0.3
   /** 自动检测气泡的跳过策略：开着 = 「只剩手画框、还没有任何文字区」的页面也跳过
    *  （用户手框过就当他处理过这页了），关着 = 这类页面照旧检测。已经有文字区的页面

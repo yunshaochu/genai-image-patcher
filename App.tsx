@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect, useCallback, lazy, Suspense, Profiler } from 'react';
-import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, ViewMode, workViewOf, clampRedrawIntent, effectiveIntentOf } from './types';
+import { Region, ProcessingStep, AppConfig, RestoreBox, UploadedImage, RedrawIntent, ProcessingMode, ViewMode, workViewOf, clampRedrawIntent, effectiveIntentOf, effectiveDetectionThreshold, isRegionAboveThreshold } from './types';
 import Sidebar from './components/Sidebar';
 import EditorCanvas from './components/EditorCanvas';
 import EditorDock, { outlinePatchOf, makeSolidBrushUrl } from './components/EditorDock';
@@ -107,6 +107,7 @@ export default function App() {
     handleUpdateImagePrompt,
     handleUpdateRegionIntent,
     handleUpdateImageIntent,
+    handleUpdateImageConfidenceThreshold,
     handleUpdateRegionTranslation,
     handleUpdateImageTranslation,
     handleToggleSkip,
@@ -356,7 +357,7 @@ export default function App() {
                 for (const r of targetImg.regions) {
                     updatedRegions.push({ ...r, status: 'completed' });
                 }
-                const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, imageDataUrl, updatedRegions);
+                const stitchedUrl = await stitchImageInverted(targetImg.previewUrl, imageDataUrl, updatedRegions, effectiveDetectionThreshold(targetImg, config.detectionConfidenceThreshold));
                 
                 updateImage(imageId, img => {
                     const currentHistory = [...img.history];
@@ -505,7 +506,7 @@ export default function App() {
           if (targetImage && targetImage.fullAiResultUrl) {
               if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
               debounceTimerRef.current = setTimeout(async () => {
-                  const stitchedUrl = await stitchImageInverted(targetImage.previewUrl, targetImage.fullAiResultUrl!, newRegions);
+                  const stitchedUrl = await stitchImageInverted(targetImage.previewUrl, targetImage.fullAiResultUrl!, newRegions, effectiveDetectionThreshold(targetImage, config.detectionConfidenceThreshold));
                   updateImage(imageId, img => ({ ...img, finalResultUrl: stitchedUrl }));
               }, 200);
           }
@@ -651,9 +652,11 @@ export default function App() {
       // AI 重绘 / 手动修补工坊 the stitch crops them back to the box so the
       // exported picture matches what those workflows show on the canvas.
       const honorPatchOverflow = config.processingMode === 'editor';
+      // 置信度过滤：低于该图有效阈值的自动检测框不参与成品（与画布显示一致）。
+      const confidenceThreshold = effectiveDetectionThreshold(image, config.detectionConfidenceThreshold);
       if (config.useInvertedMasking && image.fullAiResultUrl) {
           return {
-              url: await stitchImageInverted(image.previewUrl, image.fullAiResultUrl, image.regions),
+              url: await stitchImageInverted(image.previewUrl, image.fullAiResultUrl, image.regions, confidenceThreshold),
               release: true,
           };
       }
@@ -662,16 +665,18 @@ export default function App() {
       // after 应用为原图 the preview IS the committed picture while originalUrl still
       // points at the pre-apply source — export the preview so Download / ZIP match
       // the canvas instead of silently shipping the old image.
-      const hasPatch = image.regions.some(r => r.status === 'completed' && r.processedImageUrl);
+      const hasPatch = image.regions.some(r =>
+          r.status === 'completed' && r.processedImageUrl && isRegionAboveThreshold(r, confidenceThreshold)
+      );
       if (!hasPatch) {
           return {
               url: image.appliedAsOriginal ? image.previewUrl : (image.originalUrl || image.previewUrl),
               release: false,
           };
       }
-      if (fresh) return { url: await stitchImage(image.previewUrl, image.regions, honorPatchOverflow), release: true };
-      return { url: await getStitchedUrl(image, honorPatchOverflow), release: false };
-  }, [config.useInvertedMasking, config.processingMode, getStitchedUrl]);
+      if (fresh) return { url: await stitchImage(image.previewUrl, image.regions, honorPatchOverflow, confidenceThreshold), release: true };
+      return { url: await getStitchedUrl(image, honorPatchOverflow, confidenceThreshold), release: false };
+  }, [config.useInvertedMasking, config.processingMode, config.detectionConfidenceThreshold, getStitchedUrl]);
 
   // ON-DEMAND STITCHING for Download — scope-aware: 当前图片 = that one file,
   // 全部 = ZIP of everything that has a result, plus the images marked as skipped.
@@ -858,7 +863,7 @@ export default function App() {
       if (config.useInvertedMasking && img.fullAiResultUrl) {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = setTimeout(async () => {
-              const stitchedUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl!, updatedRegions);
+              const stitchedUrl = await stitchImageInverted(img.previewUrl, img.fullAiResultUrl!, updatedRegions, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold));
               updateImage(imageId, i => ({ ...i, finalResultUrl: stitchedUrl }));
           }, 200);
       }
@@ -1265,6 +1270,7 @@ export default function App() {
         onDeleteImage={handleDeleteImage}
         onClearAllImages={handleClearAllWithGlossary}
         onToggleSkip={handleToggleSkip}
+        onUpdateImageConfidence={handleUpdateImageConfidenceThreshold}
         onAutoDetect={handleAutoDetect}
         isDetecting={isDetecting}
         onOpenGlobalSettings={sidebarOnOpenGlobalSettings}
@@ -1469,6 +1475,8 @@ export default function App() {
                     onAngleMeasureComplete={handleAngleMeasureComplete}
                     onAngleMeasureCancel={handleAngleMeasureCancel}
                     preferVerticalDefault={isEditorMode ? !!config.enableVerticalTextDefault : undefined}
+                    // 置信度过滤：低于有效阈值的自动检测框不画、不可交互。
+                    detectionConfidenceThreshold={config.detectionConfidenceThreshold}
                 />
                 </Profiler>
               )}
@@ -1492,6 +1500,7 @@ export default function App() {
               language={config.language}
               selectedRegionId={selectedRegionId}
               onJump={handleLocateJump}
+              detectionConfidenceThreshold={config.detectionConfidenceThreshold}
             />
           </div>
         )}

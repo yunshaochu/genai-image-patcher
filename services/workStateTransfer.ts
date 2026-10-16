@@ -64,6 +64,8 @@ interface WorkStateImageEntry {
   appliedAsOriginal?: boolean;
   /** 自动检测气泡的记忆（见 UploadedImage.detectionStatus）。 */
   detectionStatus?: ImageRecord['detectionStatus'];
+  /** 图片级「置信度过滤」阈值（见 UploadedImage.detectionConfidenceThreshold）。 */
+  detectionConfidenceThreshold?: number;
   original: ManifestRef;
   preview?: ManifestRef;
   thumbnail?: ManifestRef;
@@ -189,6 +191,7 @@ export async function downloadWorkStateZip(
       customTranslation: rec.customTranslation,
       appliedAsOriginal: rec.appliedAsOriginal,
       detectionStatus: rec.detectionStatus,
+      detectionConfidenceThreshold: rec.detectionConfidenceThreshold,
       original: originalRef!,
       preview: await writePersistable(zip, rec.preview, `${dir}/preview.png`),
       thumbnail: await writePersistable(zip, rec.thumbnail, `${dir}/thumbnail.png`),
@@ -324,6 +327,9 @@ export async function readWorkStateZip(
       // 只认两个合法值：手改过的包 / 老包里的垃圾值一律当「没记录」。
       detectionStatus: entry.detectionStatus === 'done' || entry.detectionStatus === 'failed'
         ? entry.detectionStatus
+        : undefined,
+      detectionConfidenceThreshold: typeof entry.detectionConfidenceThreshold === 'number'
+        ? entry.detectionConfidenceThreshold
         : undefined,
       regions,
     };

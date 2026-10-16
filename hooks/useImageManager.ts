@@ -244,15 +244,16 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     }
   };
 
-  const getStitchedUrl = useCallback(async (image: UploadedImage, honorPatchOverflow = true): Promise<string> => {
-    // The overflow flag changes the output pixels, so it is part of the cache
-    // key: switching workflows must not hand back the other variant's URL.
-    const signature = `${honorPatchOverflow ? 'ovf' : 'clip'}|${computeStitchSignature(image)}`;
+  const getStitchedUrl = useCallback(async (image: UploadedImage, honorPatchOverflow = true, confidenceThreshold = 0): Promise<string> => {
+    // The overflow flag and the confidence threshold both change the output
+    // pixels, so they are part of the cache key: switching workflows (or the
+    // 置信度过滤 slider) must not hand back the other variant's URL.
+    const signature = `${honorPatchOverflow ? 'ovf' : 'clip'}|${confidenceThreshold}|${computeStitchSignature(image)}`;
     const cached = stitchCacheRef.current.get(image.id);
     if (cached && cached.signature === signature) {
       return cached.url;
     }
-    const url = await stitchImage(image.previewUrl, image.regions, honorPatchOverflow);
+    const url = await stitchImage(image.previewUrl, image.regions, honorPatchOverflow, confidenceThreshold);
     if (cached) releaseObjectURL(cached.url);
     stitchCacheRef.current.set(image.id, { signature, url });
     return url;
@@ -390,6 +391,11 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
   /** 全图遮罩模式下的图片级场景覆盖（undefined = 清除覆盖）。 */
   const handleUpdateImageIntent = useCallback((imageId: string, intent: RedrawIntent | undefined) => {
     updateImage(imageId, (img) => ({ ...img, redrawIntent: intent }));
+  }, [updateImage]);
+
+  /** 图片级「置信度过滤」阈值覆盖（undefined = 清除覆盖，跟随全局设置）。 */
+  const handleUpdateImageConfidenceThreshold = useCallback((imageId: string, threshold: number | undefined) => {
+    updateImage(imageId, (img) => ({ ...img, detectionConfidenceThreshold: threshold }));
   }, [updateImage]);
 
   /** 手动修正某格译文（脱离提示词字段后的独立槽）。 */
@@ -575,6 +581,7 @@ export function useImageManager(performanceMode: PerformanceMode, enableSessionP
     handleUpdateImagePrompt,
     handleUpdateRegionIntent,
     handleUpdateImageIntent,
+    handleUpdateImageConfidenceThreshold,
     handleUpdateRegionTranslation,
     handleUpdateImageTranslation,
     handleToggleSkip,

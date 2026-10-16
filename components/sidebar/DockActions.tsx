@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, clampRedrawIntent, imageApiSupportsIntent } from '../../types';
+import { AppConfig, ProcessingStep, UploadedImage, RedrawIntent, isRegionPaintable, clampRedrawIntent, imageApiSupportsIntent, effectiveDetectionThreshold } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
 
@@ -53,32 +53,34 @@ export const useRunGating = ({
   const scopedImages = processAll
     ? images.filter(img => !img.isSkipped)
     : (currentImage ? [currentImage] : []);
-  const isGenPaintable = (r: UploadedImage['regions'][number]) =>
-    isRegionPaintable(r);
+  // 置信度过滤：低于该图有效阈值的自动检测框视为无效 —— 与管线（useImageProcessor）
+  // 同一判定，按钮的可用性才不会和实际能跑的活对不上。
+  const isGenPaintable = (img: UploadedImage, r: UploadedImage['regions'][number]) =>
+    isRegionPaintable(r, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold));
   // 译文只对「翻译」意图有意义：擦除 / 自定义不需要译文（也会跳过翻译阶段）。
   // 兜底 = 全局「默认场景」，与重绘管线用的是同一个来源。
   const intentOf = (v: { redrawIntent?: RedrawIntent }): RedrawIntent =>
     clampRedrawIntent(v.redrawIntent, config.enableMangaMode, config.defaultRedrawIntent ?? 'translate');
-  const regionNeedsTranslation = (r: UploadedImage['regions'][number]) =>
-    isGenPaintable(r) && intentOf(r) === 'translate';
+  const regionNeedsTranslation = (img: UploadedImage, r: UploadedImage['regions'][number]) =>
+    isGenPaintable(img, r) && intentOf(r) === 'translate';
   // 场景标记：当前生图 API 没勾选的场景管线会整体跳过（见 useImageProcessor）。
   // 这里只用来判断「一个框都跑不了」，让重绘按钮不再是一个无声的空操作。
   const intentSupported = (v: { redrawIntent?: RedrawIntent }) => imageApiSupportsIntent(config, intentOf(v));
-  const hasPaintableRegions = scopedImages.some(img => img.regions.some(isGenPaintable));
+  const hasPaintableRegions = scopedImages.some(img => img.regions.some(r => isGenPaintable(img, r)));
   const anyProcessableRegion = scopedImages.some(img =>
-    img.regions.some(isGenPaintable) && (config.useFullImageMasking
+    img.regions.some(r => isGenPaintable(img, r)) && (config.useFullImageMasking
       ? intentSupported(img)
-      : img.regions.some(r => isGenPaintable(r) && intentSupported(r)))
+      : img.regions.some(r => isGenPaintable(img, r) && intentSupported(r)))
   );
   const translationReady = scopedImages.some(img =>
     config.useFullImageMasking
-      ? img.regions.some(isGenPaintable) && intentOf(img) === 'translate' && !!img.customTranslation?.trim()
-      : img.regions.some(r => regionNeedsTranslation(r) && !!r.customTranslation?.trim())
+      ? img.regions.some(r => isGenPaintable(img, r)) && intentOf(img) === 'translate' && !!img.customTranslation?.trim()
+      : img.regions.some(r => regionNeedsTranslation(img, r) && !!r.customTranslation?.trim())
   );
   const translationWorkLeft = scopedImages.some(img =>
     config.useFullImageMasking
-      ? img.regions.some(isGenPaintable) && intentOf(img) === 'translate' && !img.customTranslation?.trim()
-      : img.regions.some(r => regionNeedsTranslation(r) && !r.customTranslation?.trim())
+      ? img.regions.some(r => isGenPaintable(img, r)) && intentOf(img) === 'translate' && !img.customTranslation?.trim()
+      : img.regions.some(r => regionNeedsTranslation(img, r) && !r.customTranslation?.trim())
   );
 
   const generateReason = resultOnly ? '' : (() => {

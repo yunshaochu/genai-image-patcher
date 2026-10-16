@@ -1,6 +1,6 @@
 
 
-import { AppConfig, Region, RegionTextMask } from "../types";
+import { AppConfig, Region, RegionTextMask, DETECTION_CONFIDENCE_FLOOR } from "../types";
 
 // API Response Types based on comic-detector RT-DETR API (docs/API_RTDTR.md)
 interface ApiDetection {
@@ -129,10 +129,13 @@ export const detectBubbles = async (
     // 2. Build FormData
     const formData = new FormData();
     formData.append('image', imageBlob, 'image.jpg');
-    // Server-side confidence threshold: send the configured value so a low
-    // threshold (e.g. 0.3) isn't pre-filtered away by the server's 0.5
-    // default. Clamped to the API's accepted range [0.1, 1.0].
-    const confThreshold = Math.min(1, Math.max(0.1, (config.detectionConfidenceThreshold ?? 30) / 100));
+    // Server-side confidence threshold: ALWAYS the floor (0.3), never the user's
+    // filter threshold. Detection must fetch every box down to the floor so the
+    // front-end confidence filter (see types.ts → isRegionAboveThreshold) can
+    // reveal them live when the user lowers the slider — a high pre-filter here
+    // would make that slider one-way. The floor also keeps truly low-score
+    // RT-DETR noise out of the payload.
+    const confThreshold = DETECTION_CONFIDENCE_FLOOR / 100;
     formData.append('conf_threshold', String(confThreshold));
     // Request all three classes. text_bubble = 气泡内文本, text_free = 气泡外文本
     // are the editable text areas; bubble = 整颗气泡, kept as context-only
@@ -258,6 +261,9 @@ export const detectBubbles = async (
             status: 'pending',
             source: 'auto',
             detectedClass: det.class_name,
+            // 逐框置信度（0-1）：前端「置信度过滤」据此实时取舍 ——
+            // 见 types.ts → isRegionAboveThreshold / effectiveDetectionThreshold。
+            confidence: det.confidence,
             // 'bubble' outlines are context-only markers: never sent to the
             // AI redraw pipeline, not editable text areas.
             // NOTE: a bubble that ENCLOSED a text box was already dropped above

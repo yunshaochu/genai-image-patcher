@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AppConfig } from '../../types';
+import { AppConfig, DETECTION_CONFIDENCE_FLOOR } from '../../types';
 import { t } from '../../services/translations';
 import { HelpTip } from './HelpTip';
 
@@ -13,6 +13,12 @@ interface MangaToolsPanelProps {
     hasCurrentImage: boolean;
     detectScope: 'current' | 'all';
     setDetectScope: (scope: 'current' | 'all') => void;
+    /** 当前图片的「置信度过滤」覆盖值（0-100）。undefined = 跟随全局。 */
+    currentConfidenceThreshold?: number;
+    /** 当前图片 id（用于提交覆盖；字符串，保持 memo 稳定）。 */
+    currentImageId?: string;
+    /** 设置 / 清除（传 undefined）某张图片的置信度覆盖。 */
+    onChangeCurrentConfidence?: (imageId: string, value: number | undefined) => void;
 }
 
 const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
@@ -22,7 +28,10 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
     isDetecting,
     hasCurrentImage,
     detectScope,
-    setDetectScope
+    setDetectScope,
+    currentConfidenceThreshold,
+    currentImageId,
+    onChangeCurrentConfidence
 }) => {
     const lang = config.language;
     const [showDetectTuning, setShowDetectTuning] = useState(false);
@@ -117,17 +126,59 @@ const MangaToolsPanelInner: React.FC<MangaToolsPanelProps> = ({
                                 </div>
                             </div>
 
+                            {/* 置信度过滤：检测永远按下限取框，这里只决定「显示 / 参与
+                                处理」的阈值。全局 = 全部图片；当前图片可独立覆盖。 */}
                             <div>
                                 <div className="flex justify-between text-[10px] text-skin-muted mb-1">
-                                    <span>{t(lang, 'detectConfidence')}</span>
-                                    <span className="font-mono text-skin-primary">{config.detectionConfidenceThreshold / 100}</span>
+                                    <span className="flex items-center gap-1">
+                                        {t(lang, 'detectConfidence')}
+                                        <HelpTip text={t(lang, 'detectConfidenceDesc')} />
+                                    </span>
+                                    <span className="font-mono text-skin-primary">{(config.detectionConfidenceThreshold / 100).toFixed(2)}</span>
                                 </div>
                                 <input
-                                    type="range" min="10" max="90" step="5"
+                                    type="range" min={DETECTION_CONFIDENCE_FLOOR} max="90" step="5"
                                     value={config.detectionConfidenceThreshold}
                                     onChange={(e) => onChange('detectionConfidenceThreshold', Number(e.target.value))}
                                     className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
                                 />
+
+                                {hasCurrentImage && currentImageId && onChangeCurrentConfidence && (
+                                    <div className="mt-2 pt-2 border-t border-skin-border/40">
+                                        {currentConfidenceThreshold === undefined ? (
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className="text-[10px] text-skin-muted">
+                                                    {t(lang, 'detectConfidenceFollowsGlobal', { value: (config.detectionConfidenceThreshold / 100).toFixed(2) })}
+                                                </span>
+                                                <button
+                                                    onClick={() => onChangeCurrentConfidence(currentImageId, config.detectionConfidenceThreshold)}
+                                                    className="shrink-0 text-[10px] px-2 py-0.5 rounded border border-skin-border text-skin-text hover:border-skin-primary hover:text-skin-primary transition-colors"
+                                                >
+                                                    {t(lang, 'detectConfidenceOverride')}
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <div className="flex justify-between text-[10px] text-skin-muted mb-1">
+                                                    <span>{t(lang, 'detectConfidenceCurrent')}</span>
+                                                    <span className="font-mono text-skin-primary">{(currentConfidenceThreshold / 100).toFixed(2)}</span>
+                                                </div>
+                                                <input
+                                                    type="range" min={DETECTION_CONFIDENCE_FLOOR} max="90" step="5"
+                                                    value={currentConfidenceThreshold}
+                                                    onChange={(e) => onChangeCurrentConfidence(currentImageId, Number(e.target.value))}
+                                                    className="w-full h-1 bg-skin-border rounded-lg appearance-none cursor-pointer accent-skin-primary"
+                                                />
+                                                <button
+                                                    onClick={() => onChangeCurrentConfidence(currentImageId, undefined)}
+                                                    className="mt-1.5 text-[10px] text-skin-muted hover:text-skin-text underline"
+                                                >
+                                                    {t(lang, 'detectConfidenceReset')}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
                             </div>
 
                             {/* 跳过策略：管的是「哪些页要跑检测」，不是检测参数，

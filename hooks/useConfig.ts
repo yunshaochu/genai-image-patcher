@@ -136,6 +136,8 @@ const DEFAULT_CONFIG: AppConfig = {
   detectionInflationPercent: 5,
   detectionOffsetXPercent: 0,
   detectionOffsetYPercent: 0,
+  // 置信度过滤默认 0.3（= DETECTION_CONFIDENCE_FLOOR，滑块下限）：检测按此下限取框，
+  // 用户可在「当前图片 / 全部图片」上调高，实时隐藏低分框。
   detectionConfidenceThreshold: 30,
   // 跳过策略默认关：只有手画框的页面照旧检测（= 与历史行为一致）。
   detectionSkipManualOnlyPages: false,

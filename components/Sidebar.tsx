@@ -18,6 +18,8 @@ interface SidebarProps {
   onDeleteImage: (imageId: string) => void;
   onClearAllImages: () => void;
   onToggleSkip: (imageId: string) => void;
+  /** 图片级「置信度过滤」阈值覆盖（undefined = 清除覆盖，跟随全局）。 */
+  onUpdateImageConfidence?: (imageId: string, threshold: number | undefined) => void;
   onAutoDetect: (scope: 'current' | 'all') => void;
   isDetecting: boolean;
   onOpenGlobalSettings: () => void;
@@ -204,6 +206,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onDeleteImage,
   onClearAllImages,
   onToggleSkip,
+  onUpdateImageConfidence,
   onAutoDetect,
   isDetecting,
   onOpenGlobalSettings,
@@ -638,9 +641,12 @@ const Sidebar: React.FC<SidebarProps> = ({
                    onAutoDetect={onAutoDetect}
                    isDetecting={isDetecting}
                    hasCurrentImage={!!currentImage}
-                  detectScope={detectScope}
-                  setDetectScope={setDetectScope}
-               />
+                   detectScope={detectScope}
+                   setDetectScope={setDetectScope}
+                   currentConfidenceThreshold={currentImage?.detectionConfidenceThreshold}
+                   currentImageId={currentImage?.id}
+                   onChangeCurrentConfidence={onUpdateImageConfidence}
+                   />
             </Section>
         )}
 

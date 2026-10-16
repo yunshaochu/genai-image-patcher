@@ -55,6 +55,8 @@ export interface ImageRecord {
   customPromptErase?: string;
   customPromptFree?: string;
   customTranslation?: string;
+  /** 图片级「置信度过滤」阈值（undefined = 跟随全局，见 UploadedImage）。 */
+  detectionConfidenceThreshold?: number;
   /** previewUrl is a committed 应用为原图 result (see UploadedImage). */
   appliedAsOriginal?: boolean;
   /** 自动检测气泡的记忆（见 UploadedImage.detectionStatus）。 */
@@ -181,6 +183,7 @@ export async function serializeImage(img: UploadedImage): Promise<ImageRecord> {
     customTranslation: img.customTranslation,
     appliedAsOriginal: img.appliedAsOriginal,
     detectionStatus: img.detectionStatus,
+    detectionConfidenceThreshold: img.detectionConfidenceThreshold,
     regions,
   };
 }
@@ -243,6 +246,7 @@ export function deserializeImage(rec: ImageRecord): UploadedImage {
     customTranslation: rec.customTranslation ?? imgTrans.translation,
     appliedAsOriginal: rec.appliedAsOriginal,
     detectionStatus: rec.detectionStatus,
+    detectionConfidenceThreshold: rec.detectionConfidenceThreshold,
     history: [initialState],
     historyIndex: 0,
   };

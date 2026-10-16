@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf, EMPTY_TEXT_MARK, isTranslationHandled } from '../types';
+import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf, EMPTY_TEXT_MARK, isTranslationHandled, isRegionAboveThreshold, effectiveDetectionThreshold } from '../types';
 import { loadImage, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { translateEditorRegions } from '../services/editorTranslate';
 import { PageTerm } from '../services/glossaryBook';
@@ -860,13 +860,17 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   const pickExplicitTranslateTargets = useCallback((img: UploadedImage, ids: Set<string>): Region[] =>
     img.regions.filter(r => {
       if (!ids.has(r.id)) return false;
+      // 置信度过滤：低于该图有效阈值的自动检测框视为无效，不参与翻译。
+      if (!isRegionAboveThreshold(r, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold))) return false;
       if (r.contextOnly) return false;
       if (isAiOwned(r) && intentOf(r) !== 'translate') return false;
       return true;
-    }), [intentOf]);
+    }), [intentOf, config.detectionConfidenceThreshold]);
 
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
     img.regions.filter(r => {
+      // 置信度过滤：低于该图有效阈值的自动检测框视为无效，不参与翻译。
+      if (!isRegionAboveThreshold(r, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold))) return false;
       if (r.contextOnly) return false;
       // AI「翻译」意图的完成框也要翻译：译文会 held back（冻结）在编辑器里，不会
       // 和图上 AI 已经画好的中文重叠。其它 AI 独占框（自定义 / 旧版）跳过 ——

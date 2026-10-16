@@ -1,6 +1,6 @@
 
 import { useState, useRef } from 'react';
-import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, shouldSkipBubbleDetection, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf, imageApiSupportsIntent } from '../types';
+import { AppConfig, ProcessingStep, UploadedImage, Region, RedrawIntent, isRegionPaintable, shouldSkipBubbleDetection, baseImageUrl, clampRedrawIntent, effectiveIntentOf as rawEffectiveIntentOf, imageApiSupportsIntent, effectiveDetectionThreshold } from '../types';
 import { defaultRegionPrompt } from './useConfig';
 import { loadImage, createMultiMaskedFullImage, createInvertedMultiMaskedFullImage, cropRegion, padImageToSquare, depadImageByRatio, stitchImageInverted, extractCropFromFullImage, compressImageToTargetSize, PaddingInfo, urlToBase64, base64ToObjectURLAsync, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { generateRegionEdit, generateTranslation } from '../services/aiService';
@@ -202,10 +202,6 @@ export function useImageProcessor(
     const imagesRef = useRef(images);
     imagesRef.current = images;
 
-    // Which regions the AI redraw pipeline paints: text boxes (text_bubble +
-    // text_free) and manual regions. `bubble` outlines are context-only.
-    const paintable = (r: Region): boolean => isRegionPaintable(r);
-
     // 漫画模块关闭后只剩「自定义」场景。把开关透传给 effectiveIntentOf，管线里
     // 所有意图判定都自动忽略历史遗留的翻译 / 擦除标记，与 UI 的隐藏保持同源。
     const effectiveIntentOf = (
@@ -216,6 +212,18 @@ export function useImageProcessor(
     // `configRef` gives the async loops the freshest values.
     const configRef = useRef(config);
     configRef.current = config;
+
+    // Which regions the AI redraw pipeline paints: text boxes (text_bubble +
+    // text_free) and manual regions. `bubble` outlines are context-only.
+    //
+    // 置信度过滤：低于该图当前有效阈值（图片级覆盖 ?? 全局，见 types.ts →
+    // effectiveDetectionThreshold）的自动检测框不参与翻译 / 重绘 / 擦除。阈值是
+    // 图片级的，所以谓词必须带上所属图片；框的数据仍保留，阈值调低即复活。
+    const paintable = (img: UploadedImage, r: Region): boolean =>
+        isRegionPaintable(
+            r,
+            effectiveDetectionThreshold(img, configRef.current.detectionConfidenceThreshold)
+        );
 
     /**
      * 当前生图 API 是否支持某个重绘场景（「自定义」恒可用；未选配置组 = 不设限；
@@ -330,7 +338,7 @@ export function useImageProcessor(
             } catch (err: any) {
                 if (err?.name !== 'AbortError') {
                     const inScope = imageSnapshot.regions.filter(r =>
-                        paintable(r) && (r.status === 'pending' || r.status === 'failed')
+                        paintable(imageSnapshot, r) && (r.status === 'pending' || r.status === 'failed')
                     );
                     failRegions(inScope.length > 0 ? inScope : imageSnapshot.regions, err);
                 }
@@ -343,7 +351,7 @@ export function useImageProcessor(
         // whole-image box ("处理全图") cannot be pre-translated by the translate
         // stage (there is no region to cache against), so 必须翻译 must not
         // block it — otherwise it could never be generated at all.
-        const isSyntheticFullImage = !initialRegions.some(paintable) && !!config.processFullImageIfNoRegions;
+        const isSyntheticFullImage = !initialRegions.some(r => paintable(imageSnapshot, r)) && !!config.processFullImageIfNoRegions;
         // Non-paintable regions (e.g. bubble outlines) don't count — an image
         // holding ONLY those is still "empty".
         if (isSyntheticFullImage) {
@@ -362,7 +370,7 @@ export function useImageProcessor(
         const allActiveRegions = Array.from(regionsMap.values()).filter(r => r.status !== 'processing');
         // Mask building only covers paintable regions — bubble outlines are
         // visual context, never whited-out for the AI.
-        const maskRegions = allActiveRegions.filter(paintable);
+        const maskRegions = allActiveRegions.filter(r => paintable(imageSnapshot, r));
         // Cap per-region attempts at (maxRetriesPerRegion + 1). A region that's already
         // burned through its retry budget is skipped here even if its image is
         // still being passed through the outer loop (because OTHER regions in
@@ -370,7 +378,7 @@ export function useImageProcessor(
         const maxAttemptsPerRegion = Math.max(1, (config.maxRetriesPerRegion ?? 0) + 1);
         let regionsToProcess = allActiveRegions.filter(r =>
             (r.status === 'pending' || r.status === 'failed')
-            && paintable(r)
+            && paintable(imageSnapshot, r)
             && (r.retryCount ?? 0) < maxAttemptsPerRegion
         );
 
@@ -987,13 +995,13 @@ export function useImageProcessor(
         updateAllImages(img => {
             if (!targetIds.has(img.id)) return img;
             const anyToReset = img.regions.some(r =>
-                (r.status === 'pending' || r.status === 'failed') && paintable(r)
+                (r.status === 'pending' || r.status === 'failed') && paintable(img, r)
             );
             if (!anyToReset) return img;
             return {
                 ...img,
                 regions: img.regions.map(r =>
-                    (r.status === 'pending' || r.status === 'failed') && paintable(r)
+                    (r.status === 'pending' || r.status === 'failed') && paintable(img, r)
                         ? { ...r, retryCount: 0, errorHistory: [] }
                         : r
                 ),
@@ -1017,7 +1025,7 @@ export function useImageProcessor(
         for (const img of initialTargets) {
             if (img.isSkipped) continue;
             for (const r of img.regions) {
-                if (!paintable(r)) continue;
+                if (!paintable(img, r)) continue;
                 const inScope = r.status === 'pending' || r.status === 'failed';
                 localRegionState.set(r.id, {
                     status: r.status,
@@ -1034,7 +1042,7 @@ export function useImageProcessor(
             for (const img of pickTargets()) {
                 if (img.isSkipped) continue;
                 for (const r of img.regions) {
-                    if (!paintable(r)) continue;
+                    if (!paintable(img, r)) continue;
                     const local = localRegionState.get(r.id);
                     const status = local?.status ?? r.status;
                     if (status !== 'pending' && status !== 'failed') continue;
@@ -1062,7 +1070,7 @@ export function useImageProcessor(
             let rearmed = 0;
             for (const img of pickTargets()) {
                 if (img.isSkipped) continue;
-                const hasPaintable = img.regions.some(paintable);
+                const hasPaintable = img.regions.some(r => paintable(img, r));
                 // Full-image masking: one image-level cache entry gates every
                 // box of the page (mirrors processSingleImage's early return).
                 if (needsTranslation && config.useFullImageMasking && hasPaintable
@@ -1071,7 +1079,7 @@ export function useImageProcessor(
                     continue;
                 }
                 for (const r of img.regions) {
-                    if (!paintable(r)) continue;
+                    if (!paintable(img, r)) continue;
                     if (needsTranslation && !config.useFullImageMasking
                         && effectiveIntentOf(r, defaultIntent) === 'translate'
                         && !r.customTranslation?.trim()) {
@@ -1105,7 +1113,7 @@ export function useImageProcessor(
                 // in localRegionState yet, so fall back to the React state for those.
                 const roundTargets = pickTargets().filter(img =>
                     img.regions.some(r => {
-                        if (!paintable(r)) return false;
+                        if (!paintable(img, r)) return false;
                         const local = localRegionState.get(r.id);
                         if (local) {
                             return (local.status === 'pending' || local.status === 'failed')
@@ -1252,7 +1260,7 @@ export function useImageProcessor(
                 localImageHasTranslation.set(img.id, !!img.customTranslation?.trim());
             }
             for (const r of img.regions) {
-                if (paintable(r)) localHasTranslation.set(r.id, !!r.customTranslation?.trim());
+                if (paintable(img, r)) localHasTranslation.set(r.id, !!r.customTranslation?.trim());
             }
         }
         const regionHasTranslation = (r: Region): boolean =>
@@ -1299,7 +1307,7 @@ export function useImageProcessor(
 
         const translateImage = async (img: UploadedImage) => {
             if (controller.signal.aborted) return;
-            const paintableRegions = img.regions.filter(paintable);
+            const paintableRegions = img.regions.filter(r => paintable(img, r));
 
             // Full-image masking: one payload per image and one image-level
             // cache entry, so either the whole page is already translated or
@@ -1492,7 +1500,7 @@ export function useImageProcessor(
         const hasPendingTranslationWork = (): boolean => {
             for (const img of pickTargets()) {
                 if (img.isSkipped) continue;
-                const paintableRegions = img.regions.filter(paintable);
+                const paintableRegions = img.regions.filter(r => paintable(img, r));
                 if (paintableRegions.length === 0) continue;
                 if (config.useFullImageMasking) {
                     if (effectiveIntentOf(img, defaultIntent) === 'translate'
