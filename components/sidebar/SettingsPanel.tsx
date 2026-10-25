@@ -5,6 +5,7 @@ import { t } from '../../services/translations';
 import { ApiProfileSwitcher } from './ApiProfileSwitcher';
 import { SecretInput } from './SecretInput';
 import { FloatingPanel } from './FloatingPanel';
+import { HelpTip } from './HelpTip';
 
 /** 附加请求参数这块默认收起（低频逃生口），但展开过一次就记住 —— 需要它的
  *  人不用每次进来都再点开一遍。 */
@@ -128,7 +129,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         showScenarioFlags
                     />
                     <div className="animate-in fade-in slide-in-from-top-1">
-                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 block">{t(lang, 'baseUrl')}</label>
+                        <label className="text-[10px] uppercase font-bold text-skin-muted mb-1 flex items-center gap-1">
+                            {t(lang, 'baseUrl')}
+                            <HelpTip text={t(lang, 'baseUrlHint')} />
+                        </label>
                         <input 
                             type="text" 
                             value={config.openaiBaseUrl}

@@ -15,6 +15,52 @@ const sanitizeHeaderValue = (value: string): string => {
   return value.replace(/[^\x00-\xFF]/g, '').trim();
 };
 
+/** OpenAI 兼容链路支持的端点路径（resolveOpenAIEndpointUrl 的第二个参数）。 */
+export const OPENAI_ENDPOINT_PATHS = ['/chat/completions', '/images/edits'] as const;
+export type OpenAIEndpointPath = typeof OPENAI_ENDPOINT_PATHS[number];
+
+/**
+ * 「完整 URL」标记（沿用 Cherry Studio 的约定）：地址**以 `#` 结尾**表示用户已经
+ * 写全了最终请求地址 —— 原样使用，既不补 `/v1`，也不追加端点路径。
+ *
+ *   例：`https://api.openai.com/v2/hhh#` → 实际请求 `https://api.openai.com/v2/hhh`
+ *
+ * 不带 `#` 时保持历史行为：地址没有以 `/v1` 结尾就先补上，再接端点路径。
+ */
+const FULL_URL_MARKER = '#';
+
+/**
+ * 解析 OpenAI 兼容接口的请求地址。
+ *
+ * - 结尾带 `#` → 去掉 `#` 后**原样**使用（此时 `endpoint` 被忽略，图片接口模式也
+ *   用同一个地址，不再换成 /images/edits）；
+ * - 否则 → `<base>/v1<endpoint>`；base 已经以 `/v1` 结尾时不再重复补。
+ */
+export const resolveOpenAIEndpointUrl = (baseUrl: string, endpoint: OpenAIEndpointPath): string => {
+  const trimmed = baseUrl.trim();
+  if (trimmed.endsWith(FULL_URL_MARKER)) {
+    return trimmed.slice(0, -FULL_URL_MARKER.length).replace(/\/+$/, '');
+  }
+  const clean = trimmed.replace(/\/+$/, '');
+  const base = clean.endsWith('/v1') ? clean : `${clean}/v1`;
+  return `${base}${endpoint}`;
+};
+
+/**
+ * 「获取模型列表」的地址。
+ *
+ * 带 `#` 时无从推断 `/models` 在哪儿，只能拿「去掉 # 的地址」当 base 试一次
+ * `<地址>/models`；猜不中也不影响主流程，模型名可以手填。
+ * 不带 `#` 时沿用历史规则：`/v1` 结尾取 `/models`，其余补 `/v1/models`。
+ */
+export const resolveOpenAIModelsUrl = (baseUrl: string): string => {
+  const trimmed = baseUrl.trim();
+  const marked = trimmed.endsWith(FULL_URL_MARKER);
+  const clean = (marked ? trimmed.slice(0, -FULL_URL_MARKER.length) : trimmed).replace(/\/+$/, '');
+  const base = (marked || clean.endsWith('/v1')) ? clean : `${clean}/v1`;
+  return `${base}/models`;
+};
+
 /**
  * Fetch available models from OpenAI compatible API
  */
@@ -22,12 +68,7 @@ export const fetchOpenAIModels = async (
   baseUrl: string,
   apiKey: string
 ): Promise<string[]> => {
-  const cleanBaseUrl = baseUrl.replace(/\/$/, "");
-  // Standard OpenAI models endpoint is /models
-  // Some proxies use /v1/models
-  const url = cleanBaseUrl.endsWith('/v1') 
-    ? `${cleanBaseUrl}/models` 
-    : `${cleanBaseUrl}/v1/models`;
+  const url = resolveOpenAIModelsUrl(baseUrl);
 
   const safeApiKey = sanitizeHeaderValue(apiKey);
 
@@ -302,13 +343,8 @@ const generateOpenAIImage = async (
 
   const safeApiKey = sanitizeHeaderValue(openaiApiKey);
 
-  // Ensure we hit the chat completions endpoint as per user request
-  // Handle case where user might or might not have included /v1 in the base URL
-  let cleanBaseUrl = openaiBaseUrl.replace(/\/$/, "");
-  if (!cleanBaseUrl.endsWith('/v1')) {
-     cleanBaseUrl += '/v1';
-  }
-  const url = `${cleanBaseUrl}/chat/completions`;
+  // 地址解析见 resolveOpenAIEndpointUrl：带 # 结尾则原样使用。
+  const url = resolveOpenAIEndpointUrl(openaiBaseUrl, '/chat/completions');
 
   // Construct the Multimodal Message
   // This matches the structure: messages: [{ role: "user", content: [{type: "text", ...}, {type: "image_url", ...}] }]
@@ -429,11 +465,8 @@ const generateOpenAIImageEdit = async (
 
   const safeApiKey = sanitizeHeaderValue(openaiApiKey);
 
-  let cleanBaseUrl = openaiBaseUrl.replace(/\/$/, "");
-  if (!cleanBaseUrl.endsWith('/v1')) {
-    cleanBaseUrl += '/v1';
-  }
-  const url = `${cleanBaseUrl}/images/edits`;
+  // 地址解析见 resolveOpenAIEndpointUrl：带 # 结尾则原样使用（此时不会换成 /images/edits）。
+  const url = resolveOpenAIEndpointUrl(openaiBaseUrl, '/images/edits');
 
   const { blob, mime } = await base64ToBlob(imageBase64);
   const ext = EXT_BY_MIME[mime] || 'png';
@@ -517,11 +550,7 @@ export const generateTranslation = async (
   }
 
   const safeApiKey = sanitizeHeaderValue(translationApiKey);
-  let cleanBaseUrl = translationBaseUrl.replace(/\/$/, "");
-  if (!cleanBaseUrl.endsWith('/v1')) {
-     cleanBaseUrl += '/v1';
-  }
-  const url = `${cleanBaseUrl}/chat/completions`;
+  const url = resolveOpenAIEndpointUrl(translationBaseUrl, '/chat/completions');
 
   const useContext = !!contextImageBase64;
   const prompt = useContext
@@ -615,11 +644,7 @@ export const generateTextCompletion = async (
   }
 
   const safeApiKey = sanitizeHeaderValue(translationApiKey);
-  let cleanBaseUrl = translationBaseUrl.replace(/\/$/, "");
-  if (!cleanBaseUrl.endsWith('/v1')) {
-     cleanBaseUrl += '/v1';
-  }
-  const url = `${cleanBaseUrl}/chat/completions`;
+  const url = resolveOpenAIEndpointUrl(translationBaseUrl, '/chat/completions');
 
   try {
     const worker = async (opSignal: AbortSignal): Promise<string> => {

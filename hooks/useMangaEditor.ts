@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf, EMPTY_TEXT_MARK, isTranslationHandled, isRegionAboveThreshold, effectiveDetectionThreshold } from '../types';
+import { AppConfig, Region, UploadedImage, RedrawIntent, effectiveIntentOf, EMPTY_TEXT_MARK, isTranslationHandled } from '../types';
 import { loadImage, releaseObjectURL, cloneObjectUrl } from '../services/imageUtils';
 import { translateEditorRegions } from '../services/editorTranslate';
 import { PageTerm } from '../services/glossaryBook';
@@ -861,17 +861,24 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   const pickExplicitTranslateTargets = useCallback((img: UploadedImage, ids: Set<string>): Region[] =>
     img.regions.filter(r => {
       if (!ids.has(r.id)) return false;
-      // 置信度过滤：低于该图有效阈值的自动检测框视为无效，不参与翻译。
-      if (!isRegionAboveThreshold(r, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold))) return false;
+      // 翻译不理会「置信度过滤」：见 pickTranslateTargets 的说明。
       if (r.contextOnly) return false;
       if (isAiOwned(r) && intentOf(r) !== 'translate') return false;
       return true;
-    }), [intentOf, config.detectionConfidenceThreshold]);
+    }), [intentOf]);
 
+  /**
+   * 整页翻译的目标框。
+   *
+   * **不套用「置信度过滤」阈值** —— 翻译一律按检测下限（0.3）取框，也就是把检测
+   * 返回的所有文字框都翻掉。理由：
+   *  - 导出成品本来就不含被过滤的框（见 App.resolveResultUrl / stitchImage），
+   *    多翻它们不会污染结果；
+   *  - 译文是「先备好、随时可用」的资产：用户把某张图的阈值从 0.9 临时降到 0.3
+   *    时，那些刚露出来的框已经有译文 / 已嵌字，直接就能用，不必再等一轮翻译。
+   */
   const pickTranslateTargets = useCallback((img: UploadedImage): Region[] =>
     img.regions.filter(r => {
-      // 置信度过滤：低于该图有效阈值的自动检测框视为无效，不参与翻译。
-      if (!isRegionAboveThreshold(r, effectiveDetectionThreshold(img, config.detectionConfidenceThreshold))) return false;
       if (r.contextOnly) return false;
       // AI「翻译」意图的完成框也要翻译：译文会 held back（冻结）在编辑器里，不会
       // 和图上 AI 已经画好的中文重叠。其它 AI 独占框（自定义 / 旧版）跳过 ——
@@ -1328,6 +1335,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     setBusy(true);
     try {
       for (const img of imagesRef.current) {
+        if (img.isSkipped) continue;
         await whitenInImage(img.id);
       }
     } finally {
@@ -1389,6 +1397,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     setBusy(true);
     try {
       for (const img of imagesRef.current) {
+        if (img.isSkipped) continue;
         await refreezeInImage(img.id);
       }
     } finally {
@@ -1434,6 +1443,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     setBusy(true);
     try {
       for (const img of imagesRef.current) {
+        if (img.isSkipped) continue;
         await reeraseInImage(img.id);
       }
     } finally {
@@ -1495,7 +1505,12 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     setBusy(true);
     setTranslating(true);
     try {
-      await runTranslateRounds(() => imagesRef.current.map(img => img.id), ctrl);
+      // 跳过被标记为跳过的页面：isSkipped 的语义就是「不参与整批处理」
+      // （见 types.ts → UploadedImage.isSkipped），与 AI 重绘的整批挑选同源。
+      await runTranslateRounds(
+        () => imagesRef.current.filter(img => !img.isSkipped).map(img => img.id),
+        ctrl
+      );
     } finally {
       setBusy(false);
       setTranslating(false);

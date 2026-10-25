@@ -7,6 +7,8 @@ import {
   TRANSLATION_REASONING_EFFORTS,
   TRANSLATION_REASONING_LABEL_KEYS,
   isTranslationHandled,
+  isRegionAboveThreshold,
+  effectiveDetectionThreshold,
 } from '../types';
 import { t } from '../services/translations';
 import { loadImage, cropRegion, releaseObjectURL } from '../services/imageUtils';
@@ -923,7 +925,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
   // Switching scope re-arms the confirmation: 「所有图片」must be confirmed again.
   useEffect(() => { setConfirmDir(null); }, [imageScope]);
 
-  const editableRegions = image.regions.filter(r => !r.contextOnly);
+  // 置信度过滤：与画布可见性同源 —— 低于该图有效阈值的框画布上不显示，面板的
+  // 上一框 / 下一框导航就不该翻到它们（否则会出现「翻到某框、画布上却没有选中的
+  // 框」）。被选中的框若掉到阈值之外，idx 为 -1 → 面板回到整页批量视图，与画布
+  // 上「没有选中框」一致。
+  const confidenceThreshold = effectiveDetectionThreshold(image, config.detectionConfidenceThreshold);
+  const editableRegions = image.regions.filter(r =>
+    !r.contextOnly && isRegionAboveThreshold(r, confidenceThreshold)
+  );
   /** 当前选区（多选数组优先；未传数组就退回单选 id）。 */
   const selectionIds = selectedRegionIds && selectedRegionIds.length > 0
     ? selectedRegionIds
@@ -1440,7 +1449,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
     // 临时预览 group scope: the current image, or every loaded image when 作用
     // 范围 is 「所有图片」. Counts cover the SAME set the button will rewrite, so
     // the (n) badge never lies.
-    const scopedImages = imageScope === 'all' ? images : [image];
+    // 「所有图片」排除被标记跳过的页面（isSkipped = 不参与整批处理），与 3 个
+    // 批量函数的过滤保持一致；「当前图片」是点名命令，跳过与否都照跑。
+    const scopedImages = imageScope === 'all'
+      ? images.filter(img => !img.isSkipped)
+      : [image];
     // 可预览 = 被 AI（或手动）冻结、还挂着译文的框。不限定 text_free：气泡内的
     // 复杂文字同样会被判定为冻结。底图已由 AI 擦干净的（aiErasedBase）不涂白，
     // 与 whitenInImage 的过滤条件保持一致。

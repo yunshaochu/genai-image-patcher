@@ -5,6 +5,7 @@ import { recordPayload, PayloadTransform } from './payloadLog';
 import { buildFontChoicePrompt, resolveFontIdFromAi } from './fontService';
 import { PageTerm } from './glossaryBook';
 import { t } from './translations';
+import { resolveOpenAIEndpointUrl } from './aiService';
 
 /**
  * Editor auto-translation (whole-image, one vision-AI call).
@@ -576,8 +577,8 @@ export const translateEditorRegions = async (
       extra: erasedPayloadUrl ? { url: erasedPayloadUrl, label: t(config.language, 'payloadExtraErasedPage') } : null,
     });
 
-    let cleanBaseUrl = translationBaseUrl.replace(/\/+$/, '');
-    if (!cleanBaseUrl.endsWith('/v1')) cleanBaseUrl += '/v1';
+    // 地址解析见 resolveOpenAIEndpointUrl：地址以 # 结尾时视为完整地址、原样使用。
+    const chatUrl = resolveOpenAIEndpointUrl(translationBaseUrl, '/chat/completions');
 
     const timeoutMs = config.apiTimeout || 60000;
 
@@ -599,7 +600,7 @@ export const translateEditorRegions = async (
       if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
       const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
       try {
-        const response = await fetch(`${cleanBaseUrl}/chat/completions`, {
+        const response = await fetch(chatUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

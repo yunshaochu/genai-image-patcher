@@ -581,7 +581,10 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         language={lang}
                                     />
                                     <div>
-                                        <label className="text-[10px] text-skin-muted block mb-1">{t(lang, 'baseUrl')}</label>
+                                        <label className="text-[10px] text-skin-muted mb-1 flex items-center gap-1">
+                                            {t(lang, 'baseUrl')}
+                                            <HelpTip text={t(lang, 'baseUrlHint')} />
+                                        </label>
                                         <input
                                             type="text"
                                             value={config.translationBaseUrl}
