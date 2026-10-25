@@ -252,6 +252,10 @@ export const padImageToSquare = async (
  * downstream compositing fills the margin with the original image — the
  * smaller crop is never stretched back to fill the box (which also distorted
  * the aspect ratio). 0 keeps the exact previous behavior (fully opaque box).
+ *
+ * 所有权：内容本来就是这个比例时（正方形切片 / 正方形页面）**原样返回入参
+ * URL**，不复制、不新建。调用方必须按 `depadResultUrl !== input` 判断是否该
+ * 回收输入 —— 无条件 release 会把这张图本身 revoke 成死链。
  */
 export const depadImageByRatio = async (
     squareUrl: string,

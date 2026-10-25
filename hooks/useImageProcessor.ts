@@ -567,10 +567,13 @@ export function useImageProcessor(
                     apiResultBase64 = '';
                 }
                 
-                // Depad — center-crop back to the original ratio (resolution preserved)
+                // Depad — center-crop back to the original ratio (resolution preserved).
+                // 正方形（已是原比例）的 payload 不需要裁：depadImageByRatio 会**原样
+                // 返回入参 URL**。此时绝不能再 release —— 那正是刚拿到的 API 结果，
+                // 释放掉就等于「重绘结果丢失 + 自动保存 GET blob 404」。
                 if (useSquareFill && paddingInfo) {
                     const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo, config.squareFillCropInset);
-                    releaseObjectURL(apiResultUrl);
+                    if (depadResultUrl !== apiResultUrl) releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
 
@@ -877,10 +880,15 @@ export function useImageProcessor(
                     apiResultBase64 = '';
                 }
                 
-                // Depad — center-crop back to the original ratio (resolution preserved)
+                // Depad — center-crop back to the original ratio (resolution preserved).
+                // 切片本身就是正方形时（典型：覆盖整图的框落在正方形页面上，或用户
+                // 画的框正好是正方形），depadImageByRatio 会**原样返回这张 API 结果**。
+                // 它跟上面 `compressed !== payloadUrl` 是同一类「可能返回入参」的
+                // 工具函数：无条件 release 会把成品 revoke 成死链（重绘结果丢失 +
+                // 自动保存 GET blob 404）。
                 if (config.enableSquareFill && paddingInfo) {
                     const depadResultUrl = await depadImageByRatio(apiResultUrl, paddingInfo, config.squareFillCropInset);
-                    releaseObjectURL(apiResultUrl);
+                    if (depadResultUrl !== apiResultUrl) releaseObjectURL(apiResultUrl);
                     apiResultUrl = depadResultUrl;
                 }
 
