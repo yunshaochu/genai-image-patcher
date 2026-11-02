@@ -5,6 +5,7 @@ import { t } from '../services/translations';
 import { useCanvasInteraction } from '../hooks/useCanvasInteraction';
 import { renderRegionWithRestore, loadImage, releaseObjectURL, resolvePatchWindowInsets } from '../services/imageUtils';
 import { editorRegionDisplay } from '../services/mangaEditor';
+import { isAiOwned } from '../hooks/useMangaEditor';
 
 // Helper: convert a canvas to a Blob-backed Object URL (memory-efficient,
 // avoids the giant base64 string that toDataURL produces).
@@ -104,6 +105,20 @@ interface EditorCanvasProps {
    * user just cleared. Undefined = the canvas' own plain reset.
    */
   onResetRegion?: (regionId: string) => void;
+  /**
+   * The hard-reset action (the ↺ button next to it): roll the WHOLE box back to
+   * its freshly-detected state — translation, frozen translation, source,
+   * erasure / whiteout / brush strokes, AI base and intent mark all cleared.
+   * `onResetRegion` above keeps the typeset text as frozen translation; this one
+   * drops it, which is the only way to make 「重新翻译」 a genuinely fresh call.
+   */
+  onHardResetRegion?: (regionId: string) => void;
+  /**
+   * 解冻（= 面板里的「解冻填入」）：把冻结译文填回这一格并擦除嵌字。
+   * 框顶那个「冻结」语义的按钮在这一格**有冻结译文**时变成解冻按钮 ——
+   * 冻结状态下「再交回 AI 重绘」毫无意义，用户要的是把译文放回去。
+   */
+  onUnfreezeRegion?: (regionId: string) => void;
   /** 全局「置信度过滤」阈值（0-100，同 AppConfig.detectionConfidenceThreshold）。
    *  与图片级覆盖（image.detectionConfidenceThreshold）合成后，低于阈值的自动检测
    *  框不渲染、不参与交互（见 types.ts → effectiveDetectionThreshold）。 */
@@ -157,6 +172,8 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
     preferVerticalDefault = false,
     allowPatchOverflow = false,
     onResetRegion,
+    onHardResetRegion,
+    onUnfreezeRegion,
     detectionConfidenceThreshold = DETECTION_CONFIDENCE_FLOOR,
 }: EditorCanvasProps) => {
   // --- Refs ---
@@ -1157,6 +1174,20 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
               }
             };
 
+            // 这一格是否还有「可以回退的东西」—— 决定框顶「回退到干净状态」按钮
+            // 出不出现。只看编辑器产出状态，几何 / 检测信息不算。
+            const hasEditorState =
+              !!region.editorText || !!region.editorFrozenText?.trim() || !!region.customTranslation?.trim()
+              || !!region.editorErased || !!region.editorWhitedOut || !!region.editorBrushUrl
+              || !!region.processedImageUrl || !!region.editorComposited
+              || !!region.aiBubbleBase || !!region.aiErasedBase || !!region.aiEraseBaseUrl
+              || region.redrawIntent !== undefined || region.editorStyle !== undefined
+              || region.status === 'completed' || region.status === 'failed';
+
+            // 冻结态：挂着冻结译文、且不是 AI 独占框（AI 独占框解冻会被引擎拒绝，
+            // 与面板里那个按钮的可用条件一致 —— 见 unfreezeTranslation）。
+            const isFrozenRegion = !!region.editorFrozenText?.trim() && !isAiOwned(region);
+
             return (
               <div
                 key={region.id}
@@ -1293,7 +1324,38 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
                    >
-                      {!disabled && (region.status === 'completed' || region.status === 'failed') && (
+                      {/* 回退到干净状态（↺）：整个框回到刚检测出来的样子 —— 译文 /
+                          冻结译文 / 原文 / 擦除 / 涂白 / 画笔层 / AI 底图与场景标记全清。
+                          这是唯一能让「重新翻译」变成一次全新调用的按钮。 */}
+                      {!disabled && onHardResetRegion && hasEditorState && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onHardResetRegion(region.id);
+                            }}
+                             className="w-6 h-6 bg-skin-surface text-skin-text border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-skin-fill transition-all"
+                             title={t(language, 'editorHardResetTip')}
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                          </button>
+                      )}
+                      {/* 冻结状态：这个位置变成「解冻」（太阳，升温）—— 把冻结译文填回
+                          这一格并嵌字。冻结的框再「交回 AI 重绘」没有意义。 */}
+                      {!disabled && isFrozenRegion && onUnfreezeRegion && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onUnfreezeRegion(region.id);
+                            }}
+                             className="w-6 h-6 bg-skin-surface text-amber-500 border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-amber-50 transition-all"
+                             title={t(language, 'editorUnfreezeTip')}
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                          </button>
+                      )}
+                      {/* 交回 AI 重绘（雪花）：产物丢掉、原图复原，已嵌的字转成冻结译文
+                          保留 —— 所以它只会「冻结」，不会重新翻译。 */}
+                      {!disabled && !isFrozenRegion && (region.status === 'completed' || region.status === 'failed') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1302,10 +1364,10 @@ const EditorCanvas: React.FC<EditorCanvasProps> = React.memo(({
                               if (onResetRegion) onResetRegion(region.id);
                               else resetRegion(region.id);
                             }}
-                             className="w-6 h-6 bg-skin-surface text-skin-text border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-skin-fill transition-all"
-                             title="Reset / Redo"
+                             className="w-6 h-6 bg-skin-surface text-violet-500 border border-skin-border rounded-full flex items-center justify-center shadow-md hover:shadow-lg hover:bg-violet-50 transition-all"
+                             title={t(language, 'editorResetHandBackTip')}
                           >
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 2v20M4 6l16 12M20 6L4 18M8 4l4 3 4-3M8 20l4-3 4 3"></path></svg>
                           </button>
                       )}
                       {!disabled && region.status !== 'processing' && (

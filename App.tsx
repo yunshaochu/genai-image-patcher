@@ -159,6 +159,7 @@ export default function App() {
       unfreezeTranslation,
       freezeTranslation,
       resetRegion,
+      hardResetRegion,
       previewFrozenText,
       previewFrozenTextAllImages,
       endPreview,
@@ -907,6 +908,15 @@ export default function App() {
   const editorOnResetRegion = useCallback((regionId: string) => {
       if (selectedImageId_safe) resetRegion(selectedImageId_safe, regionId);
   }, [selectedImageId_safe, resetRegion]);
+  // 硬重置（框顶的 ↺）：整个框回退到刚检测出来的干净状态，译文一起清掉 ——
+  // 与上面那个「交回 AI 重绘」不同，后者会把已嵌的字留成冻结译文。
+  const editorOnHardResetRegion = useCallback((regionId: string) => {
+      if (selectedImageId_safe) hardResetRegion(selectedImageId_safe, regionId);
+  }, [selectedImageId_safe, hardResetRegion]);
+  // 框顶的「解冻」：冻结态的框上，冻结按钮变身成它（解冻填入 = 擦原文 + 嵌字）。
+  const editorOnUnfreezeRegion = useCallback((regionId: string) => {
+      if (selectedImageId_safe) void unfreezeTranslation(selectedImageId_safe, regionId);
+  }, [selectedImageId_safe, unfreezeTranslation]);
 
   // 叠放次序：贴图部分重叠时谁盖谁 = regions 数组下标（下标越大越靠上）。
   // ↑ / ↓ 挪一层（与相邻项交换），⤒ / ⤓ 直接搬到数组末尾 / 开头；
@@ -1451,6 +1461,8 @@ export default function App() {
                     onToggleRegionSelection={isEditorMode && viewMode === 'edit' ? toggleRegionSelection : undefined}
                     onAdjustRegionSize={editorOnAdjustRegionSize}
                     onResetRegion={editorOnResetRegion}
+                    onHardResetRegion={editorOnHardResetRegion}
+                    onUnfreezeRegion={editorOnUnfreezeRegion}
                     onInteractionStart={handleInteractionStart}
                     viewMode={viewMode}
                     restoreMode={restoreMode}

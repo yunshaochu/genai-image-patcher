@@ -1279,6 +1279,63 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [getImage, updateImage, dropErasedCache]);
 
   /**
+   * 硬重置 one region：把整个框回退到「刚检测出来」的干净状态。
+   *
+   * 与 resetRegion（框上的「交回 AI 重绘」）的区别：resetRegion 会把已嵌的字转成
+   * **冻结译文**留下来（不丢用户的字），于是那一格仍然算「已翻译过」—— 用户接着点
+   * 「重新翻译」，模型多半还是给同一句 freeze，看起来就像点了没反应。这里连译文一起
+   * 清掉：
+   *  - 产出：贴图、editorComposited、锚点、patch 边距、状态 → 'pending'；
+   *  - 文字：editorText / editorFrozenText / customTranslation / sourceText；
+   *  - 画面：editorErased（连擦除缓存）、editorWhitedOut、editorBrushUrl；
+   *  - AI 底图与场景：aiBubbleBase / aiErasedBase / aiEraseBaseUrl / redrawIntent；
+   *  - 排版样式与重试诊断（editorStyle / retryCount / errorHistory）。
+   *
+   * 保留「框本身」的属性：几何、检测类别与置信度、文字掩码、三套 tab 提示词 ——
+   * 它们不是产出状态，清掉等于把框重新画一遍。
+   *
+   * Blob URL 一律不 release：history 里可能还引用着同一份（与 resetRegion 同理）。
+   */
+  const hardResetRegion = useCallback((imageId: string, regionId: string) => {
+    const img = getImage(imageId);
+    const region = img?.regions.find(r => r.id === regionId);
+    if (!img || !region || region.status === 'processing' || isImageLocked(imageId)) return;
+    // 擦除缓存与待跑的合成计时器描述的都是「重置前那一次」，一起丢掉。
+    dropRegionCache(imageId, regionId);
+    const next: Region = {
+      ...region,
+      status: 'pending',
+      processedImageUrl: undefined,
+      editorComposited: false,
+      anchorX: undefined,
+      anchorY: undefined,
+      anchorWidth: undefined,
+      anchorHeight: undefined,
+      patchMarginX: undefined,
+      patchMarginY: undefined,
+      restoreBoxes: undefined,
+      editorText: undefined,
+      editorFrozenText: undefined,
+      customTranslation: undefined,
+      sourceText: undefined,
+      editorErased: false,
+      editorWhitedOut: false,
+      editorBrushUrl: undefined,
+      aiBubbleBase: undefined,
+      aiErasedBase: undefined,
+      aiEraseBaseUrl: undefined,
+      redrawIntent: undefined,
+      editorStyle: undefined,
+      retryCount: undefined,
+      errorHistory: undefined,
+    };
+    updateImage(imageId, current => ({
+      ...current,
+      regions: current.regions.map(r => (r.id === regionId ? next : r)),
+    }));
+  }, [getImage, updateImage, dropRegionCache, isImageLocked]);
+
+  /**
    * 「临时预览译文」：把被 AI 标记为冻结的框粗暴涂白（editorWhitedOut —— 泛洪擦除
    * 啃不动的复杂背景就靠这张白底）再把译文排上去，只为先看一眼前译文。
    *
@@ -1686,6 +1743,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     unfreezeTranslation,
     freezeTranslation,
     resetRegion,
+    hardResetRegion,
     previewFrozenText,
     previewFrozenTextAllImages,
     endPreview,
