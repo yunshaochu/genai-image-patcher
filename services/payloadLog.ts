@@ -29,7 +29,8 @@ export type PayloadTransform =
     | 'square-fill'     // padded to a square with a blurred background
     | 'compress'        // re-encoded to WebP at a target size
     | 'annotate'        // numbered boxes drawn over the page
-    | 'erase-check';    // companion page with every box's text erased (擦除判定)
+    | 'erase-check'     // companion page with every box's text erased (擦除判定)
+    | 'zoom-sheet';     // companion sheet of every box's content, cropped and enlarged (框放大拼图)
 
 export interface PayloadRecord {
     id: string;
@@ -53,8 +54,9 @@ export interface PayloadRecord {
     bytes: number;
     /** Display URL of the sent image (owned by this module). */
     imageUrl: string;
-    /** Companion image (e.g. the masked context page), when one was sent. */
-    extra?: { url: string; label: string; bytes: number } | null;
+    /** Companion image(s) sent with the same request — the masked context page,
+     *  the erase-check page, the zoom sheet… (in the order they were appended). */
+    extras: { url: string; label: string; bytes: number }[];
 }
 
 const MAX_RECORDS = 12;
@@ -73,7 +75,7 @@ export const getPayloadRecords = (): PayloadRecord[] => records;
 
 const releaseRecord = (record: PayloadRecord) => {
     URL.revokeObjectURL(record.imageUrl);
-    if (record.extra) URL.revokeObjectURL(record.extra.url);
+    record.extras.forEach(e => URL.revokeObjectURL(e.url));
 };
 
 export const clearPayloadLog = (): void => {
@@ -102,8 +104,8 @@ export interface PayloadInput {
     prompt: string;
     /** The exact image handed to the API (blob: or data: URL). */
     sentUrl: string;
-    /** Companion image sent with the same request. */
-    extra?: { url: string; label: string } | null;
+    /** Companion images sent with the same request, in message order. */
+    extras?: { url: string; label: string }[];
 }
 
 /**
@@ -117,16 +119,15 @@ export const recordPayload = (input: PayloadInput): void => {
             const blob = await copyToBlob(input.sentUrl);
             if (!blob) return;
 
-            let extra: PayloadRecord['extra'] = null;
-            if (input.extra) {
-                const extraBlob = await copyToBlob(input.extra.url);
-                if (extraBlob) {
-                    extra = {
-                        url: URL.createObjectURL(extraBlob),
-                        label: input.extra.label,
-                        bytes: extraBlob.size,
-                    };
-                }
+            const extras: PayloadRecord['extras'] = [];
+            for (const item of input.extras ?? []) {
+                const extraBlob = await copyToBlob(item.url);
+                if (!extraBlob) continue;
+                extras.push({
+                    url: URL.createObjectURL(extraBlob),
+                    label: item.label,
+                    bytes: extraBlob.size,
+                });
             }
 
             const record: PayloadRecord = {
@@ -153,7 +154,7 @@ export const recordPayload = (input: PayloadInput): void => {
                     : undefined,
                 bytes: blob.size,
                 imageUrl: URL.createObjectURL(blob),
-                extra,
+                extras,
             };
 
             // Newest first. Requests run concurrently and finish out of order,

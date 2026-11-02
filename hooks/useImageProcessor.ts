@@ -1467,7 +1467,7 @@ export function useImageProcessor(
                         transforms: payloadTransforms,
                         prompt: config.translationPrompt,
                         sentUrl: payloadUrl,
-                        extra: contextUrl ? { url: contextUrl, label: t(config.language, 'payloadTrContext') } : null,
+                        extras: contextUrl ? [{ url: contextUrl, label: t(config.language, 'payloadTrContext') }] : [],
                     });
                     const result = await generateTranslation(
                         await urlToBase64(payloadUrl), config, controller.signal, contextBase64

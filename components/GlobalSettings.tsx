@@ -692,6 +692,20 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                         }
                                     />
 
+                                    {/* 框放大拼图：把每个框单独放大拼一张图一起发（小字在标注图上
+                                        只剩下几十像素，模型容易认错字 / 判错横竖排）。 */}
+                                    <SubRow
+                                        title={t(lang, 'regionZoomSheet')}
+                                        help={t(lang, 'regionZoomSheetDesc')}
+                                        control={
+                                            <Toggle
+                                                size="sm"
+                                                checked={config.enableRegionZoomSheet}
+                                                onChange={(enabled) => updateConfig('enableRegionZoomSheet', enabled)}
+                                            />
+                                        }
+                                    />
+
                                     <SubRow
                                         title={t(lang, 'eraseJudgedFreeze')}
                                         help={t(lang, 'eraseJudgedFreezeDesc')}

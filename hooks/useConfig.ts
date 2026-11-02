@@ -182,6 +182,8 @@ const DEFAULT_CONFIG: AppConfig = {
   enableEraseJudgedFreeze: false,
   /** 子开关也默认关 = 拟声词/语气词照旧一律冻结（与不开擦除判定时一致）。 */
   enableEraseJudgedFreezeForSfx: false,
+  /** 框放大拼图默认关：多一张图就多一份 token，且端点得收得下。 */
+  enableRegionZoomSheet: false,
   /** 重绘标记默认关：它会决定冻结框之后走哪个重绘场景，不该替用户决定。 */
   enableAiRedrawIntentMarking: false,
   enableMarkTranslateIntent: false,

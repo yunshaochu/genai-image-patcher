@@ -703,6 +703,21 @@ export interface AppConfig {
    *  freeze=false 时下游本来就会把 editorErased 置 true 并排版，freeze=true 时本来
    *  就会冻结 —— 见 useMangaEditor 的落库分支。 */
   enableEraseJudgedFreeze: boolean;
+  /** 框放大拼图（翻译时多发一张图）—— 默认关。
+   *
+   *  打开后，编辑器翻译（整页 / 单框 / 选区，都走 services/editorTranslate 那条管线）
+   *  会额外发一张「拼图」：把每个编号框的内容单独裁出来、放大，按编号拼在一张图上。
+   *
+   *  为什么值得多发一张图：标注图是先按长边上限缩过再画的，小字（尤其竖排小字）
+   *  在图上往往只剩几十个像素 —— 模型认错字、也判不准横排竖排。拼图把每个框单独
+   *  放大，等于给模型一份「每个框的特写」。
+   *
+   *  编号画在每格图像区**上方**的红色条上，永远不压住框内文字（与标注图同一个规则）。
+   *
+   *  代价与前提：多一张图（token 增加，视拼图长边上限而定）；同时开着
+   *  enableEraseJudgedFreeze 时，一条消息里会有三张图 —— 翻译端点必须收得下。
+   *  与 sendMaskedContextForTranslation 不冲突：拼图只含框内像素，天然不泄露画面其余部分。 */
+  enableRegionZoomSheet: boolean;
   /** 擦除判定的子开关：拟声词 / 音效字 / 语气词是否也按擦除效果决定冻结 —— 默认关。
    *
    *  关闭：这类文字照旧一律冻结（与不开擦除判定时完全一致）。

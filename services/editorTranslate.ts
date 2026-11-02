@@ -188,6 +188,24 @@ ${sfxFollowsErase
 任何其他文字、解释或 markdown 代码块。）`;
 
 /**
+ * 「框放大拼图」的附加说明 —— 只在拼图真的作为第 `figureNo` 张图发出去时追加。
+ *
+ * 和擦除判定那段同一个道理：**不进 `{{...}}` 占位符体系**、追加在渲染结果末尾
+ * （不新增规则编号，`{{nJson}}` / `{{nEvery}}` 不用顺延，用户改过的模板也照样生效）。
+ *
+ * 段里刻意点明「编号在图外、不会遮字」，并给出「看不清就以它为准」的优先级 ——
+ * 否则模型看到同一段文字的两种尺寸，容易挑那张糊的（它先看到的是标注图）。
+ */
+const zoomSheetPrompt = (figureNo: number): string => `
+
+【本次附加了第 ${figureNo} 张图：框内文字放大拼图】
+第 ${figureNo} 张图把上面清单里**每个编号框的内容**单独裁出来、放大，按编号顺序拼在一起：
+每格左上方红色条里的数字 = 该框的编号（画在图像区之外，不会遮挡框内文字）。
+用途：整页按长边上限缩过之后，小字（尤其竖排小字）在图 1 上常常只剩几十个像素。所以识别
+source、判断 vertical / color / font / freeze 时，凡这张拼图看得更清楚，一律**以它为准**。
+编号与图 1 里的红框编号一一对应，输出格式完全不变（照旧按编号填写）。`;
+
+/**
  * 「重绘标记」的附加说明 —— 总开关打开、且至少有一个子开关打开时才追加。
  *
  * 和擦除判定那段同一个道理：**不进 `{{...}}` 占位符体系**、追加在渲染结果末尾 ——
@@ -317,6 +335,107 @@ const buildAnnotatedImage = (
   });
 
   return { url: canvas.toDataURL('image/png'), width: w, height: h };
+};
+
+/**
+ * 「框放大拼图」：把每个编号框的内容单独裁出来、放大，按编号顺序拼成一张图。
+ *
+ * 为什么需要：标注图是**先按长边上限缩小、再画框**的（见 buildAnnotatedImage），
+ * 整页缩到 1536 之后，一个巴掌大的框只剩几十个像素 —— 模型认错字、也判不准竖排
+ * /横排。这张拼图给每个框一份「特写」，与标注图共用同一套编号。
+ *
+ * 编号画在**每格图像区上方**的红色条上，所以永远不会压住框内文字（与标注图
+ * 「徽标尽量画在框外」同一条规则）；每格内容按 contain 塞进图像区：小框放大、
+ * 大框缩小（大框在标注图上本来就看得很清楚）。
+ *
+ * `maxDimension` 与标注图共用同一个长边上限 —— 拼图不该比标注图更贵。上限在小框
+ * 上还有另一重作用：MAX_UPSCALE 兜住「5×3 像素的框放大 70 倍」这种纯糊。
+ */
+const buildRegionZoomSheet = (
+  source: CanvasImageSource,
+  sourceW: number,
+  sourceH: number,
+  regions: Region[],
+  maxDimension?: number
+): { url: string; width: number; height: number } | null => {
+  if (regions.length === 0) return null;
+
+  const CELL_W = 360;   // 每格图像区宽（自然像素）
+  const CELL_H = 260;   // 每格图像区高
+  const LABEL_H = 26;   // 编号条高度：在图像区**上方**，所以不遮字
+  const GAP = 10;
+  const PAD = 12;
+  /** 小框最多放大几倍：再大就只是把马赛克放大，白花 token。 */
+  const MAX_UPSCALE = 6;
+
+  const n = regions.length;
+  // 列数取「整张图大致呈方形」，最多 6 列 —— 框多的时候多分几列，长边才不会被
+  // 上限压得每格只剩几十像素（那等于白做拼图）。
+  const cols = Math.max(1, Math.min(6, Math.round(Math.sqrt((n * (CELL_H + LABEL_H)) / CELL_W))));
+  const rows = Math.ceil(n / cols);
+  const sheetW = PAD * 2 + cols * CELL_W + (cols - 1) * GAP;
+  const sheetH = PAD * 2 + rows * (CELL_H + LABEL_H) + (rows - 1) * GAP;
+
+  // 长边上限：整张图等比缩小（画布直接建在缩放后的尺寸上，坐标仍用自然单位画）。
+  const shrink = maxDimension && maxDimension > 0
+    ? Math.min(1, maxDimension / Math.max(sheetW, sheetH))
+    : 1;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sheetW * shrink));
+  canvas.height = Math.max(1, Math.round(sheetH * shrink));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.scale(shrink, shrink);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, sheetW, sheetH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  const labelFont = 18;
+  ctx.font = `bold ${labelFont}px sans-serif`;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+
+  regions.forEach((r, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cellX = PAD + col * (CELL_W + GAP);
+    const cellY = PAD + row * (CELL_H + LABEL_H + GAP);
+    const imgX = cellX;
+    const imgY = cellY + LABEL_H;
+
+    // 编号条（画在图像区上方）
+    const label = String(i + 1);
+    const badgeW = ctx.measureText(label).width + 16;
+    const badgeH = LABEL_H - 6;
+    ctx.fillStyle = '#e11d48';
+    ctx.fillRect(cellX, cellY, badgeW, badgeH);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, cellX + 8, cellY + badgeH / 2);
+
+    // 灰框标出图像区，一眼能看出这格的边界在哪。
+    ctx.strokeStyle = '#e5e7eb';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(imgX + 0.5, imgY + 0.5, CELL_W - 1, CELL_H - 1);
+
+    const sx = (r.x / 100) * sourceW;
+    const sy = (r.y / 100) * sourceH;
+    const sw = (r.width / 100) * sourceW;
+    const sh = (r.height / 100) * sourceH;
+    if (sw <= 0 || sh <= 0) return;
+
+    const scale = Math.min(Math.min(CELL_W / sw, CELL_H / sh), MAX_UPSCALE);
+    const dw = sw * scale;
+    const dh = sh * scale;
+    ctx.drawImage(
+      source,
+      sx, sy, sw, sh,
+      imgX + (CELL_W - dw) / 2, imgY + (CELL_H - dh) / 2, dw, dh
+    );
+  });
+
+  return { url: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height };
 };
 
 /** Extract the first top-level JSON object from a model response. */
@@ -507,12 +626,19 @@ export const translateEditorRegions = async (
   const erasedAnnotated = erasedPage
     ? buildAnnotatedImage(erasedPage, erasedPage.width, erasedPage.height, regions, maskOutside, maxDimension)
     : null;
+  // 附加图：框放大拼图（开关打开时）。拼图只含框内像素，所以不必理会 maskOutside ——
+  // 它天然不含框外的画面。
+  const zoomSheet = config.enableRegionZoomSheet
+    ? buildRegionZoomSheet(imageEl, imageEl.naturalWidth, imageEl.naturalHeight, regions, maxDimension)
+    : null;
 
   let compressedUrl: string | null = null;
   let erasedCompressedUrl: string | null = null;
+  let zoomCompressedUrl: string | null = null;
   try {
     let payloadUrl = annotated.url;
     let erasedPayloadUrl = erasedAnnotated?.url ?? null;
+    let zoomPayloadUrl = zoomSheet?.url ?? null;
     if (config.enableAiPayloadCompression) {
       compressedUrl = await compressImageToTargetSize(annotated.url, {
         targetSizeKB: config.aiPayloadTranslationTargetKB,
@@ -526,9 +652,17 @@ export const translateEditorRegions = async (
         });
         erasedPayloadUrl = erasedCompressedUrl;
       }
+      if (zoomPayloadUrl) {
+        zoomCompressedUrl = await compressImageToTargetSize(zoomPayloadUrl, {
+          targetSizeKB: config.aiPayloadTranslationTargetKB,
+          maxDimension,
+        });
+        zoomPayloadUrl = zoomCompressedUrl;
+      }
     }
     const imageBase64 = await urlToBase64(payloadUrl);
     const erasedBase64 = erasedPayloadUrl ? await urlToBase64(erasedPayloadUrl) : null;
+    const zoomBase64 = zoomPayloadUrl ? await urlToBase64(zoomPayloadUrl) : null;
 
     // Region geometry is stored as percentages (0-100) — convert to pixels. The
     // prompt's coordinates must describe the image the model ACTUALLY sees, so
@@ -555,9 +689,14 @@ export const translateEditorRegions = async (
     // 子开关（拟声词是否也看擦除效果）只改那一段的措辞，不改图片；它的值不随主开关
     // 清空，所以这里必须自己带上主开关 —— 生效与否是两者的与，不是子开关单独说了算。
     const sfxFreedFromFreeze = !!config.enableEraseJudgedFreeze && !!config.enableEraseJudgedFreezeForSfx;
-    // 两段附加说明各自独立：擦除判定看的是「有没有第二张图」，重绘标记看的是它的开关。
+    // 图的编号按**消息里的实际顺序**算：标注图是第 1 张，擦除对照（有就)第 2 张，
+    // 框放大拼图排在最后。段里写的「第 N 张图」必须与真实顺序一致，否则模型对不上。
+    const zoomFigureNo = zoomBase64 ? (erasedBase64 ? 3 : 2) : 0;
+    // 三段附加说明各自独立：擦除判定看「有没有第二张图」，框放大拼图看它自己的开关，
+    // 重绘标记看它的开关。
     const prompt = basePrompt
       + (erasedBase64 ? eraseCheckPrompt(sfxFreedFromFreeze) : '')
+      + (zoomBase64 ? zoomSheetPrompt(zoomFigureNo) : '')
       + (markingOn ? redrawIntentPrompt(markTranslate, markErase) : '');
 
     // Record the annotated page — in this flow the payload IS a drawing of the
@@ -567,6 +706,7 @@ export const translateEditorRegions = async (
     if (config.sendMaskedContextForTranslation) payloadTransforms.push('mask');
     if (config.enableAiPayloadCompression) payloadTransforms.push('compress');
     if (erasedPayloadUrl) payloadTransforms.push('erase-check');
+    if (zoomPayloadUrl) payloadTransforms.push('zoom-sheet');
     recordPayload({
       config,
       phase: 'editorTranslate',
@@ -574,7 +714,10 @@ export const translateEditorRegions = async (
       transforms: payloadTransforms,
       prompt,
       sentUrl: payloadUrl,
-      extra: erasedPayloadUrl ? { url: erasedPayloadUrl, label: t(config.language, 'payloadExtraErasedPage') } : null,
+      extras: [
+        ...(erasedPayloadUrl ? [{ url: erasedPayloadUrl, label: t(config.language, 'payloadExtraErasedPage') }] : []),
+        ...(zoomPayloadUrl ? [{ url: zoomPayloadUrl, label: t(config.language, 'payloadExtraZoomSheet') }] : []),
+      ],
     });
 
     // 地址解析见 resolveOpenAIEndpointUrl：地址以 # 结尾时视为完整地址、原样使用。
@@ -616,6 +759,9 @@ export const translateEditorRegions = async (
                 // 图 2：擦除对照（同编号、框内原文已擦）。没有它就不发，
                 // 提示词里那段擦除判定也随之不出现。
                 ...(erasedBase64 ? [{ type: 'image_url', image_url: { url: erasedBase64 } }] : []),
+                // 图 2 或 3：框放大拼图（每个框的特写）。同样没有就不发，
+                // 提示词里那段说明随之不出现 —— 说了「见第 N 张图」却没发会带偏模型。
+                ...(zoomBase64 ? [{ type: 'image_url', image_url: { url: zoomBase64 } }] : []),
               ],
             }],
             max_tokens: 4096,
@@ -707,5 +853,6 @@ export const translateEditorRegions = async (
   } finally {
     if (compressedUrl) releaseObjectURL(compressedUrl);
     if (erasedCompressedUrl) releaseObjectURL(erasedCompressedUrl);
+    if (zoomCompressedUrl) releaseObjectURL(zoomCompressedUrl);
   }
 };

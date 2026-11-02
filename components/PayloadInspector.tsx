@@ -38,6 +38,7 @@ const transformLabel = (lang: Language, transform: PayloadTransform): string => 
         case 'compress': return t(lang, 'payloadTrCompress');
         case 'annotate': return t(lang, 'payloadTrAnnotate');
         case 'erase-check': return t(lang, 'payloadTrEraseCheck');
+        case 'zoom-sheet': return t(lang, 'payloadTrZoomSheet');
         default: return transform;
     }
 };
@@ -152,16 +153,16 @@ const PayloadInspector: React.FC<{ language: Language; onClose: () => void }> = 
                                     <MetaRow label={t(language, 'payloadModel')}>{selected.model || '—'}</MetaRow>
                                 </div>
 
-                                {selected.extra && (
-                                    <div>
+                                {(selected.extras ?? []).map((extra, i) => (
+                                    <div key={`${extra.url}_${i}`}>
                                         <div className="text-[10px] text-skin-muted mb-1">
-                                            {t(language, 'payloadExtra')}：{selected.extra.label} · {formatBytes(selected.extra.bytes)}
+                                            {t(language, 'payloadExtra')}：{extra.label} · {formatBytes(extra.bytes)}
                                         </div>
                                         <div className="rounded-lg border border-skin-border bg-skin-fill/30 p-2 flex items-center justify-center">
-                                            <img src={selected.extra.url} alt={selected.extra.label} className="max-h-[24vh] max-w-full object-contain rounded" />
+                                            <img src={extra.url} alt={extra.label} className="max-h-[24vh] max-w-full object-contain rounded" />
                                         </div>
                                     </div>
-                                )}
+                                ))}
 
                                 <div>
                                     <div className="text-[10px] text-skin-muted mb-1">{t(language, 'payloadPrompt')}</div>
