@@ -49,9 +49,15 @@ export const isAiOwned = (r: Region): boolean =>
  *
  * 只认 editorErased（编辑器自己擦出来的那层）。AI 重绘的「擦除」产物
  * （aiErasedBase）不是编辑器擦的，绝不能重做；AI 独占框同理跳过。
+ *
+ * `onlyInsideBubble`（AppConfig.eraseOnlyInsideBubble）打开时再掐一道：只要检测为
+ * 气泡内文字的框（text_bubble）。气泡外的自由文字 / 拟声词用本地擦除往往越擦越糊，
+ * 那一类留给 AI 重绘的「擦除」场景或冻结更合适。判定只看检测类别，手画框
+ * （没有 detectedClass）按「气泡外」处理。
  */
-export const isReerasableRegion = (r: Region): boolean =>
-  !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase && !!r.editorErased;
+export const isReerasableRegion = (r: Region, onlyInsideBubble = false): boolean =>
+  !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase && !!r.editorErased &&
+  (!onlyInsideBubble || r.detectedClass === 'text_bubble');
 
 /**
  * Detected `bubble` boxes of an image (kept as context-only regions). They are
@@ -1476,7 +1482,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   const reeraseInImage = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img) return;
-    const targets = img.regions.filter(isReerasableRegion);
+    // 「只擦除气泡内的文字」：重新擦除同样遵守（见 AppConfig.eraseOnlyInsideBubble）。
+    const onlyInsideBubble = !!configRef.current.eraseOnlyInsideBubble;
+    const targets = img.regions.filter(r => isReerasableRegion(r, onlyInsideBubble));
     for (const r of targets) {
       dropErasedCache(r.id);
       await recompositeRegion(imageId, r.id);

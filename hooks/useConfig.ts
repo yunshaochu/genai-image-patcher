@@ -151,6 +151,8 @@ const DEFAULT_CONFIG: AppConfig = {
   enableVerticalTextDefault: false,
   editorFontFamily: '', // '' = 系统默认字体；其余 id 见 services/fontService.ts
   editorAutoTextColor: false, // 擦除时量出的原文墨色是否直接用于嵌字
+  // 默认关 = 批量擦除 / 重新擦除对所有选中的框生效（与历史行为一致）。
+  eraseOnlyInsideBubble: false,
   
   // New Logic Toggle
   useFullImageMasking: false,

@@ -658,6 +658,20 @@ export interface AppConfig {
    *  （dock 黑字/白字、吸管）不受影响 —— 见 EditorTextStyle.colorSource。 */
   editorAutoTextColor: boolean;
 
+  /** 只擦除气泡内的文字 —— 默认关（= 与以前完全一致，选中的框都擦）。
+   *
+   *  打开后，编辑器的**批量擦除**和**重新擦除**只作用于检测为气泡内文字的框
+   *  （detectedClass === 'text_bubble'）：本地泛洪擦除在气泡里效果很好，但压在
+   *  复杂背景上的自由文字 / 拟声词往往擦成一团糊 —— 那些框更适合留给 AI 重绘
+   *  （擦除场景）或冻结，而不是在编辑器里硬擦。
+   *
+   *  作用范围刻意只到**批量**动作：
+   *   - 单框面板上的「擦除原文」永远听用户的（立刻能看到结果，撤回也只要一次点击）；
+   *   - 翻译写回时的自动擦除**不受影响** —— 译文字要排上去，不擦会与原文重叠。
+   *
+   *  判定只看检测类别，不做几何推断（手画框没有 detectedClass，按「气泡外」处理）。 */
+  eraseOnlyInsideBubble: boolean;
+
   // Logic Switch
   useFullImageMasking: boolean; // Send full image with non-selected areas masked white
   useInvertedMasking: boolean; // New: Selected areas are masked white (AI generates BG), Orginal regions kept.

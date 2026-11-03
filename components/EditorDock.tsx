@@ -857,6 +857,31 @@ const RegionFontPicker: React.FC<{
   );
 };
 
+/**
+ * 面板里的小开关（与设置面板的 Toggle 同观感，尺寸更小，只有 8×4 格）。
+ * 面板里只有「高级设置」这种折叠区才会用到开关，所以不复用设置面板那个组件。
+ */
+const DockToggle: React.FC<{ checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }> = ({
+  checked, onChange, disabled,
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    disabled={disabled}
+    onClick={() => onChange(!checked)}
+    className={`relative shrink-0 w-8 h-4 rounded-full transition-colors disabled:opacity-40 ${
+      checked ? 'bg-skin-primary' : 'bg-skin-border'
+    }`}
+  >
+    <span
+      className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${
+        checked ? 'translate-x-4' : ''
+      }`}
+    />
+  </button>
+);
+
 // ---------------------------------------------------------------------------
 // Dock
 // ---------------------------------------------------------------------------
@@ -898,6 +923,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
    *  every page at once. Holds which of those buttons is armed (each carries its
    *  own label). */
   const [confirmDir, setConfirmDir] = useState<null | 'preview' | 'end' | 'reerase'>(null);
+  /** 「擦除」组里的高级设置是否展开 —— 默认折叠，平时看不见（`只擦除气泡内的文字`）。 */
+  const [eraseAdvOpen, setEraseAdvOpen] = useState(false);
   /** 滚轮微调手势的一次性提示是否已被关掉（跨会话记住，两条手势各自独立）。 */
   const [rotationHintDismissed, setRotationHintDismissed] = useState(() => loadHintDismissed(ROTATION_HINT_STORAGE_KEY));
   const [fontSizeHintDismissed, setFontSizeHintDismissed] = useState(() => loadHintDismissed(FONT_SIZE_HINT_STORAGE_KEY));
@@ -1324,6 +1351,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 {t(lang, 'editorRestoreRegion')}
               </button>
             </div>
+            {/* 高级设置「只擦除气泡内的文字」开着时留一句提示：擦除只动气泡内的框，
+                否则用户会以为按钮坏了（撤回擦除不受限制）。 */}
+            {config.eraseOnlyInsideBubble && (
+              <p className="text-[9px] text-sky-600 leading-tight">{t(lang, 'editorEraseOnlyBubbleNote')}</p>
+            )}
           </div>
 
           {/* 冻结状态：译文在 editorText ⇄ editorFrozenText 之间搬运。 */}
@@ -1465,9 +1497,11 @@ const EditorDock: React.FC<EditorDockProps> = ({
       !r.contextOnly && !isAiOwned(r) && !!r.editorWhitedOut && !!r.editorText?.trim()
     ).length, 0);
     // 重新擦除的目标：编辑器自己泛洪擦除过的框（AI「擦除」产物不算，与
-    // isReerasableRegion 共用同一份判定）。
+    // isReerasableRegion 共用同一份判定）。「只擦除气泡内的文字」开着时计数
+    // 也跟着过滤 —— 按钮上的数字必须等于真正会被重擦的框数。
+    const bubbleOnlyErase = !!config.eraseOnlyInsideBubble;
     const reeraseCount = scopedImages.reduce((n, img) =>
-      n + img.regions.filter(isReerasableRegion).length, 0);
+      n + img.regions.filter(r => isReerasableRegion(r, bubbleOnlyErase)).length, 0);
 
     const runTranslate = () => (imageScope === 'all' ? onTranslateAll() : onTranslate());
     /** 三个批量按钮共用的二次确认：作用范围是「所有图片」时先 arm 再执行。 */
@@ -1670,13 +1704,15 @@ const EditorDock: React.FC<EditorDockProps> = ({
             </div>
           )}
 
-          {/* 重新擦除：把本页（或所有图片）所有「编辑器擦除」过的框重跑一遍 erase。
+          {/* 擦除：把本页（或所有图片）所有「编辑器擦除」过的框重跑一遍 erase。
               擦除算法更新后用它一次性刷新旧结果，不必逐框「撤回擦除 → 再擦除」。
-              AI 重绘的「擦除」产物不在其中（见 isReerasableRegion）。 */}
+              AI 重绘的「擦除」产物不在其中（见 isReerasableRegion）。
+              高级设置（默认折叠）：只擦除气泡内的文字 —— 本地擦除在气泡外往往越擦
+              越糊，那一类留给 AI 重绘 / 冻结更合适。 */}
           <div className="pt-2.5 mt-1 border-t border-skin-border/60 space-y-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-bold text-skin-muted">{t(lang, 'editorReeraseGroup')}</span>
-              <HelpTip text={t(lang, 'editorReeraseGroupTip')} />
+              <span className="text-[10px] font-bold text-skin-muted">{t(lang, 'editorEraseGroup')}</span>
+              <HelpTip text={t(lang, 'editorEraseGroupTip')} />
             </div>
             <button
               onClick={runReerase}
@@ -1698,6 +1734,39 @@ const EditorDock: React.FC<EditorDockProps> = ({
                 ? t(lang, 'editorConfirmTwice')
                 : <>{t(lang, 'editorReerase')}{reeraseCount > 0 ? ` (${reeraseCount})` : ''}</>}
             </button>
+
+            {/* 高级设置：平时折叠，避免挤占面板；开着时在折叠行上留一个标记，
+                免得用户忘了它还在生效。 */}
+            <div>
+              <button
+                onClick={() => setEraseAdvOpen(o => !o)}
+                className="flex items-center gap-1 text-[10px] font-bold text-skin-muted hover:text-skin-text transition-colors"
+                title={t(lang, 'editorEraseAdvanced')}
+              >
+                <svg className={`w-3 h-3 transition-transform ${eraseAdvOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+                <span>{t(lang, 'editorEraseAdvanced')}</span>
+                {config.eraseOnlyInsideBubble && (
+                  <span className="ml-1 px-1 py-px rounded bg-sky-500/15 text-sky-600 text-[9px] font-bold normal-case">
+                    {t(lang, 'editorEraseOnlyBubbleNote')}
+                  </span>
+                )}
+              </button>
+              {eraseAdvOpen && (
+                <div className="mt-1.5 p-2 rounded-lg border border-skin-border bg-skin-fill/30">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorEraseOnlyBubble')}</span>
+                    {/* 说明太长，折进问号里 —— 面板只有 272px 宽。 */}
+                    <HelpTip text={t(lang, 'editorEraseOnlyBubbleDesc')} />
+                    <span className="ml-auto">
+                      <DockToggle
+                        checked={!!config.eraseOnlyInsideBubble}
+                        onChange={(v) => onConfigChange('eraseOnlyInsideBubble', v)}
+                      />
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {busy && (

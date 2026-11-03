@@ -1095,14 +1095,18 @@ export default function App() {
 
   // 批量擦除 / 撤回擦除。aiErasedBase = AI 产出的干净底图，编辑器不许再擦
   // （与单框面板同一规则，直接跳过）；已经在目标状态的框也跳过，省一次合成。
+  // 「只擦除气泡内的文字」（高级设置）只掐**擦除**这一侧：气泡外的框跳过，
+  // 撤回擦除照旧对整个选区生效（不然想撤都撤不掉）。
   const editorOnBatchSetErased = useCallback((erased: boolean) => {
       if (!selectedImage || selectedRegionIds.length === 0) return;
+      const bubbleOnly = erased && !!config.eraseOnlyInsideBubble;
       updateEditorRegions(
           selectedImage.id,
           selectedRegionIds,
           (region) => {
               if (erased) {
                   if (region.aiErasedBase || region.editorErased) return null;
+                  if (bubbleOnly && region.detectedClass !== 'text_bubble') return null;
               } else if (!region.editorErased) {
                   return null;
               }
@@ -1110,7 +1114,7 @@ export default function App() {
           },
           { debounceMs: DISCRETE_RECOMPOSITE_DEBOUNCE_MS }
       );
-  }, [selectedImage, selectedRegionIds, updateEditorRegions]);
+  }, [selectedImage, selectedRegionIds, config.eraseOnlyInsideBubble, updateEditorRegions]);
 
   // 批量冻结 / 解冻：逐框调用现成的单框路径 —— 各自会重新读一次当前状态，
   // 且自带 AI 独占 / 空文字的守卫；顺序执行，避免同一张图并发重合成。
