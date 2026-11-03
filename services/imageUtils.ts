@@ -1066,8 +1066,15 @@ export const generateThumbnail = async (img: HTMLImageElement, maxDim: number = 
 /** 与 vite.config.ts 中 remoteImageProxy 插件保持一致的同源代理路径。 */
 const REMOTE_IMAGE_PROXY_PATH = '/__remote-image';
 
-/** 单次读取远程图片的超时（毫秒）。 */
-const FETCH_IMAGE_TIMEOUT = 30000;
+/**
+ * 单次读取远程图片的**静默**超时（毫秒）：连续这么久没收到任何字节才算超时。
+ * 与 vite.config.ts 的 IMAGE_PROXY_IDLE_TIMEOUT 同一套语义 —— 以前这里是 30 秒
+ * 总额超时，代理那边还在正常下载，浏览器先放弃了。
+ */
+const FETCH_IMAGE_IDLE_TIMEOUT = 30000;
+
+/** 单次尝试的总时长上限（毫秒），兜住「滴滴答答传不完」的连接。 */
+const FETCH_IMAGE_MAX_TOTAL = 180000;
 
 /** 单个候选地址的重试次数。服务端代理也会重试，这里兜住浏览器侧的网络抖动。 */
 const FETCH_IMAGE_ATTEMPTS = 2;
@@ -1097,12 +1104,40 @@ const blobToDataUrl = (blob: Blob): Promise<string> => {
  */
 type RemoteImageResult = { blob: Blob; error?: undefined } | { blob?: undefined; error: string };
 
+/**
+ * 带「进展看门狗」地读响应体：每收到一块就调一次 `onProgress`（调用方据此重置
+ * 计时器），所以**只要还在下载就不会被中止**。没有流式 body 时退回 blob()。
+ */
+const readBodyWithWatch = async (response: Response, onProgress: () => void): Promise<Blob> => {
+  const body = response.body;
+  if (!body || typeof body.getReader !== 'function') return response.blob();
+  const reader = body.getReader();
+  const chunks: BlobPart[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value as unknown as BlobPart);
+      onProgress();
+    }
+  }
+  return new Blob(chunks, { type: response.headers.get('content-type') || 'application/octet-stream' });
+};
+
 const fetchRemoteImageBlob = async (input: string): Promise<RemoteImageResult> => {
   let lastError = 'unknown';
 
   for (let attempt = 1; attempt <= FETCH_IMAGE_ATTEMPTS; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), FETCH_IMAGE_TIMEOUT);
+    // 两个计时器：静默（有数据就重置）与总时长兜底。以前的单一 30 秒总额超时，
+    // 会在 ngrok 正常往下传的时候把请求掐掉。
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const armIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), FETCH_IMAGE_IDLE_TIMEOUT);
+    };
+    const totalTimer = setTimeout(() => controller.abort(), FETCH_IMAGE_MAX_TOTAL);
+    armIdle();
     try {
       const response = await fetch(input, { signal: controller.signal, cache: 'no-store' });
       if (!response.ok) {
@@ -1114,16 +1149,19 @@ const fetchRemoteImageBlob = async (input: string): Promise<RemoteImageResult> =
         if (contentType && !contentType.startsWith('image/')) {
           lastError = `非图片响应（${contentType}）`;
         } else {
-          const blob = await response.blob();
+          const blob = await readBodyWithWatch(response, armIdle);
           if (blob.size > 0) return { blob };
           lastError = '空响应体';
         }
       }
     } catch (error) {
       const err = error as Error;
-      lastError = err.name === 'AbortError' ? `超时 ${FETCH_IMAGE_TIMEOUT}ms` : err.message;
+      lastError = err.name === 'AbortError'
+        ? `超时（${Math.round(FETCH_IMAGE_IDLE_TIMEOUT / 1000)}s 无进展，或超过 ${Math.round(FETCH_IMAGE_MAX_TOTAL / 1000)}s 总上限）`
+        : err.message;
     } finally {
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(totalTimer);
     }
 
     if (attempt < FETCH_IMAGE_ATTEMPTS) await new Promise(r => setTimeout(r, 400 * attempt));

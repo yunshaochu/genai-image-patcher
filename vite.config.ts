@@ -12,8 +12,20 @@ import tailwindcss from '@tailwindcss/vite';
  */
 const IMAGE_PROXY_PATH = '/__remote-image';
 
-/** 单次代理请求访问上游的超时（毫秒）。 */
-const IMAGE_PROXY_TIMEOUT = 20000;
+/**
+ * 上游「静默」超时（毫秒）：连续这么久**一个字节都没收到**才算超时。
+ *
+ * 以前是一个 20 秒的**总额**超时 —— ngrok 免费隧道传一张几 MB 的 PNG 经常要
+ * 二十几秒，于是明明在正常下载也会被掐断（终端里那句 `upstream timeout
+ * (20000ms)`）。现在只看「有没有进展」：数据还在来就一直等，收不到东西才认超时。
+ */
+const IMAGE_PROXY_IDLE_TIMEOUT = 30000;
+
+/**
+ * 单张图的总时长上限（毫秒）：兜住「每隔几秒滴几个字节」的死连接 —— 静默超时
+ * 抓不到它，但也不能让它把请求永远占着。正常大小的图片远用不到这个数。
+ */
+const IMAGE_PROXY_MAX_TOTAL = 180000;
 
 /** 上游失败时的重试次数（不含首次）。ngrok / 生图服务的瞬时抖动很常见。 */
 const IMAGE_PROXY_RETRIES = 3;
@@ -33,17 +45,38 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const requestUpstreamImage = (target: URL): Promise<UpstreamImage> => {
   return new Promise<UpstreamImage>((resolve, reject) => {
     let settled = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let totalTimer: ReturnType<typeof setTimeout> | null = null;
+    let req: http.ClientRequest | null = null;
+
+    const clearTimers = () => {
+      if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+      if (totalTimer) { clearTimeout(totalTimer); totalTimer = null; }
+    };
+
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimers();
       fn();
     };
 
-    const lib = target.protocol === 'https:' ? https : http;
-    const timer = setTimeout(() => req.destroy(new Error(`upstream timeout (${IMAGE_PROXY_TIMEOUT}ms)`)), IMAGE_PROXY_TIMEOUT);
+    /**
+     * 每收到一点数据就重新计时：**只要还在下载就不中断**。
+     * 只有连续 IMAGE_PROXY_IDLE_TIMEOUT 一个字节都没来（连接僵死 / ngrok 掉了）
+     * 才判超时，交给外面的重试。
+     */
+    const armIdle = () => {
+      if (settled) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => req?.destroy(new Error(`upstream stalled (${IMAGE_PROXY_IDLE_TIMEOUT}ms 内没有收到任何数据)`)),
+        IMAGE_PROXY_IDLE_TIMEOUT
+      );
+    };
 
-    const req = lib.request(
+    const lib = target.protocol === 'https:' ? https : http;
+    req = lib.request(
       target,
       {
         method: 'GET',
@@ -57,6 +90,8 @@ const requestUpstreamImage = (target: URL): Promise<UpstreamImage> => {
         },
       },
       (res) => {
+        // 响应头到了 = 连接是活的（哪怕 body 还没开始传）。
+        armIdle();
         const status = res.statusCode || 0;
         const contentType = String(res.headers['content-type'] || '');
 
@@ -70,9 +105,10 @@ const requestUpstreamImage = (target: URL): Promise<UpstreamImage> => {
         const chunks: Buffer[] = [];
         let total = 0;
         res.on('data', (chunk: Buffer) => {
+          armIdle();
           total += chunk.length;
           if (total > IMAGE_PROXY_MAX_BYTES) {
-            req.destroy(new Error('upstream image too large'));
+            req?.destroy(new Error('upstream image too large'));
             return;
           }
           chunks.push(chunk);
@@ -83,6 +119,12 @@ const requestUpstreamImage = (target: URL): Promise<UpstreamImage> => {
     );
 
     req.on('error', (error) => settle(() => reject(error)));
+    // 总时长兜底：数据一直在滴但永远传不完的连接也不能无限占着。
+    totalTimer = setTimeout(
+      () => req?.destroy(new Error(`upstream timeout (总时长超过 ${IMAGE_PROXY_MAX_TOTAL / 1000}s)`)),
+      IMAGE_PROXY_MAX_TOTAL
+    );
+    armIdle();
     req.end();
   });
 };

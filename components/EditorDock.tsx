@@ -108,6 +108,9 @@ interface EditorDockProps {
   onEndPreviewAll: () => void;
   /** 重新擦除：把本图所有「编辑器擦除」过的框重跑一遍 erase（算法更新后刷新旧结果）。 */
   onReerase: () => void;
+  /** 「擦除成功后冻结」开关切换：把 作用范围 内已有的擦除结果对齐到新模式
+   *  （打开 = 冻结，关闭 = 还原本功能冻结的那些）。 */
+  onSyncEraseFreeze?: (imageIds: string[], enabled: boolean) => void;
   /** Scope「所有图片」variant of 重新擦除. */
   onReeraseAll: () => void;
   /** Result actions (pinned footer). Scope-aware: `true` = every loaded image. */
@@ -882,6 +885,32 @@ const DockToggle: React.FC<{ checked: boolean; onChange: (value: boolean) => voi
   </button>
 );
 
+/**
+ * 「高级设置」折叠区：默认折叠，平时看不见（面板只有 272px 宽）。
+ * 说明文字一律折进问号（HelpTip），折叠区里只放控件本身 —— 折叠行上也不挂
+ * 「某项正在生效」的彩色标签：那类标签在 272px 的面板里太抢眼，状态直接展开看。
+ */
+const AdvancedBlock: React.FC<{
+  open: boolean;
+  onToggle: () => void;
+  label: string;
+  children: React.ReactNode;
+}> = ({ open, onToggle, label, children }) => (
+  <div>
+    <button
+      onClick={onToggle}
+      className="flex items-center gap-1 text-[10px] font-bold text-skin-muted hover:text-skin-text transition-colors"
+      title={label}
+    >
+      <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+      <span>{label}</span>
+    </button>
+    {open && (
+      <div className="mt-1.5 p-2 rounded-lg border border-skin-border bg-skin-fill/30 space-y-1.5">{children}</div>
+    )}
+  </div>
+);
+
 // ---------------------------------------------------------------------------
 // Dock
 // ---------------------------------------------------------------------------
@@ -896,7 +925,7 @@ const EditorDock: React.FC<EditorDockProps> = ({
   onTranslate, onTranslateAll,
   translating, translatingImageIds, onStopTranslate,
   onUnfreeze, onFreeze, onPreviewFrozenText, onPreviewFrozenTextAll,
-  onEndPreview, onEndPreviewAll, onReerase, onReeraseAll,
+  onEndPreview, onEndPreviewAll, onReerase, onReeraseAll, onSyncEraseFreeze,
   onDownload, onApplyAsOriginal, onReorderRegion,
   angleMeasureArmed = false, onToggleAngleMeasure, onOpenHelp, glossary,
 }) => {
@@ -925,6 +954,8 @@ const EditorDock: React.FC<EditorDockProps> = ({
   const [confirmDir, setConfirmDir] = useState<null | 'preview' | 'end' | 'reerase'>(null);
   /** 「擦除」组里的高级设置是否展开 —— 默认折叠，平时看不见（`只擦除气泡内的文字`）。 */
   const [eraseAdvOpen, setEraseAdvOpen] = useState(false);
+  /** 「临时预览译文」组里的高级设置是否展开（底色 / 只预览冻结的框），同样默认折叠。 */
+  const [previewAdvOpen, setPreviewAdvOpen] = useState(false);
   /** 滚轮微调手势的一次性提示是否已被关掉（跨会话记住，两条手势各自独立）。 */
   const [rotationHintDismissed, setRotationHintDismissed] = useState(() => loadHintDismissed(ROTATION_HINT_STORAGE_KEY));
   const [fontSizeHintDismissed, setFontSizeHintDismissed] = useState(() => loadHintDismissed(FONT_SIZE_HINT_STORAGE_KEY));
@@ -1486,11 +1517,14 @@ const EditorDock: React.FC<EditorDockProps> = ({
     const scopedImages = imageScope === 'all'
       ? images.filter(img => !img.isSkipped)
       : [image];
-    // 可预览 = 被 AI（或手动）冻结、还挂着译文的框。不限定 text_free：气泡内的
-    // 复杂文字同样会被判定为冻结。底图已由 AI 擦干净的（aiErasedBase）不涂白，
-    // 与 whitenInImage 的过滤条件保持一致。
+    // 可预览 = 被 AI（或手动）冻结、还挂着译文的框；关掉「只预览冻结的框」时，
+    // 已经嵌好字的框也算进去。不限定 text_free：气泡内的复杂文字同样会被判定为
+    // 冻结。底图已由 AI 擦干净的（aiErasedBase）不涂底色，与 whitenInImage 的
+    // 过滤条件保持一致。
+    const previewOnlyFrozen = config.editorPreviewOnlyFrozen !== false;
     const previewCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase && !!r.editorFrozenText?.trim()
+      !r.contextOnly && !isAiOwned(r) && !r.aiErasedBase &&
+      (!!r.editorFrozenText?.trim() || (!previewOnlyFrozen && !!r.editorText?.trim()))
     ).length, 0);
     // 反向：被「临时预览译文」涂白过、已经排上文字的框（editorWhitedOut 只有它会设）。
     const endPreviewCount = scopedImages.reduce((n, img) => n + img.regions.filter(r =>
@@ -1701,6 +1735,44 @@ const EditorDock: React.FC<EditorDockProps> = ({
                   ? t(lang, 'editorConfirmTwice')
                   : <>{t(lang, 'editorEndPreview')}{endPreviewCount > 0 ? ` (${endPreviewCount})` : ''}</>}
               </button>
+
+              {/* 预览的高级设置：底色（白 / 黑）+ 是否只预览冻结的框。 */}
+              <AdvancedBlock
+                open={previewAdvOpen}
+                onToggle={() => setPreviewAdvOpen(o => !o)}
+                label={t(lang, 'editorAdvancedSettings')}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorPreviewFill')}</span>
+                  <HelpTip text={t(lang, 'editorPreviewFillTip')} />
+                  <div className="ml-auto flex border border-skin-border rounded overflow-hidden">
+                    {(['white', 'black'] as const).map(v => (
+                      <button
+                        key={v}
+                        onClick={() => onConfigChange('editorPreviewFillColor', v)}
+                        disabled={busy}
+                        className={`px-2 py-0.5 text-[9px] font-bold transition-colors disabled:opacity-50 ${
+                          (config.editorPreviewFillColor ?? 'white') === v
+                            ? 'bg-skin-primary text-white'
+                            : 'text-skin-muted hover:bg-skin-primary/10'
+                        }`}
+                      >
+                        {t(lang, v === 'white' ? 'editorColorWhite' : 'editorColorBlack')}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorPreviewOnlyFrozen')}</span>
+                  <HelpTip text={t(lang, 'editorPreviewOnlyFrozenTip')} />
+                  <span className="ml-auto">
+                    <DockToggle
+                      checked={config.editorPreviewOnlyFrozen !== false}
+                      onChange={(v) => onConfigChange('editorPreviewOnlyFrozen', v)}
+                    />
+                  </span>
+                </div>
+              </AdvancedBlock>
             </div>
           )}
 
@@ -1737,36 +1809,39 @@ const EditorDock: React.FC<EditorDockProps> = ({
 
             {/* 高级设置：平时折叠，避免挤占面板；开着时在折叠行上留一个标记，
                 免得用户忘了它还在生效。 */}
-            <div>
-              <button
-                onClick={() => setEraseAdvOpen(o => !o)}
-                className="flex items-center gap-1 text-[10px] font-bold text-skin-muted hover:text-skin-text transition-colors"
-                title={t(lang, 'editorEraseAdvanced')}
-              >
-                <svg className={`w-3 h-3 transition-transform ${eraseAdvOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
-                <span>{t(lang, 'editorEraseAdvanced')}</span>
-                {config.eraseOnlyInsideBubble && (
-                  <span className="ml-1 px-1 py-px rounded bg-sky-500/15 text-sky-600 text-[9px] font-bold normal-case">
-                    {t(lang, 'editorEraseOnlyBubbleNote')}
-                  </span>
-                )}
-              </button>
-              {eraseAdvOpen && (
-                <div className="mt-1.5 p-2 rounded-lg border border-skin-border bg-skin-fill/30">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorEraseOnlyBubble')}</span>
-                    {/* 说明太长，折进问号里 —— 面板只有 272px 宽。 */}
-                    <HelpTip text={t(lang, 'editorEraseOnlyBubbleDesc')} />
-                    <span className="ml-auto">
-                      <DockToggle
-                        checked={!!config.eraseOnlyInsideBubble}
-                        onChange={(v) => onConfigChange('eraseOnlyInsideBubble', v)}
-                      />
-                    </span>
-                  </div>
-                </div>
-              )}
-            </div>
+            <AdvancedBlock
+              open={eraseAdvOpen}
+              onToggle={() => setEraseAdvOpen(o => !o)}
+              label={t(lang, 'editorAdvancedSettings')}
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorEraseOnlyBubble')}</span>
+                {/* 说明太长，折进问号里 —— 面板只有 272px 宽。 */}
+                <HelpTip text={t(lang, 'editorEraseOnlyBubbleDesc')} />
+                <span className="ml-auto">
+                  <DockToggle
+                    checked={!!config.eraseOnlyInsideBubble}
+                    onChange={(v) => onConfigChange('eraseOnlyInsideBubble', v)}
+                  />
+                </span>
+              </div>
+              {/* 擦除成功后冻结：开关本身是持久设置（之后的擦除自动冻结），切换时
+                  顺便把作用范围内已有的擦除结果对齐 —— 打开就冻结，关掉就还原成
+                  编辑器擦除（AI 重绘占位的框一律让位）。 */}
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold text-skin-text leading-tight">{t(lang, 'editorFreezeErasedBoxes')}</span>
+                <HelpTip text={t(lang, 'editorFreezeErasedBoxesTip')} />
+                <span className="ml-auto">
+                  <DockToggle
+                    checked={!!config.freezeErasedBoxes}
+                    onChange={(v) => {
+                      onConfigChange('freezeErasedBoxes', v);
+                      onSyncEraseFreeze?.(scopedImages.map(img => img.id), v);
+                    }}
+                  />
+                </span>
+              </div>
+            </AdvancedBlock>
           </div>
 
           {busy && (

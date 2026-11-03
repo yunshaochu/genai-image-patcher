@@ -741,6 +741,23 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
    * the user pauses), while discrete actions want the short one — see
    * DISCRETE_RECOMPOSITE_DEBOUNCE_MS.
    */
+  /**
+   * 「擦除成功后自动冻结」（AppConfig.freezeErasedBoxes）：编辑器擦除一落地，就把
+   * 已经排上的译文搬进 editorFrozenText —— 画面上只留擦干净的底图，译文转成冻结态
+   * 等 AI 重绘去画中文（本地擦除在气泡里很准，本地嵌字却常常还原不了观感）。
+   *
+   * 没有译文的框没有可冻结的东西，原样返回。打 editorFrozenByErase 标记：关掉开关
+   * 时要靠它认出「这些冻结是本功能造成的」，才敢还原成编辑器擦除（见 syncEraseFreeze）。
+   */
+  const freezeErasedIfNeeded = useCallback((r: Region, updates: EditorFieldUpdates): Region => {
+    if (!configRef.current.freezeErasedBoxes) return r;
+    // 只认「这一次更新把擦除打开」：擦完之后用户在框里手打译文不该被抢进冻结区
+    // （那时候他要的是自己嵌字，不是交给 AI）。批次对齐走 syncEraseFreeze。
+    if (updates.editorErased !== true) return r;
+    if (!r.editorErased || !r.editorText?.trim() || r.aiErasedBase) return r;
+    return { ...r, editorFrozenText: r.editorText, editorText: undefined, editorFrozenByErase: true };
+  }, []);
+
   const updateEditorRegion = useCallback((
     imageId: string,
     regionId: string,
@@ -756,13 +773,13 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     // scheduleRecomposite because the leading-edge composite may run before
     // React commits, and reading the store back at that point would compose the
     // PREVIOUS content (the "picture is one edit behind" bug).
-    const nextRegion = target ? mergeEditorUpdates(target, updates) : undefined;
+    const nextRegion = target ? freezeErasedIfNeeded(mergeEditorUpdates(target, updates), updates) : undefined;
     updateImage(imageId, img => ({
       ...img,
-      regions: img.regions.map(r => (r.id === regionId ? mergeEditorUpdates(r, updates) : r)),
+      regions: img.regions.map(r => (r.id === regionId ? freezeErasedIfNeeded(mergeEditorUpdates(r, updates), updates) : r)),
     }));
     scheduleRecomposite(imageId, regionId, opts?.debounceMs, nextRegion);
-  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache]);
+  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache, freezeErasedIfNeeded]);
 
   /**
    * 批量编辑：对一批框施加同一套 editor 字段更新（多选面板用）。
@@ -791,7 +808,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       if (!updates || Object.keys(updates).length === 0) continue;
       // 撤回擦除（editorErased: false）与单框路径一样要丢掉擦除缓存。
       if (updates.editorErased === false) dropErasedCache(r.id);
-      nextById.set(r.id, mergeEditorUpdates(r, updates));
+      nextById.set(r.id, freezeErasedIfNeeded(mergeEditorUpdates(r, updates), updates));
     }
     if (nextById.size === 0) return 0;
     updateImage(imageId, current => ({
@@ -803,7 +820,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       scheduleRecomposite(imageId, id, opts?.debounceMs, nr);
     }
     return nextById.size;
-  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache]);
+  }, [getImage, updateImage, scheduleRecomposite, dropErasedCache, freezeErasedIfNeeded]);
 
   /**
    * Replace (or clear) the brush-stroke layer of a region.
@@ -1160,6 +1177,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       ...region,
       editorText: region.editorFrozenText,
       editorFrozenText: undefined,
+      // 手动解冻 = 用户接手这一格，自动冻结的标记一并清掉（否则关掉开关时会被
+      // 当成「本功能冻结的」再还原一次）。
+      editorFrozenByErase: undefined,
       editorErased: region.aiBubbleBase || region.aiErasedBase ? false : true,
     };
     updateImage(imageId, current => ({
@@ -1322,10 +1342,14 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       restoreBoxes: undefined,
       editorText: undefined,
       editorFrozenText: undefined,
+      editorFrozenByErase: undefined,
       customTranslation: undefined,
       sourceText: undefined,
       editorErased: false,
       editorWhitedOut: false,
+      editorWhiteoutFill: undefined,
+      editorPreviewRefreeze: undefined,
+      editorPreviewPrevErased: undefined,
       editorBrushUrl: undefined,
       aiBubbleBase: undefined,
       aiErasedBase: undefined,
@@ -1342,35 +1366,55 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [getImage, updateImage, dropRegionCache, isImageLocked]);
 
   /**
-   * 「临时预览译文」：把被 AI 标记为冻结的框粗暴涂白（editorWhitedOut —— 泛洪擦除
-   * 啃不动的复杂背景就靠这张白底）再把译文排上去，只为先看一眼前译文。
+   * 「临时预览译文」：给框铺一层底色（白 / 黑，见高级设置）再把译文排上去，只为
+   * 先看一眼译文。泛洪擦除啃不动的复杂背景就靠这层底色。
    *
-   * Rewrites EVERY frozen box in the image — 气泡内的复杂文字同样会被 AI 标记为
-   * 冻结，所以这里**不再限定 text_free** —— including boxes the user froze by
-   * hand from the dock, so the preview is a true page-wide batch. 反向就是
-   * `refreezeInImage`（「结束预览」），两者互为精确逆操作，所以不需要撤销栈。
+   * 目标集由 `editorPreviewOnlyFrozen` 决定：
+   *  - 打开（默认）：只处理挂着冻结译文的框 —— 气泡内的复杂文字同样会被 AI 标记
+   *    为冻结，所以这里**不限定 text_free**，包括用户在面板上手动冻结的框；
+   *  - 关闭：连已经嵌好字的框一起卷进来，整页统一成预览底色，一次看完整体效果。
+   *
+   * 反向就是 `refreezeInImage`（「结束预览」）。两者互为精确逆操作，所以不需要
+   * 撤销栈 —— 但「文字是从冻结区搬来的」与「本来就在画面上」必须分开记，否则
+   * 结束预览会把正常嵌好的框误冻结（见 Region.editorPreviewRefreeze）。
    */
   const whitenInImage = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
     if (!img) return;
-    const targets = img.regions.filter(r =>
-      !r.contextOnly && !isAiOwned(r) &&
+    const onlyFrozen = configRef.current.editorPreviewOnlyFrozen !== false;
+    const fill = configRef.current.editorPreviewFillColor === 'black' ? 'black' : 'white';
+    const targets = img.regions.filter(r => {
+      if (r.contextOnly || isAiOwned(r)) return false;
       // aiErasedBase 是 AI「擦除」的产物：底图已经是干净图，涂白反而盖掉它 ——
       // 跳过（这类框用逐框「解冻填入」直接排字更合适）。
-      !r.aiErasedBase &&
-      !!r.editorFrozenText?.trim()
-    );
+      if (r.aiErasedBase) return false;
+      if (r.editorFrozenText?.trim()) return true;
+      // 「不只预览冻结的」：已经有译文的框一起预览（它本来就排着字，这里只是把
+      // 底色统一成预览样式）。没有文字的框不碰 —— 铺一块空白膏药没有意义。
+      return !onlyFrozen && !!r.editorText?.trim();
+    });
     if (targets.length === 0) return;
 
-    const nextList = targets.map(r => ({
-      ...r,
-      editorText: r.editorFrozenText,
-      editorFrozenText: undefined,
-      editorWhitedOut: true,
-      // Whitening already covers everything; erasure would only waste the
-      // expensive flood fill under an opaque white box.
-      editorErased: false,
-    }));
+    const nextList = targets.map(r => {
+      const fromFrozen = !!r.editorFrozenText?.trim();
+      // 已经处在预览里的框（改底色后重按一次预览，或「含已嵌字框」模式下再按一次）
+      // 必须沿用第一次留下的标记：这时它已经有 editorText、看不出文字本来是从冻结区
+      // 搬来的，重算会把「结束预览要搬回去」误判成「本来就已嵌字」。
+      const alreadyPreviewed = !!r.editorWhitedOut;
+      return {
+        ...r,
+        editorText: fromFrozen ? r.editorFrozenText : r.editorText,
+        editorFrozenText: fromFrozen ? undefined : r.editorFrozenText,
+        editorWhitedOut: true,
+        // 底色每次都按当前设置写 —— 「改成涂黑再预览一次」走的正是这条路。
+        editorWhiteoutFill: fill,
+        // 底色已经盖住整格；擦除只会在不透明的底色下面白跑一次昂贵的泛洪。
+        editorErased: false,
+        // 结束预览要还原的两件事：文字从哪来的、预览前擦没擦过。
+        editorPreviewRefreeze: alreadyPreviewed ? r.editorPreviewRefreeze : fromFrozen,
+        editorPreviewPrevErased: alreadyPreviewed ? r.editorPreviewPrevErased : !!r.editorErased,
+      };
+    });
     const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
     updateImage(imageId, current => ({
       ...current,
@@ -1407,14 +1451,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [busy, whitenInImage]);
 
   /**
-   * Reverse of the preview: freeze the boxes that 「临时预览译文」whitened back
-   * up — the whiteout and the typeset text are removed (the original artwork
-   * comes back) and the translation is held in editorFrozenText again, ready for
-   * the AI redraw pipeline.
+   * Reverse of the preview: take the boxes 「临时预览译文」recoloured back to
+   * their pre-preview state — the fill and the typeset text are removed (the
+   * original artwork comes back).
    *
    * Recognition is state-based, not remembered: editorWhitedOut is only ever set
-   * by the preview, so "whited out + has text" is exactly its output. 这里也**不
+   * by the preview, so "filled + has text" is exactly its output. 这里也**不
    * 限定 text_free** —— 识别靠的是 editorWhitedOut，与检测类别无关。
+   *
+   * 两种框要分开处理（见 Region.editorPreviewRefreeze）：
+   *  - 预览时把冻结译文献上的（含老会话的预览产物，字段缺失 = true）→ 译文搬回
+   *    editorFrozenText，重新挂起等待 AI 重绘；
+   *  - 本来就已嵌好字的（「不只预览冻结的」才会被卷进来）→ 文字原样留着，只把
+   *    底色与擦除状态还原，绝不能被误冻结。
    */
   const refreezeInImage = useCallback(async (imageId: string) => {
     const img = getImage(imageId);
@@ -1425,13 +1474,19 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     );
     if (targets.length === 0) return;
 
-    const nextList = targets.map(r => ({
-      ...r,
-      editorFrozenText: r.editorText,
-      editorText: undefined,
-      editorWhitedOut: false,
-      editorErased: false,
-    }));
+    const nextList = targets.map(r => {
+      const refreeze = r.editorPreviewRefreeze !== false;
+      return {
+        ...r,
+        ...(refreeze ? { editorFrozenText: r.editorText, editorText: undefined } : {}),
+        editorWhitedOut: false,
+        editorWhiteoutFill: undefined,
+        // 还原预览前的擦除状态（老会话没有这个字段 → false，与旧行为一致）。
+        editorErased: refreeze ? false : !!r.editorPreviewPrevErased,
+        editorPreviewRefreeze: undefined,
+        editorPreviewPrevErased: undefined,
+      };
+    });
     const byId = new Map<string, Region>(nextList.map(t => [t.id, t]));
     updateImage(imageId, current => ({
       ...current,
@@ -1469,6 +1524,65 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   }, [busy, refreezeInImage]);
 
   /**
+   * 「擦除成功后自动冻结」的开关落地（AppConfig.freezeErasedBoxes）。
+   *
+   * `enabled = true`：把 scope 内**编辑器擦除成功、且已经有译文**的框冻结 ——
+   * 译文搬进 editorFrozenText，画面上只留擦干净的底图，等 AI 重绘去画中文。
+   * `enabled = false`：只还原**本功能冻结过**的框（Region.editorFrozenByErase）：
+   * 译文填回 editorText、按擦除结果重新排版，也就是恢复成「编辑器擦除」的样子。
+   *
+   * 两种方向都跳过 AI 重绘占位的框：AI 重绘的「擦除」（aiErasedBase）/「翻译」
+   * /「自定义」（isAiOwned）优先级都高于编辑器擦除，那些框原样保留 —— 冻结的继续
+   * 冻结交给重绘管线，绝不因为关掉这个开关就被编辑器抢回去。
+   *
+   * `imageIds` 就是 作用范围（当前图片 / 所有图片）。
+   */
+  const syncEraseFreeze = useCallback(async (imageIds: string[], enabled: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      for (const imageId of imageIds) {
+        const img = getImage(imageId);
+        if (!img) continue;
+        const nextById = new Map<string, Region>();
+        for (const r of img.regions) {
+          if (r.contextOnly) continue;
+          // AI 重绘的擦除 / 翻译 / 自定义占位优先，编辑器这边一律让位。
+          if (isAiOwned(r) || r.aiErasedBase) continue;
+          if (enabled) {
+            if (!r.editorErased || !r.editorText?.trim()) continue;
+            nextById.set(r.id, {
+              ...r,
+              editorFrozenText: r.editorText,
+              editorText: undefined,
+              editorFrozenByErase: true,
+            });
+          } else {
+            if (!r.editorFrozenByErase || !r.editorFrozenText?.trim()) continue;
+            nextById.set(r.id, {
+              ...r,
+              editorText: r.editorFrozenText,
+              editorFrozenText: undefined,
+              editorFrozenByErase: undefined,
+            });
+          }
+        }
+        if (nextById.size === 0) continue;
+        updateImage(imageId, current => ({
+          ...current,
+          regions: current.regions.map(r => nextById.get(r.id) ?? r),
+        }));
+        // 逐个重建贴图：冻结要撤掉排上的字，还原要把字重新排回去。
+        for (const nr of nextById.values()) {
+          await recompositeRegion(imageId, nr.id, nr);
+        }
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, getImage, updateImage, recompositeRegion]);
+
+  /**
    * 重新擦除（一页）：把这一页所有「编辑器泛洪擦除」过的框的擦除结果作废，重跑
    * 一遍合成 —— 擦除算法改进后（后端 /erase 或本地兜底），用它一次性刷新已有的
    * 旧结果，不必逐框点「撤回擦除 → 再擦除」。
@@ -1484,12 +1598,25 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     if (!img) return;
     // 「只擦除气泡内的文字」：重新擦除同样遵守（见 AppConfig.eraseOnlyInsideBubble）。
     const onlyInsideBubble = !!configRef.current.eraseOnlyInsideBubble;
+    // 「擦除成功后冻结」：重新擦除也是一次擦除成功 —— 有译文的框顺手冻结，于是
+    // 画面只剩擦干净的底图，译文挂进冻结区等 AI 重绘（作用范围沿用 当前图片 /
+    // 所有图片，reeraseAllImages 逐页调用本函数）。
+    const freeze = !!configRef.current.freezeErasedBoxes;
     const targets = img.regions.filter(r => isReerasableRegion(r, onlyInsideBubble));
     for (const r of targets) {
       dropErasedCache(r.id);
-      await recompositeRegion(imageId, r.id);
+      const frozen = freeze && !r.aiErasedBase && !!r.editorText?.trim()
+        ? { ...r, editorFrozenText: r.editorText, editorText: undefined, editorFrozenByErase: true }
+        : null;
+      if (frozen) {
+        updateImage(imageId, current => ({
+          ...current,
+          regions: current.regions.map(x => (x.id === frozen.id ? frozen : x)),
+        }));
+      }
+      await recompositeRegion(imageId, r.id, frozen ?? undefined);
     }
-  }, [getImage, dropErasedCache, recompositeRegion]);
+  }, [getImage, dropErasedCache, recompositeRegion, updateImage]);
 
   /** 重新擦除 on the current image. */
   const reeraseImage = useCallback(async (imageId: string) => {
@@ -1752,6 +1879,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     freezeTranslation,
     resetRegion,
     hardResetRegion,
+    syncEraseFreeze,
     previewFrozenText,
     previewFrozenTextAllImages,
     endPreview,

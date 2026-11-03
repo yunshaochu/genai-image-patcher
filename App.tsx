@@ -160,6 +160,7 @@ export default function App() {
       freezeTranslation,
       resetRegion,
       hardResetRegion,
+      syncEraseFreeze,
       previewFrozenText,
       previewFrozenTextAllImages,
       endPreview,
@@ -917,6 +918,11 @@ export default function App() {
   const editorOnUnfreezeRegion = useCallback((regionId: string) => {
       if (selectedImageId_safe) void unfreezeTranslation(selectedImageId_safe, regionId);
   }, [selectedImageId_safe, unfreezeTranslation]);
+  // 「擦除成功后自动冻结」开关切换：把 作用范围 内已有的擦除结果对齐到新模式 ——
+  // 打开 = 冻结擦除成功且有译文的框；关闭 = 只还原本功能冻结的（AI 重绘占位的让位）。
+  const editorOnSyncEraseFreeze = useCallback((imageIds: string[], enabled: boolean) => {
+      void syncEraseFreeze(imageIds, enabled);
+  }, [syncEraseFreeze]);
 
   // 叠放次序：贴图部分重叠时谁盖谁 = regions 数组下标（下标越大越靠上）。
   // ↑ / ↓ 挪一层（与相邻项交换），⤒ / ⤓ 直接搬到数组末尾 / 开头；
@@ -1570,6 +1576,7 @@ export default function App() {
             translating={editorTranslating}
             translatingImageIds={editorTranslatingImageIds}
             onStopTranslate={stopTranslation}
+            onSyncEraseFreeze={editorOnSyncEraseFreeze}
             onUnfreeze={(regionId) => unfreezeTranslation(selectedImage.id, regionId)}
             onFreeze={(regionId) => freezeTranslation(selectedImage.id, regionId)}
             onPreviewFrozenText={() => previewFrozenText(selectedImage.id)}

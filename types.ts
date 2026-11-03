@@ -320,6 +320,21 @@ export interface Region {
    *  set by the batch 「临时预览译文」action, which is what makes its reverse
    *  (「结束预览」) able to recognise its own output. */
   editorWhitedOut?: boolean;
+  /** 「临时预览译文」用的底色：undefined = 白（历史行为）。只在 editorWhitedOut
+   *  为 true 时生效（合成器据此填白或填黑）。 */
+  editorWhiteoutFill?: 'white' | 'black';
+  /** 预览标记：这一格的译文是**预览时从冻结区搬过来的**（true）还是它本来就已
+   *  嵌好字（false）。结束预览据此决定「搬回冻结区」还是「原样留着」，所以它必须
+   *  显式落库 —— 光看 editorWhitedOut + editorText 分不出这两种情况。
+   *  undefined = 老会话的预览产物，语义等同 true（那时只会预览冻结框）。 */
+  editorPreviewRefreeze?: boolean;
+  /** 预览前的 editorErased 值：结束预览要把它还回去（预览期间被置为 false ——
+   *  底色已经盖住整格，再泛洪擦除纯属浪费）。 */
+  editorPreviewPrevErased?: boolean;
+  /** 本框的冻结是「擦除成功后自动冻结」这个功能干的（AppConfig.freezeErasedBoxes）。
+   *  关掉那个开关时据此还原成「编辑器擦除」：把译文填回去、按擦除结果重新排版。
+   *  手动冻结 / AI 冻结都不打这个标记，所以不会被误还原。 */
+  editorFrozenByErase?: boolean;
   /** LEGACY: set when a completed AI-redrawn bubble fully contains this text
    *  region (the bubble's patch already wiped the original text, so the
    *  region's base is clean). Bubble-outline redraw has been removed, so no
@@ -671,6 +686,38 @@ export interface AppConfig {
    *
    *  判定只看检测类别，不做几何推断（手画框没有 detectedClass，按「气泡外」处理）。 */
   eraseOnlyInsideBubble: boolean;
+
+  /** 「临时预览译文」的底色 —— 'white'（默认，历史行为）/ 'black'。
+   *
+   *  黑底是给深色画面准备的：压在夜色、烟雾、黑底气泡上的译文，白底会糊成一块
+   *  很刺眼的膏药。只影响预览这一层的填充色（合成器里的 editorWhitedOut 分支），
+   *  文字颜色会按底色自动翻（黑底上用白字），预览结束整格还原。 */
+  editorPreviewFillColor: 'white' | 'black';
+
+  /** 「临时预览译文」是否**只**预览被冻结的框 —— 默认 true（历史行为）。
+   *
+   *  打开：只处理挂着冻结译文的框（它们本来就不在画面上，预览完再搬回冻结区）。
+   *  关闭：连**已经嵌好字**的框一起卷进预览 —— 整页统一涂成预览底色、所有译文都
+   *  排上去，用来一次看完整页效果。结束预览时这些框原样留着（不会被误冻结），
+   *  所以每格必须记下「预览前是否已擦除」（见 Region.editorPreviewRefreeze /
+   *  editorPreviewPrevErased）。 */
+  editorPreviewOnlyFrozen: boolean;
+
+  /** 「擦除成功后自动冻结」—— 默认关。
+   *
+   *  打开后，**编辑器擦除**（单框「擦除原文」/ 批量擦除 / 重新擦除，都是本地泛洪，
+   *  不含 AI 重绘的「擦除」产物）一旦落地，这一格的译文就搬进 editorFrozenText：
+   *  画面上只留擦干净的底图，译文挂在冻结区等 AI 重绘去画中文 —— 本地擦除在气泡里
+   *  效果很好，但本地嵌字往往还原不了原本的观感，交给 AI 重绘更合适。
+   *
+   *  没有已经排上的译文的框不处理：没有可冻结的东西，擦除结果原样保留。
+   *
+   *  关掉时（App 侧的 syncEraseFreeze）把本功能冻结过的框还原成「编辑器擦除」——
+   *  但只限没有 AI 重绘占位的：AI 重绘的擦除 / 翻译 / 自定义产物优先级都高于编辑器
+   *  擦除，那些框保持冻结，交给重绘管线。
+   *
+   *  批量与「所有」的范围跟 作用范围（当前图片 / 所有图片）一致。 */
+  freezeErasedBoxes: boolean;
 
   // Logic Switch
   useFullImageMasking: boolean; // Send full image with non-selected areas masked white

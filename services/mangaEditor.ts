@@ -31,6 +31,25 @@ const PATCH_IMAGE_TYPE = 'image/webp';
 const PATCH_IMAGE_QUALITY = 0.94;
 
 /**
+ * 这个字色算不算「深色」—— 黑底预览时用它决定要不要把字翻成白色。
+ *
+ * undefined 按默认黑字处理（排版引擎的默认色）；只认 #rgb / #rrggbb，其它写法
+ * （rgb()、颜色名、渐变）一律当深色，宁可多翻一次也不让字压在黑底上消失。
+ */
+const isDarkColor = (color?: string): boolean => {
+  if (!color) return true;
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!match) return true;
+  const hex = match[1].length === 3
+    ? match[1].split('').map(c => c + c).join('')
+    : match[1];
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 128;
+};
+
+/**
  * Encoding for the erased-ROI cache (内存缓存与落盘用的是同一份 Blob)。
  *
  * PNG 无损，但擦除 ROI 通常不小（气泡 ∪ 文本框 + 8px 边距），PNG 编码本身就要
@@ -835,9 +854,20 @@ export const compositeRegionPatch = async (
     autoTextColor && region.editorStyle?.colorSource !== 'manual'
       ? erased?.textColor ?? undefined
       : undefined;
-  const layoutStyle = measuredColor
+  const styleAfterMeasure = measuredColor
     ? { ...region.editorStyle, color: measuredColor, outlineColor: undefined, outlineWidth: undefined }
     : region.editorStyle;
+  // 「临时预览译文」的底色：白（历史行为）或黑（深色画面用）。铺的是纯色，所以
+  // 字色和底色撞了就得翻到另一边 —— 黑底黑字 / 白底白字什么都看不见。描边色跟着
+  // 用底色（与底色融为一体，不会画出一圈突兀的灰边）。这只是预览的渲染，数据层
+  // 的字色一动不动。
+  const whiteoutFill = region.editorWhiteoutFill === 'black' ? '#000000' : '#ffffff';
+  const fillIsBlack = whiteoutFill === '#000000';
+  const needContrastFlip = region.editorWhitedOut
+    && (fillIsBlack ? isDarkColor(styleAfterMeasure?.color) : !isDarkColor(styleAfterMeasure?.color));
+  const layoutStyle = needContrastFlip
+    ? { ...styleAfterMeasure, color: fillIsBlack ? '#ffffff' : '#000000', outlineColor: whiteoutFill, outlineWidth: undefined }
+    : styleAfterMeasure;
 
   // ── 2. Layout: its block bounds decide the overflow margin ────────────────
   const layout = text.trim() ? layoutText(text, cropW, cropH, layoutStyle, preferVerticalDefault) : null;
@@ -881,9 +911,10 @@ export const compositeRegionPatch = async (
   onStage?.('base-draw');
 
   // 1.5 Brute-force whiteout (text_free quick fix: covers the whole crop —
-  // complex background included — so typeset text sits on a clean white box)
+  // complex background included — so typeset text sits on a clean box).
+  // 底色由 Region.editorWhiteoutFill 决定（默认白，见白底预览 / 黑底预览）。
   if (region.editorWhitedOut) {
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = whiteoutFill;
     ctx.fillRect(mx, my, cropW, cropH);
   }
 

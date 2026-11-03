@@ -153,6 +153,11 @@ const DEFAULT_CONFIG: AppConfig = {
   editorAutoTextColor: false, // 擦除时量出的原文墨色是否直接用于嵌字
   // 默认关 = 批量擦除 / 重新擦除对所有选中的框生效（与历史行为一致）。
   eraseOnlyInsideBubble: false,
+  // 临时预览：默认铺白底、只管冻结框（= 与历史行为一致）。
+  editorPreviewFillColor: 'white',
+  editorPreviewOnlyFrozen: true,
+  // 擦除成功后不自动冻结：擦完还留在编辑器里，是历史行为（嵌字由编辑器继续做）。
+  freezeErasedBoxes: false,
   
   // New Logic Toggle
   useFullImageMasking: false,
