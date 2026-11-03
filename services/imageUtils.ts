@@ -1063,20 +1063,111 @@ export const generateThumbnail = async (img: HTMLImageElement, maxDim: number = 
   return result;
 };
 
-export const fetchImageAsBase64 = async (url: string): Promise<string> => {
+/** 与 vite.config.ts 中 remoteImageProxy 插件保持一致的同源代理路径。 */
+const REMOTE_IMAGE_PROXY_PATH = '/__remote-image';
+
+/** 单次读取远程图片的超时（毫秒）。 */
+const FETCH_IMAGE_TIMEOUT = 30000;
+
+/** 单个候选地址的重试次数。服务端代理也会重试，这里兜住浏览器侧的网络抖动。 */
+const FETCH_IMAGE_ATTEMPTS = 2;
+
+const isCrossOrigin = (url: string): boolean => {
   try {
-    const response = await fetch(url);
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (e) {
-    console.error("Failed to fetch image from URL via proxy/cors", e);
-    return url;
+    return new URL(url, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
   }
+};
+
+const blobToDataUrl = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+    reader.readAsDataURL(blob);
+  });
+};
+
+/**
+ * 尽力取回一张远程图片的 Blob（自带重试），失败时带回原因供上层诊断。
+ *
+ * 会主动拒绝非 `image/*` 的响应：ngrok 免费版对浏览器请求返回的是 HTML
+ * 警告页，若当成图片继续往下走，canvas / FileReader 只会给出更难懂的错误。
+ */
+type RemoteImageResult = { blob: Blob; error?: undefined } | { blob?: undefined; error: string };
+
+const fetchRemoteImageBlob = async (input: string): Promise<RemoteImageResult> => {
+  let lastError = 'unknown';
+
+  for (let attempt = 1; attempt <= FETCH_IMAGE_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_IMAGE_TIMEOUT);
+    try {
+      const response = await fetch(input, { signal: controller.signal, cache: 'no-store' });
+      if (!response.ok) {
+        // 502 时服务端会把上游失败原因写在响应体里，带出来便于定位。
+        const detail = (await response.text().catch(() => '')).slice(0, 200).trim();
+        lastError = `HTTP ${response.status}${detail ? ` ${detail}` : ''}`;
+      } else {
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        if (contentType && !contentType.startsWith('image/')) {
+          lastError = `非图片响应（${contentType}）`;
+        } else {
+          const blob = await response.blob();
+          if (blob.size > 0) return { blob };
+          lastError = '空响应体';
+        }
+      }
+    } catch (error) {
+      const err = error as Error;
+      lastError = err.name === 'AbortError' ? `超时 ${FETCH_IMAGE_TIMEOUT}ms` : err.message;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (attempt < FETCH_IMAGE_ATTEMPTS) await new Promise(r => setTimeout(r, 400 * attempt));
+  }
+
+  return { error: lastError };
+};
+
+/**
+ * 把 AI 接口返回的图片地址转成 base64 data URL。
+ *
+ * 跨域地址（典型：ngrok 隧道后的 `/v1/files/xxx.png`）通常没有
+ * `Access-Control-Allow-Origin`，浏览器直连 fetch 必然被 CORS 拦截，ngrok
+ * 免费版还会额外插一个 HTML 警告页。所以跨域资源优先走 dev/preview 服务器
+ * 的同源代理（vite.config.ts → remoteImageProxy），直连只作为兜底；全部失败
+ * 时退回原始地址，至少让 <img> 还有机会渲染出来。
+ */
+export const fetchImageAsBase64 = async (url: string): Promise<string> => {
+  if (!url) return url;
+  // data:/blob: 本身就能直接给 <img> 或后续 canvas 用。
+  if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+
+  const crossOrigin = isCrossOrigin(url);
+  const candidates = crossOrigin
+    ? [`${REMOTE_IMAGE_PROXY_PATH}?url=${encodeURIComponent(url)}`, url]
+    : [url];
+
+  const failures: string[] = [];
+  for (const candidate of candidates) {
+    const isProxy = candidate.startsWith(REMOTE_IMAGE_PROXY_PATH);
+    const result = await fetchRemoteImageBlob(candidate);
+    if (result.blob) return await blobToDataUrl(result.blob);
+    failures.push(`${isProxy ? 'proxy' : 'direct'}: ${result.error}`);
+    // 代理给出了确定的 HTTP 应答：说明它在线，只是上游这次没成功。
+    // 此时直连必然被 CORS 拦下，再试只会多一条红色报错。
+    if (isProxy && result.error.startsWith('HTTP')) break;
+  }
+
+  console.warn(
+    `[fetchImageAsBase64] 读取图片失败（已重试 ${FETCH_IMAGE_ATTEMPTS} 次），已退回原始地址。` +
+    `原因 → ${failures.join(' | ')}`,
+    url
+  );
+  return url;
 };
 
 /**
