@@ -625,44 +625,76 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     return () => { cancelled = true; };
   }, [images, updateImage, intentOf]);
 
-  // AI「擦除」场景产出干净底图后，编辑器这边自动接手：
-  //  1. 自动解冻 —— 该框若挂着 held-back 译文，把底图已无原文，直接放出来排版
+  // AI「擦除」场景产出干净底图后，编辑器这边自动接手。三件事必须在**同一个
+  // effect、同一次合成**里做完：
+  //  1. 自动解冻 —— 该框若挂着 held-back 译文，底图已经没有原文，直接放出来排版
   //     （不泛洪擦除、不会和图上文字重叠）；
-  //  2. 已有 editorText 的，把文字排到 AI 抹干净的底图上（合成器用 aiErasedBase
+  //  2. 作废会盖住这张干净底图的编辑器图层（泛洪擦除 editorErased / 画笔层）；
+  //  3. 已有 editorText 的，把文字排到 AI 抹干净的底图上（合成器用 aiErasedBase
   //     作底图并跳过擦除）。
-  // 每次 (region, patch URL) 只处理一次，避免 update → effect → recomposite 自激；
-  // 也保证用户此后手动重新冻结的决定不会被再次覆盖。
+  //
+  // 为什么必须合并成一个 effect：以前 1+3 一个、2 另一个，各自拿「本批 commit 的
+  // 快照」整块覆盖这一格 —— 解冻刚写进 store 的 editorText 会被另一个 effect 的
+  // 清图层写入抹掉（症状：只擦了文字、没有台词，而且「已接手」的键已经记下，再也
+  // 不会重试）；两者的 recomposite 还会互抢：先发起的那次若最后落地，就把没字的
+  // 贴图盖回来了。
+  //
+  // 写回一律走**字段级补丁**（updater 里只改自己那几个字段），同一批 commit 里
+  // 编辑器写的别的字段（译文、字色…）因此不会被快照覆盖。
+  // 「已接手」的键用底图 URL：合成会换掉 processedImageUrl，用它当键会漏判/重复判；
+  // 键也保证用户此后手动重新冻结的决定不会被再次覆盖。
   const erasedBaseCompositedRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     for (const img of images) {
       for (const r of img.regions) {
-        // 底图用独立槽里的那一份（见 eraseBaseUrlOf），并用底图 URL 作"已接过手"
-        // 的键 —— 合成会换掉 processedImageUrl，用它当键会漏判/重复判。
+        if (!r.aiErasedBase) continue;
+        // 底图用独立槽里的那一份（见 eraseBaseUrlOf）。
         const baseUrl = eraseBaseUrlOf(r);
-        if (!r.aiErasedBase || !baseUrl) continue;
-        if (erasedBaseCompositedRef.current.get(r.id) === baseUrl) continue;
+        const alreadyHandled = !!baseUrl && erasedBaseCompositedRef.current.get(r.id) === baseUrl;
 
-        const frozen = r.editorFrozenText?.trim();
-        if (frozen && !r.editorText?.trim()) {
-          erasedBaseCompositedRef.current.set(r.id, baseUrl);
-          const next: Region = {
-            ...r,
-            editorText: frozen,
-            editorFrozenText: undefined,
-            // 底图是 AI 擦出来的干净图，不需要再泛洪擦除。
-            editorErased: false,
-          };
-          updateImage(img.id, current => ({
-            ...current,
-            regions: current.regions.map(x => (x.id === r.id ? next : x)),
-          }));
-          void recompositeRegion(img.id, r.id, next);
-          continue;
-        }
+        // 1) 解冻填入：有独立底图槽、挂着冻结译文、还没排字。
+        const canUnfreeze = !alreadyHandled && !!baseUrl
+          && !!r.editorFrozenText?.trim() && !r.editorText?.trim();
+        // 2) 清图层：这两层会盖住 AI 抹干净的底图，**不限次数** —— 用户之后又涂了
+        //    画笔，照样要清掉。
+        const needsLayerCleanup = !!r.editorErased || !!r.editorBrushUrl;
+        // 3) 已有文字、但还没排到**这张**底图上 → 重排一次。
+        //    刻意不看 editorComposited：贴图换成 AI 干净底图之后，旧的那张合成结果
+        //    已经作废（图上文字没了），而 editorComposited 仍然是 true —— 以前正是
+        //    这个条件让「之前合成过的框」永远不再重排，表现为「只擦了字、没台词」。
+        //    「是否已经接手过」由上面的 baseUrl 键判断，不会来回自激。
+        const needsTypeset = !alreadyHandled && !!baseUrl && !!r.editorText?.trim();
 
-        if (r.editorComposited || !r.editorText?.trim()) continue;
-        erasedBaseCompositedRef.current.set(r.id, baseUrl);
-        void recompositeRegion(img.id, r.id);
+        if (!canUnfreeze && !needsLayerCleanup && !needsTypeset) continue;
+        if (baseUrl) erasedBaseCompositedRef.current.set(r.id, baseUrl);
+
+        // 合成用的那一版（effect 快照 + 本次改动）。写回不用它，见下面的字段级补丁。
+        const patched: Region = {
+          ...r,
+          ...(canUnfreeze
+            ? { editorText: r.editorFrozenText, editorFrozenText: undefined, editorFrozenByErase: undefined }
+            : {}),
+          // 底图是 AI 擦出来的干净图，不需要再泛洪擦除。
+          ...(needsLayerCleanup ? { editorErased: false, editorBrushUrl: undefined } : {}),
+        };
+
+        updateImage(img.id, current => ({
+          ...current,
+          regions: current.regions.map(x => {
+            if (x.id !== r.id || !x.aiErasedBase) return x;
+            // 解冻用**当前**的冻结译文（本轮可能刚被翻译写进来），不用快照里的。
+            const unfreeze = canUnfreeze && !x.editorText?.trim() && !!x.editorFrozenText?.trim();
+            if (!unfreeze && !needsLayerCleanup) return x;
+            return {
+              ...x,
+              ...(unfreeze
+                ? { editorText: x.editorFrozenText, editorFrozenText: undefined, editorFrozenByErase: undefined }
+                : {}),
+              ...(needsLayerCleanup ? { editorErased: false, editorBrushUrl: undefined } : {}),
+            };
+          }),
+        }));
+        void recompositeRegion(img.id, r.id, patched);
       }
     }
   }, [images, recompositeRegion, updateImage]);
@@ -706,32 +738,20 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     void deleteEraseRecordsForRegion(regionId);
   }, []);
 
-  // AI「擦除」产物 vs 编辑器加的底图层：只要本框拿到了 AI 抹干净的底图
-  // （aiErasedBase），编辑器那两份会盖住底图的图层就全部作废 —— 泛洪擦除
-  // （editorErased）和画笔修补（editorBrushUrl，全涂白 / 涂黑 / 笔画都会糊住
-  // 这张干净底图）。擦除缓存一并丢弃（否则再次合成会复用"在原图上擦出来的"
-  // 旧结果），然后重建贴图。
-  // 兜底用：管线写回完成时已经清过 editorErased，这里替老会话 / 导入的工态收尾；
-  // 两个标记都清掉后本 effect 自然不再命中。
+  // AI「擦除」产物 vs 编辑器的擦除缓存：本框拿到 AI 抹干净的底图后，编辑器那份
+  // 泛洪擦除结果就作废了（合成器对 aiErasedBase 根本不会再擦）。
+  // 这里**只丢缓存、不写任何状态** —— 清图层与自动解冻由上面那个「擦除底图接手」
+  // effect 负责；以前这一步是连同状态一起写的，用的却是本批 commit 的快照，会把
+  // 解冻刚写进去的 editorText 整块覆盖掉（「只擦了字、没台词」的根因之一）。
   useEffect(() => {
     for (const img of images) {
-      const stale = img.regions.filter(r => r.aiErasedBase && (r.editorErased || r.editorBrushUrl));
-      if (stale.length === 0) continue;
-      stale.forEach(r => dropErasedCache(r.id));
-      // 画笔 blob 不在这里 release：history 快照可能还引用着同一份（与 handBack
-      // 同一处理）。清空字段即可，免得撤销时贴图指向已回收的 URL。
-      const nextById = new Map<string, Region>(
-        stale.map(r => [r.id, { ...r, editorErased: false, editorBrushUrl: undefined } as Region])
-      );
-      updateImage(img.id, current => ({
-        ...current,
-        regions: current.regions.map(r => nextById.get(r.id) ?? r),
-      }));
-      for (const nr of nextById.values()) {
-        void recompositeRegion(img.id, nr.id, nr);
+      for (const r of img.regions) {
+        if (!r.aiErasedBase) continue;
+        if (!erasedCacheRef.current.has(r.id)) continue;
+        dropErasedCache(r.id);
       }
     }
-  }, [images, updateImage, recompositeRegion, dropErasedCache]);
+  }, [images, dropErasedCache]);
 
   /**
    * Merge editor field updates into a region and schedule a recomposite.
