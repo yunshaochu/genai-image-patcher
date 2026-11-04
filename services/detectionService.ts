@@ -84,9 +84,56 @@ const prepareImageForUpload = async (imageUrl: string, maxDimension: number = 15
  * 检测坐标是近似值，所以判定"包围"时允许内层框最多探出外层框尺寸的一小部分；
  * 同时要求外层框面积严格更大，避免两个几乎重合的框（真正的重复框）被同时删掉。
  */
+const detArea = (d: ApiDetection): number =>
+  (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]);
+
+/** 两个检测框的交并比（0-1）。用来判定「是不是同一块地方」。 */
+const detIou = (a: ApiDetection, b: ApiDetection): number => {
+  const ix = Math.min(a.bbox[2], b.bbox[2]) - Math.max(a.bbox[0], b.bbox[0]);
+  const iy = Math.min(a.bbox[3], b.bbox[3]) - Math.max(a.bbox[1], b.bbox[1]);
+  if (ix <= 0 || iy <= 0) return 0;
+  const inter = ix * iy;
+  const union = detArea(a) + detArea(b) - inter;
+  return union > 0 ? inter / union : 0;
+};
+
+/**
+ * 完全重合的框只留一个。
+ *
+ * dropEnclosingBoxes 刻意要求外层框「严格更大」（怕把两个几乎重合的真重复框一起
+ * 删掉），于是**等面积的重复框谁也删不掉** —— 而检测器确实会吐这种情况：同一块
+ * 文字既被判成 text_bubble 又被判成 text_free，或者气泡轮廓与它的文字框坐标一模
+ * 一样。这类框在画布上叠成两层，编辑 / 翻译 / 擦除都会做两遍。
+ *
+ * 判定用交并比 ≥ 0.9：只有「几乎完全盖住彼此」才算重复，不会误伤「气泡框（大）+
+ * 里面的文字框（小）」那种正常嵌套。
+ * 保留优先级：text_bubble > text_free > bubble —— 气泡轮廓在套住文字时本来就是要
+ * 被丢掉的外层框（见 dropEnclosingBoxes）。
+ */
+const CLASS_PRIORITY: Record<ApiDetection['class_name'], number> = {
+  text_bubble: 0,
+  text_free: 1,
+  bubble: 2,
+};
+
+const dropDuplicateDetections = (detections: ApiDetection[]): ApiDetection[] => {
+  const DUP_IOU = 0.9;
+  const byPriority = [...detections].sort((a, b) =>
+    CLASS_PRIORITY[a.class_name] - CLASS_PRIORITY[b.class_name] || detArea(b) - detArea(a));
+  const kept = new Set<ApiDetection>();
+  for (const d of byPriority) {
+    // 退化框（宽或高为 0）算不出交并比，原样放行 —— 后面按 w/h 的过滤会收拾它。
+    if (detArea(d) <= 0) { kept.add(d); continue; }
+    if ([...kept].some(k => detIou(k, d) >= DUP_IOU)) continue;
+    kept.add(d);
+  }
+  // 保持传入顺序：区域清单 / 编号是照着检测顺序生成的。
+  return detections.filter(d => kept.has(d));
+};
+
 const dropEnclosingBoxes = (detections: ApiDetection[]): ApiDetection[] => {
   const TOLERANCE = 0.02; // 内层框允许探出外层框尺寸的 2%
-  const area = (d: ApiDetection) => (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]);
+  const area = detArea;
   const contains = (outer: ApiDetection, inner: ApiDetection): boolean => {
     const [ox1, oy1, ox2, oy2] = outer.bbox;
     const [ix1, iy1, ix2, iy2] = inner.bbox;
@@ -187,7 +234,9 @@ export const detectBubbles = async (
 
     // 2. Drop outer boxes fully enclosing inner ones — keeps the precise inner
     // boxes (see dropEnclosingBoxes).
-    const keptDetections = dropEnclosingBoxes(confident);
+    // 3. 完全重合的重复框只留一个（等面积的框在上一步谁也删不掉，见
+    //    dropDuplicateDetections）。
+    const keptDetections = dropDuplicateDetections(dropEnclosingBoxes(confident));
 
     // Map API result to internal Region format
     const regions: Region[] = [];

@@ -71,6 +71,10 @@ type RegionRunState = {
  * Dedup therefore only compares regions of the same detected class; manual /
  * legacy regions (no class) dedupe against any text class, and context-only
  * markers (bubble outlines) only dedupe against each other.
+ *
+ * 例外：**完全重合**（交并比 ≥ 0.9）的框不分类别一律算重复。检测器会把同一块
+ * 文字同时判成 text_bubble / text_free，或把气泡轮廓画在文字框同一个位置上，
+ * 这类重复框在前端被保留下来就成了画布上的两层框（编辑 / 翻译 / 擦除各做两遍）。
  */
 const regionOverlapsExisting = (
     r: Pick<Region, 'x' | 'y' | 'width' | 'height' | 'detectedClass' | 'contextOnly'>,
@@ -79,6 +83,20 @@ const regionOverlapsExisting = (
     const rArea = r.width * r.height;
     if (rArea <= 0) return false;
     for (const e of existing) {
+        const ix = Math.min(r.x + r.width, e.x + e.width) - Math.max(r.x, e.x);
+        const iy = Math.min(r.y + r.height, e.y + e.height) - Math.max(r.y, e.y);
+        if (ix <= 0 || iy <= 0) continue;
+        const inter = ix * iy;
+        // 1) 完全重合 → 无论类别 / contextOnly 都算重复：同一块地方存两份只会让
+        //    画布上叠两层，编辑 / 翻译 / 擦除各做两遍。用交并比判定，所以「小框
+        //    完全落在大框里」这种正常嵌套不会被误判（两者的并集比小框大得多）。
+        const eArea = e.width * e.height;
+        if (eArea > 0) {
+            const iou = inter / (rArea + eArea - inter);
+            if (iou >= 0.9) return true;
+        }
+        // 2) 部分重叠仍按原来的规则：只有同类（同为上下文标记 / 同为可编辑）才算
+        //    重复 —— 气泡轮廓与它自己的文字框是正常嵌套，不能互相压制。
         // Context-only markers must not suppress, or be suppressed by, real
         // (paintable/editable) regions.
         if (r.contextOnly || e.contextOnly) {
@@ -86,10 +104,7 @@ const regionOverlapsExisting = (
         } else if (r.detectedClass && e.detectedClass && r.detectedClass !== e.detectedClass) {
             continue;
         }
-        const ix = Math.min(r.x + r.width, e.x + e.width) - Math.max(r.x, e.x);
-        const iy = Math.min(r.y + r.height, e.y + e.height) - Math.max(r.y, e.y);
-        if (ix <= 0 || iy <= 0) continue;
-        if ((ix * iy) / rArea >= 0.5) return true;
+        if (inter / rArea >= 0.5) return true;
     }
     return false;
 };
