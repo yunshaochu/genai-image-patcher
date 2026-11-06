@@ -135,33 +135,121 @@ def _bgr_to_hex(bgr):
     return '#%02x%02x%02x' % (clamp(r), clamp(g), clamp(b))
 
 
-def _measure_text_stats(bgr_roi, text, R, dark_text):
-    """从文字掩码里量出墨色 / 底色（供编辑器「自动取色」）。
+# 取色样本下限：低于这个数一律不认（细笔画小字本来就量不准，宁可回落）。
+_INK_MIN_SAMPLES = 16
+# 彩色字的 HSV 门槛：白/黑描边与低饱和的抗锯齿过渡带都被挡在外面。
+_INK_SAT_MIN = 90
+_INK_VAL_MIN = 100
+# 高饱和像素至少占掩码的 12% 才当「彩色字」，免得背景里几块彩色画面带偏。
+_INK_SAT_MIN_SHARE = 0.12
 
-    取色之所以准，是因为 `text` 已经是「与底色差 ±50 灰度」硬阈值后的核心笔画，
-    抗锯齿过渡带（墨色与底色的混合）本来就落在阈值之外；样本够多时再往里腐蚀
-    一圈，进一步甩掉边缘像素。逐通道取中位数而不是均值，避免个别残留噪声像素
-    （反锯齿、网点、JPEG 块效应）把墨色拉偏。
 
-    样本太少（<8 px）时认为量不准，返回 None，调用方回落到默认字色。
+def _dominant_cluster(px, bin_size=16):
+    """3D 颜色量化直方图取峰值簇，返回 `(簇内像素, 簇占比)`。
+
+    抗锯齿把笔画色摊成一条连续过渡带，全量中位数会落在「字色与描边色之间」；
+    峰值簇才是笔画核心那一坨纯色。bin 宽 16 级，簇内再取中位数把精度补回 ±8。
+    """
+    if len(px) < _INK_MIN_SAMPLES:
+        return px, 0.0
+    q = (np.clip(px, 0, 255) // bin_size).astype(np.int32)
+    key = q[:, 0] * 256 + q[:, 1] * 16 + q[:, 2]
+    counts = np.bincount(key, minlength=4096)
+    peak = int(counts.argmax())
+    sel = key == peak
+    return px[sel], float(sel.sum()) / len(px)
+
+
+def measure_ink_color(bgr_roi, text_mask, bg=None):
+    """用 comic-text-detector 掩码量原文笔画色。
+
+    取样域只认模型掩码，不用擦除的「洞检测 ∪ 掩码」并集 —— 那个并集是按
+    「宁可多擦」调的，混着描边、背景和启发式补进来的结构。掩码把整行连成
+    实心条也没关系：颜色聚类能把笔画核心从白边、字间空隙里挑出来。
+
+    实测（tempImage/original.webp，粉紫字 + 白边 / 红字 + 白边）：
+      全掩码中位数      #ff9afb / #f6c8cc   ← 被白边稀释
+      离底色最远分位    #ffffff             ← 白边离深色底比彩色笔画更远
+      本函数            #ee15eb / #bb172c   ← 笔画核心色
+
+    返回 `('#rrggbb', info)`；样本不足 / 颜色不集中时返回 None，调用方回落
+    「不覆盖字色」，绝不塞一个淡色糊上去。
+    """
+    if text_mask is None:
+        return None
+    text_mask = np.asarray(text_mask).astype(bool)
+    if not text_mask.any():
+        return None
+    px = bgr_roi[text_mask].astype(np.float32)
+    if len(px) < _INK_MIN_SAMPLES:
+        return None
+    if bg is None:
+        outside = bgr_roi[~text_mask]
+        bg = np.median(outside, axis=0) if outside.size else np.median(px, axis=0)
+    bg = np.asarray(bg, np.float32)
+
+    # 1) 彩色字优先：高饱和簇就是笔画，白/黑描边饱和度低进不来。
+    hsv = cv2.cvtColor(bgr_roi, cv2.COLOR_BGR2HSV)
+    sat = ((hsv[:, :, 1] >= _INK_SAT_MIN)
+           & (hsv[:, :, 2] >= _INK_VAL_MIN) & text_mask)
+    sat_px = bgr_roi[sat].astype(np.float32)
+    sat_share = len(sat_px) / float(len(px))
+    if sat_share >= _INK_SAT_MIN_SHARE and len(sat_px) >= _INK_MIN_SAMPLES:
+        # 高饱和筛选已经把白/黑描边和抗锯齿过渡带挡掉了，剩下的都是同一支笔
+        # 的墨色（明暗略变、量化后散在几个相邻 bin），直接取中位数比只认峰值
+        # bin 稳 —— 暗红字实测会被拆成 3~4 个 bin，峰值占比不达标就漏判。
+        ink = np.median(sat_px, axis=0)
+        spread = float(np.median(np.linalg.norm(sat_px - ink, axis=1)))
+        if spread <= 55:
+            return _bgr_to_hex(ink), {
+                'mode': 'saturated', 'samples': len(sat_px),
+                'share': round(sat_share, 3), 'spread': round(spread, 1)}
+
+    # 掩码里有一撮彩色像素、但不足以认定是字色时也不要往下走：白描边离
+    # 深色底比彩色笔画更远，contrast 分支必然把它取成 #ffffff。宁可不取色。
+    if sat_share >= 0.05 and len(sat_px) >= _INK_MIN_SAMPLES:
+        return None
+
+    # 2) 黑白字：离底色最远的 25% 里再取主色簇（抗锯齿离底色近，被甩掉）。
+    d = np.linalg.norm(px - bg, axis=1)
+    core = px[d >= np.percentile(d, 75)]
+    cluster, share = _dominant_cluster(core)
+    if len(cluster) < _INK_MIN_SAMPLES:
+        cluster, share = core, 1.0
+    if len(cluster) < _INK_MIN_SAMPLES:
+        return None
+    ink = np.median(cluster, axis=0)
+    spread = float(np.median(np.linalg.norm(cluster - ink, axis=1)))
+    if spread > 55 or share < 0.12:
+        return None
+    return _bgr_to_hex(ink), {
+        'mode': 'contrast', 'samples': len(cluster),
+        'share': round(share, 3), 'spread': round(spread, 1)}
+
+
+def _measure_text_stats(bgr_roi, text, R, dark_text, ink_mask=None):
+    """擦除前的文字统计。`text` 只用来算 text_ratio / 极性（擦除策略要用），
+    字色一律只从 `ink_mask`（comic-text-detector 掩码）里量。
+
+    没有模型掩码时**不返回 text_color**：启发式并集量出来的淡色拿去嵌字比
+    不取色更糟，前端据此回落原字色。
     """
     total = int(text.sum())
     if total < 8:
         return None
-    core = text
-    if total >= 64:
-        eroded = cv2.erode(text.astype(np.uint8), np.ones((3, 3), np.uint8))
-        if int(eroded.sum()) >= 8:
-            core = eroded > 0
-
     stats = {
-        'text_color': _bgr_to_hex(np.median(bgr_roi[core], axis=0)),
         'text_pixels': total,
         'text_ratio': round(total / float(text.size), 4),
         'inverted': bool(dark_text),
     }
+    bg = None
     if R is not None and R.any():
-        stats['bg_color'] = _bgr_to_hex(np.median(bgr_roi[R], axis=0))
+        bg = np.median(bgr_roi[R], axis=0)
+        stats['bg_color'] = _bgr_to_hex(bg)
+    if ink_mask is not None and ink_mask.any():
+        measured = measure_ink_color(bgr_roi, ink_mask, bg=bg)
+        if measured is not None:
+            stats['text_color'], stats['ink'] = measured
     return stats
 
 
@@ -234,7 +322,10 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None):
     if not text.any():
         return bgr_roi, None
 
-    stats = _measure_text_stats(bgr_roi, text, R, dark_text)
+    # 取色只认模型掩码：擦除用的 `text` 是「宁可多擦」的并集，不能拿来量墨色。
+    stats = _measure_text_stats(
+        bgr_roi, text, R, dark_text,
+        ink_mask=text_mask if have_mask else None)
 
     # 文字 + 描边一起擦：只擦笔画的话，inpaint 的采样边界正好落在宽描边上，
     # 补出来的是描边色（白团）；描边掩码只往"与文字反向偏离底色"的方向长。

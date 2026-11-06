@@ -252,16 +252,18 @@ export const measureLayoutBlock = (layout: TextLayout): { blockW: number; blockH
 };
 
 /**
- * Auto outline: applies only when the caller explicitly set a text colour
- * without an outline width (AI colour module / dock colour toggle) — the
- * width scales with the resolved font size. Colourless legacy regions keep
- * outlineWidth 0, so existing output is unchanged.
+ * Auto outline: 所有字色都带描边，宽度按最终字号缩放，除非用户显式钉过
+ * outlineWidth（0 = dock 的「无」档，其余 = 自定义宽度）。
+ *
+ * 以前只有显式设过 color 的区域（AI 猜色 / dock 字色按钮）才自动加宽，
+ * 默认黑字（color 为 undefined）落在 width 0 上，等于没描边。现在黑字与
+ * 深色字统一拿到 resolveStyle 推出的白边；白字仍是黑边。
  */
 const withAutoOutline = (
   full: ResolvedTextStyle,
   style?: EditorTextStyle
 ): ResolvedTextStyle =>
-  style?.color && style.outlineWidth === undefined
+  style?.outlineWidth === undefined
     ? { ...full, outlineWidth: Math.min(6, Math.max(1.5, full.fontSize * 0.12)) }
     : full;
 

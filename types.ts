@@ -155,7 +155,7 @@ export interface EditorTextStyle {
   colorSource?: 'manual' | 'auto';
   /** 描边色。不显式指定时按字色推：白字黑边，其余（黑字/彩字/灰字）白边。 */
   outlineColor?: string;
-  outlineWidth?: number;  // default: auto (fontSize×0.12) when color is explicit, else 0
+  outlineWidth?: number;  // default: auto (fontSize×0.12)，黑字也带白边；显式 0 = 关掉描边
   isBold?: boolean;       // reserved, default true
   fontFamily?: string;    // this region's font stack; undefined = AppConfig.editorFontFamily (global default)
   /** 整块文字的旋转角度（度，顺时针为正）。0/undefined = 不旋转。
@@ -277,8 +277,13 @@ export interface Region {
    *  阈值调低即复活）。 */
   confidence?: number;
   /** comic-text-detector 像素掩码（见 RegionTextMask）。仅当「文字掩码精准
-   *  擦除」开关开启且检测时后端掩码模型就绪才会存在；擦除时与洞检测取并集。 */
+   *  擦除」或「自动取色」开启、且检测时后端掩码模型就绪才会存在；擦除时与
+   *  洞检测取并集。 */
   textMask?: RegionTextMask;
+  /** /detect 阶段用整页 CTD 掩码从原图量出的原文墨色 '#rrggbb'。检测时整页
+   *  模型已经跑过，顺手算好，嵌字直接沿用 —— 不必为了取色单独打一次 /erase。
+   *  没有（旧会话 / 模型未就绪 / 量不准）时回落到擦除阶段的取色结果。 */
+  inkColor?: string;
   /** 「翻译」tab 的选区提示词（历史上也承载过译文缓存块，已迁出到
    *  customTranslation）。仅当 redrawIntent='translate' 时作为该框的提示词生效。 */
   customPrompt?: string; // Image-specific prompt overrides global prompt
@@ -654,7 +659,8 @@ export interface AppConfig {
   detectionSkipManualOnlyPages: boolean;
   /** 文字掩码精准擦除：开启后 /detect 会触发后端加载 comic-text-detector 分割
    *  模型，给每个文本框挂像素级掩码，擦除时与洞检测取并集（彩色字/小注音这些
-   *  难例擦得更干净）。代价：首次使用后端要下载 ~90MB 模型，检测耗时也增加
+   *  难例擦得更干净）。开着「自动取色」时即使本项关着也会自动带掩码 —— 墨色
+   *  只在模型掩码里量。代价：首次使用后端要下载 ~90MB 模型，检测耗时也增加
    *  （CPU 约多 2~3 秒/页）。 */
   detectionTextMask: boolean;
   
@@ -667,9 +673,11 @@ export interface AppConfig {
    *  字体文件由 Python 后端首次请求时下载并缓存（server/fonts/），前端按需取用。 */
   editorFontFamily: string;
 
-  /** 自动取色（嵌字）：擦除文字时顺手量出原文墨色（后端 /erase 的响应头，
-   *  后端不可用时用浏览器内置算法的统计值），嵌字直接沿用，不再依赖视觉模型
-   *  猜「黑/白」。量不出来（文字像素太少）时回落到原行为。手动选过的字色
+  /** 自动取色（嵌字）：**只在 Python 后端在线时生效**。检测接口 /detect 用
+   *  comic-text-detector 掩码圈出笔画，从原图量出墨色随检测结果一起返回
+   *  （Region.inkColor），嵌字直接沿用，不再依赖视觉模型猜「黑/白」；旧会话
+   *  没有这个字段时才回落到 /erase 响应头。后端不在线 / 颜色量不准时一律
+   *  不覆盖字色（绝不使用浏览器本地擦除算法的统计值）。手动选过的字色
    *  （dock 黑字/白字、吸管）不受影响 —— 见 EditorTextStyle.colorSource。 */
   editorAutoTextColor: boolean;
 

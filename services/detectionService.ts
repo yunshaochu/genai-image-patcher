@@ -13,6 +13,8 @@ interface ApiDetection {
   text_mask?: string;
   mask_origin?: [number, number];
   mask_size?: [number, number];
+  /** /detect 顺手量到的原文墨色（后端已用整页 CTD 掩码从原图统计好）。 */
+  ink_color?: string;
 }
 
 interface ApiDetectionResponse {
@@ -188,9 +190,10 @@ export const detectBubbles = async (
     // are the editable text areas; bubble = 整颗气泡, kept as context-only
     // markers (reserved for later use, e.g. per-bubble styling).
     formData.append('filter_classes', 'bubble,text_bubble,text_free');
-    // 文字掩码精准擦除开关：开后端 comic-text-detector（首次会触发模型加载，
-    // 检测变慢）。必须显式传 false——后端默认值为 true。
-    formData.append('with_masks', String(!!config.detectionTextMask));
+    // 文字掩码：精准擦除或「自动取色」都需要它 —— 墨色只在模型掩码里量，
+    // 所以开着自动取色时即使没开精准擦除也必须带上掩码（首次会触发后端加载
+    // ~90MB 分割模型，检测变慢）。必须显式传 false——后端默认值为 true。
+    formData.append('with_masks', String(!!(config.detectionTextMask || config.editorAutoTextColor)));
 
     // 3. Send Request
     const response = await fetch(apiUrl, {
@@ -320,6 +323,20 @@ export const detectBubbles = async (
             // empty bubbles ever reach this line.
             contextOnly: det.class_name === 'bubble',
             textMask: buildTextMask(det),
+            // /detect 已经在后端量好原文墨色；旧版后端没有这个字段时 undefined。
+            inkColor: det.ink_color,
+            // 自动取色开着时直接把实测墨色落到样式上：dock 的色块从检测完成
+            // 这一刻就显示真实字色，不必等用户写了字、第一次合成写回之后。
+            ...(config.editorAutoTextColor && det.ink_color
+              ? {
+                  editorStyle: {
+                    color: det.ink_color,
+                    outlineColor: undefined,
+                    outlineWidth: undefined,
+                    colorSource: 'auto' as const,
+                  },
+                }
+              : {}),
         });
       }
     });

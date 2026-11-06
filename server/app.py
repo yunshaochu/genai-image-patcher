@@ -31,7 +31,8 @@ from flask import Flask, Response, jsonify, request, send_file
 from flask_cors import CORS
 
 import comic_text_seg
-from erase import erase_bubble_roi, erase_free_roi_floodfill
+from erase import (erase_bubble_roi, erase_free_roi_floodfill,
+                   measure_ink_color)
 from inference_rtdetr import CLASS_NAMES, ComicDetector, DetectionResult
 
 
@@ -232,6 +233,10 @@ def attach_text_masks(img, detections):
         det.text_mask = base64.b64encode(buf.tobytes()).decode('ascii')
         det.mask_origin = [int(ex1), int(ey1)]
         det.mask_size = [int(sub.shape[1]), int(sub.shape[0])]
+        # 整页 CTD 已经跑过：直接用这段掩码 + 原图 ROI 把墨色量好带回去，
+        # 前端就不必为了取色再单独打一次 /erase。
+        measured = measure_ink_color(img[ey1:ey2, ex1:ex2], sub)
+        det.ink_color = measured[0] if measured is not None else None
         kept.append(det)
 
     # ── 补框：孤儿掩码（ogkalu 漏检的文字）───────────────────────
@@ -258,6 +263,7 @@ def attach_text_masks(img, detections):
             ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
             if not ok:
                 continue
+            measured = measure_ink_color(img[y1:y2, x1:x2], sub)
             kept.append(DetectionResult(
                 bbox=[x1, y1, x2, y2],
                 class_id=1 if cls == 'text_bubble' else 2,
@@ -266,6 +272,7 @@ def attach_text_masks(img, detections):
                 text_mask=base64.b64encode(buf.tobytes()).decode('ascii'),
                 mask_origin=[x1, y1],
                 mask_size=[int(sub.shape[1]), int(sub.shape[0])],
+                ink_color=measured[0] if measured is not None else None,
             ))
             added += 1
 
@@ -473,9 +480,10 @@ def detect():
     参数：conf_threshold (默认0.5)、filter_classes（逗号分隔，可选）、
           with_masks（默认 true：挂 comic-text-detector 文字像素掩码并过滤误检）
     返回：{success, image_size, text_mask_info, detections:[...]}
-          每个文本检测项可能带 text_mask（base64 PNG，0/255 灰度）和
-          mask_origin（掩码裁剪区左上角在原图的坐标）。CTD 不可用时
-          text_mask_info.available=false，检测框原样返回。
+          每个文本检测项可能带 text_mask（base64 PNG，0/255 灰度）、
+          mask_origin（掩码裁剪区左上角在原图的坐标）和 ink_color（用这段
+          掩码从原图量出的原文墨色 '#rrggbb'，量不准时不出现）。
+          CTD 不可用时 text_mask_info.available=false，检测框原样返回。
     """
     try:
         det = init_model()
@@ -585,6 +593,18 @@ def erase():
                     text_mask = m > 127
             except Exception as e:
                 return json_error(f'invalid mask: {type(e).__name__}: {e}')
+
+        # 自动取色：前端没带掩码（旧会话的框 / 手画的框 / 检测时没开掩码）时，
+        # 后端自己对这段 ROI 跑一次 comic-text-detector 补掩码。实测单个小 ROI
+        # 直接推理同样取得准（见 erase.measure_ink_color）；只对带 want_ink 的
+        # 请求做，普通擦除不受影响、也不会变慢。
+        if text_mask is None and request.form.get('want_ink') in ('1', 'true', 'yes'):
+            try:
+                text_mask = comic_text_seg.detect_text_mask(img)
+            except Exception as e:
+                print(f'[text-seg] per-ROI ink mask failed: '
+                      f'{type(e).__name__}: {e}')
+                text_mask = None
 
         if kind == 'free':
             out, stats = erase_free_roi_floodfill(

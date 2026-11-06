@@ -310,6 +310,24 @@ export default function App() {
     setErrorMsg, refreshEditorPatches,
   ]);
 
+  // 自动取色 / 文字掩码开关切换后必须重建已嵌字贴图：贴图是栅格化好的位图，
+  // 只改配置不会自己重画，而取色结果还要写回 region.editorStyle（dock 色块）。
+  // 上面那个字体 effect 在「系统默认字体」时会直接 return，不能挂在那里。
+  // 用 ref 比较上一次的值，避免初次挂载 / StrictMode 双跑做无谓重建。
+  const inkSwitchRef = useRef<{ auto: boolean; mask: boolean } | null>(null);
+  useEffect(() => {
+    const cur = { auto: !!config.editorAutoTextColor,
+      mask: !!config.detectionTextMask };
+    const prev = inkSwitchRef.current;
+    inkSwitchRef.current = cur;
+    if (!prev || (prev.auto === cur.auto && prev.mask === cur.mask)) return;
+    if (!isEditorMode || !config.enableManualEditor) return;
+    void refreshEditorPatches();
+  }, [
+    config.editorAutoTextColor, config.detectionTextMask,
+    isEditorMode, config.enableManualEditor, refreshEditorPatches,
+  ]);
+
   // Whether the selected image has anything to show in the result view. The
   // result tab is always rendered (consistent tab set across images); this flag
   // only drives the "nothing generated yet" hint on top of it.

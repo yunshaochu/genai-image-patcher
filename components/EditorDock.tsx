@@ -2254,8 +2254,9 @@ const EditorDock: React.FC<EditorDockProps> = ({
         )}
 
         {/* Text colour: auto (AI-chosen / measured ink) or manual override.
-            The outline auto-derives as the opposite colour and its width
-            scales with the resolved font size.
+            The outline auto-derives as the opposite colour (white for black /
+            dark text) and its width scales with the resolved font size —
+            including default black text, which no longer renders bare.
             手动选的会打上 colorSource 'manual' —— 开启「自动取色」时，擦除量到的
             实测墨色只会覆盖非 manual 的值，所以这里点过的颜色钉得住。 */}
         <div className="space-y-1.5">

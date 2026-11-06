@@ -314,12 +314,17 @@ export const eraseRegionRoi = async (
     /** 被气泡框包住的文字按「泡内」处理（见 findCoveringBubbleBox）。 */
     contextBubbles?: Region[];
     pythonBackendUrl?: string;
-    /** 「文字掩码精准擦除」开关（AppConfig.detectionTextMask）：**关闭时即使框上
-     *  存着检测阶段的掩码也绝不发给后端**，擦除完全走洞检测。默认 false = 不用掩码。 */
+    /** 文字掩码开关：精准擦除（detectionTextMask）或「自动取色」开启时由调用方
+     *  传 true —— 墨色只在 comic-text-detector 掩码里量。关着时即使框上存着
+     *  检测阶段的掩码也绝不发给后端，擦除完全走洞检测。默认 false。 */
     useTextMask?: boolean;
+    /** 这一趟是为了自动取色（后端据此在缺掩码时自跑 CTD 补掩码）。翻译前的
+     *  批量预擦除不需要取色，别让它多花一次模型推理。 */
+    wantInk?: boolean;
   }
 ): Promise<ErasedRoi> => {
-  const { imgW, imgH, contextBubbles, pythonBackendUrl, useTextMask = false } = options;
+  const { imgW, imgH, contextBubbles, pythonBackendUrl,
+    useTextMask = false, wantInk = false } = options;
   // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
   // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
   // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
@@ -373,8 +378,31 @@ export const eraseRegionRoi = async (
     dilate: ERASE_DILATE,
     inpaintRadius: ERASE_INPAINT_RADIUS,
     maskPng,
+    wantInk,
   });
   return { canvas, roi, stats: outcome.stats };
+};
+
+/** 只量墨色、不改画面：给「检测没给色、也没走过擦除」的框做后台补色。
+ *  复用 eraseRegionRoi 的 ROI / 掩码对齐逻辑，结果 canvas 直接丢弃。
+ *  后端不在线或量不出来时返回 undefined，调用方保持黑字白边。 */
+export const measureRegionInk = async (
+  source: CanvasImageSource,
+  region: Region,
+  options: {
+    imgW: number;
+    imgH: number;
+    contextBubbles?: Region[];
+    pythonBackendUrl?: string;
+    useTextMask?: boolean;
+  }
+): Promise<string | undefined> => {
+  if (!options.pythonBackendUrl) return undefined;
+  const { stats } = await eraseRegionRoi(source, region, {
+    ...options,
+    wantInk: true,
+  });
+  return stats?.textColor;
 };
 
 /**
@@ -783,7 +811,9 @@ export const compositeRegionPatch = async (
     // The base token keeps erased-ROI caches from crossing bases: a region
     // erased on the ORIGINAL pixels must not reuse that cache once it is
     // composited onto an AI-redrawn bubble (aiBubbleBase), and vice versa.
-    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}|mask${useTextMask ? 1 : 0}`;
+    // ink2 = 取色算法版本：换了取样域/聚类逻辑后，缓存和持久层里旧的错色
+    // （被白描边稀释成淡粉/淡红的那些）必须全部作废，不能继续复用。
+    const key = `${regionGeomKey(region)}|${roi.x},${roi.y},${roi.w},${roi.h}|${region.aiBubbleBase ? 'ai' : 'orig'}|mask${useTextMask ? 1 : 0}|ink2`;
     let entry = erasedCache.get(region.id);
     if (!entry || entry.geomKey !== key) {
       // 持久层优先：同一几何上次会话已经擦过（图库是恢复出来的，几何一模一样），
@@ -803,6 +833,8 @@ export const compositeRegionPatch = async (
           contextBubbles,
           pythonBackendUrl,
           useTextMask,
+          // 自动取色开着时，即使本框没有检测掩码也让后端自己补一份。
+          wantInk: !!autoTextColor,
         });
         // 编码成 WebP（见 ERASE_IMAGE_TYPE）：这份 ROI 只算一次、之后被反复重画，
         // 但只会被编码这一次，所以有损编码不会累积；PNG 的编码耗时和落盘体积都不划算。
@@ -847,12 +879,13 @@ export const compositeRegionPatch = async (
   }
   onStage?.('erase');
 
-  // 自动取色：开关打开、并且本框字色不是用户手动钉住的（colorSource
-  // 'manual' → dock 黑字/白字、原图吸管）时，用实测墨色取代 AI 猜的「黑/白」。
-  // 量不出来（文字像素太少 / 旧后端 / 离线且本地也没找到字）就什么都不改。
+  // 自动取色：检测阶段量到的墨色（Region.inkColor）直接用；旧会话走擦除
+  // 响应头。**取色不阻塞合成** —— 检测没给色、又没擦除过的框由 useMangaEditor
+  // 在首帧（黑字白边）出图后放到后台补色，拿到结果再重建这一格，避免用户
+  // 盯着空白等 /erase 返回。
   const measuredColor =
-    autoTextColor && region.editorStyle?.colorSource !== 'manual'
-      ? erased?.textColor ?? undefined
+    autoTextColor && pythonBackendUrl && region.editorStyle?.colorSource !== 'manual'
+      ? region.inkColor ?? erased?.textColor ?? undefined
       : undefined;
   const styleAfterMeasure = measuredColor
     ? { ...region.editorStyle, color: measuredColor, outlineColor: undefined, outlineWidth: undefined }

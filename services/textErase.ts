@@ -34,9 +34,9 @@
  *    the surrounding colours instead of stamping one flat block.
  *    A final residue pass catches faint stroke remnants near the filled area.
  *
- * 6. 取色（可选，见 EraseStats）：文字掩码本身就是「与底色差异大」的像素，
- *    也就是墨。量它们的颜色几乎不额外花时间，编辑器「自动取色」用它替代视觉
- *    模型猜的「黑/白」。后端版走响应头，本文件的兜底版用掩码均值。
+ * 6. 取色（可选，见 EraseStats）：本文件的本地算法用掩码均值量色，**只**服务于
+ *    「批量吸管」（App.tsx 的 measureOnly）。编辑器「自动取色」不认它 —— 只用
+ *    后端 /erase 响应头里、由 comic-text-detector 掩码量出的墨色。
  *
  * Works on a region crop canvas in place. Crops are small (text boxes), so
  * the O(n) pixel loops are fast enough for interactive use.
@@ -62,6 +62,9 @@ interface EraseOptions {
    * 路径使用——后端把它与洞检测结果取并集；本地兜底算法忽略它。
    */
   maskPng?: string;
+  /** 自动取色：告诉后端这段 ROI 需要返回墨色 —— 没带 maskPng 时后端会自己
+   *  跑 comic-text-detector 补掩码。只有 Python 后端路径认它，本地兜底忽略。 */
+  wantInk?: boolean;
 }
 
 const DEFAULT_TOLERANCE = 40;
@@ -72,11 +75,11 @@ const DEFAULT_INPAINT_RADIUS = 7;
 export type EraseKind = 'bubble' | 'free';
 
 /**
- * 擦除时顺手量到的原文取色结果（「自动取色」用它替代视觉模型猜黑/白）。
+ * 擦除时量到的原文取色结果。
  *
- * 墨色之所以能量出来，是因为擦除本来就算出了「与底色差异大」的文字掩码 ——
- * 那些像素就是墨。后端 /erase 把这些值放在响应头里（body 保持 image/png
- * 二进制）；后端不在线时本地算法用自己分量统计的均值顶上。
+ * textColor 只有后端 /erase 会返回（响应头，body 保持 image/png 二进制）：
+ * 后端用 comic-text-detector 掩码圈出笔画再聚类取色。「自动取色」只认这个值；
+ * 本地兜底算法不返回 textColor，后端不在线时自动取色直接失效、沿用原字色。
  */
 export interface EraseStats {
   /** 文字主色 '#rrggbb'。 */
@@ -121,6 +124,7 @@ export const eraseTextInCanvasViaBackend = async (
   if (options.maskPng) {
     form.append('mask', options.maskPng);
   }
+  if (options.wantInk) form.append('want_ink', '1');
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -177,7 +181,12 @@ export const eraseTextInCanvasAuto = async (
     if (res.ok) return res;
     console.warn('Backend erasure unavailable, falling back to local algorithm');
   }
-  return { ok: true, stats: eraseTextInCanvas(canvas, { ...options, kind }) ?? undefined };
+  // 自动取色只认后端量出来的墨色（后端用 comic-text-detector 掩码取样）。
+  // 本地兜底只负责把画面擦干净，它的统计值只服务于「批量吸管」（App.tsx 直接
+  // 调 eraseTextInCanvas 的 measureOnly），绝不喂给合成器 —— 否则后端一掉线
+  // 就把嵌字涂成被描边稀释的淡色。
+  eraseTextInCanvas(canvas, { ...options, kind });
+  return { ok: true };
 };
 
 /**

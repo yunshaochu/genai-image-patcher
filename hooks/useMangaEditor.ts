@@ -5,6 +5,7 @@ import { translateEditorRegions } from '../services/editorTranslate';
 import { PageTerm } from '../services/glossaryBook';
 import {
   compositeRegionPatch,
+  measureRegionInk,
   regionNeedsComposite,
   findCoveringCompletedBubble,
   findContainedTextRegions,
@@ -264,6 +265,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
   const compositingRef = useRef<Set<string>>(new Set());
   /** Key → when its last composite STARTED (drives the leading-edge rule). */
   const compositedAtRef = useRef<Map<string, number>>(new Map());
+  /** 后台补色已经排队过的 `imageId|regionId|几何` —— 首帧用黑字白边出图后，
+   *  同一几何只打一次 /erase，避免每次重绘都重复请求。 */
+  const inkFetchRef = useRef<Set<string>>(new Set());
 
   // Release all cached erased bases on unmount.
   useEffect(() => {
@@ -408,7 +412,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         configRef.current.editorAutoTextColor,
         onStage,
         buildErasePersist(imageId, !!img.appliedAsOriginal),
-        !!configRef.current.detectionTextMask
+        !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor)
       );
       const url = result?.url ?? null;
       // 自动取色量到的墨色写回区域：本版贴图已经用它画过了（合成器先擦除再
@@ -494,6 +498,55 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
           return r;
         }),
       }));
+
+      // 首帧已经用黑字白边出图了。检测没给色、又没走过擦除的框（手画框 / 旧
+      // 会话）在后台补一次取色：拿到墨色再写回样式并重建这一格，期间文字
+      // 立即可见，只有颜色会稍后跳变一次，不再让用户盯着空白等 /erase。
+      const inkCfg = configRef.current;
+      const hasMeasuredInk = region.editorStyle?.colorSource === 'auto'
+        && !!region.editorStyle.color
+        && region.editorStyle.color !== '#000000'
+        && region.editorStyle.color !== '#ffffff';
+      if (inkCfg.editorAutoTextColor && inkCfg.pythonBackendUrl
+          && !region.inkColor && !region.editorErased && !hasMeasuredInk
+          && region.editorStyle?.colorSource !== 'manual') {
+        const geom = `${region.x},${region.y},${region.width},${region.height}`;
+        const inkKey = `${imageId}|${regionId}|${geom}`;
+        if (!inkFetchRef.current.has(inkKey)) {
+          inkFetchRef.current.add(inkKey);
+          const imgW = imageEl instanceof HTMLImageElement
+            ? imageEl.naturalWidth : imageEl.width;
+          const imgH = imageEl instanceof HTMLImageElement
+            ? imageEl.naturalHeight : imageEl.height;
+          void (async () => {
+            try {
+              const color = await measureRegionInk(imageEl, region, {
+                imgW, imgH,
+                contextBubbles: getContextBubbles(img),
+                pythonBackendUrl: inkCfg.pythonBackendUrl,
+                useTextMask: !!(inkCfg.detectionTextMask || inkCfg.editorAutoTextColor),
+              });
+              if (!color) return;
+              // 取色回来时框可能已被删 / 拖动 / 改成手动色 / 开关被关掉。
+              const cur = getImage(imageId)?.regions.find(r => r.id === regionId);
+              if (!cur || !configRef.current.editorAutoTextColor
+                  || cur.editorStyle?.colorSource === 'manual'
+                  || `${cur.x},${cur.y},${cur.width},${cur.height}` !== geom) return;
+              updateEditorRegion(imageId, regionId, {
+                editorStyle: {
+                  ...cur.editorStyle,
+                  color,
+                  outlineColor: undefined,
+                  outlineWidth: undefined,
+                  colorSource: 'auto' as const,
+                },
+              }, { debounceMs: 0 });
+            } catch {
+              // 量不到就保持黑字白边，不打断编辑。
+            }
+          })();
+        }
+      }
 
       // --- timing: state written → ~first painted frame ---------------------
       // Two rAFs ≈ React commit + the browser decoding the new patch blob and
@@ -999,7 +1052,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
             imgH: imageEl.naturalHeight,
             contextBubbles: getContextBubbles(img),
             pythonBackendUrl: configRef.current.pythonBackendUrl,
-            useTextMask: !!configRef.current.detectionTextMask,
+            useTextMask: !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor),
             signal,
           });
         } catch (e) {
@@ -1038,6 +1091,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         // and outlineWidth stays unset so the layout engine auto-sizes it
         // from the resolved font size.
         const textColor = res.color === 'white' ? '#ffffff' : res.color === 'black' ? '#000000' : undefined;
+        // 检测阶段已经量到真实墨色、自动取色又开着时，别让模型「黑/白」的
+        // 粗判把样式冲掉 —— 否则 dock 色块会在翻译之后突然变回黑色。
+        const hasDetectedInk = configRef.current.editorAutoTextColor && !!r.inkColor;
         // 字体自动识别：res.font 为具体字体 id 时覆盖本框字体；空串是「常规
         // 印刷体」——不覆盖，让该框继续跟随全局「编辑器字体」。
         const aiFontStack = res.font ? editorFontStack(res.font) : undefined;
@@ -1045,9 +1101,9 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         const style: Region['editorStyle'] = {
           ...r.editorStyle,
           ...(res.vertical === undefined ? {} : { isVertical: res.vertical }),
-          // colorSource 'auto'：这是模型看图猜的粗判（黑/白）。开着自动取色时
-          // 擦除量到的实测墨色会覆盖它；用户手动选过的（'manual'）不会被覆盖。
-          ...(textColor
+          // colorSource 'auto'：这是模型看图猜的粗判（黑/白）。用户手动选过的
+          // （'manual'）不会被覆盖。
+          ...(textColor && !hasDetectedInk
             ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000', colorSource: 'auto' as const }
             : {}),
           ...(aiFontStack ? { fontFamily: aiFontStack } : {}),
@@ -1853,7 +1909,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       undefined,
       undefined,
       buildErasePersist(imageId, !!img.appliedAsOriginal),
-      !!configRef.current.detectionTextMask
+      !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor)
     );
     return result?.url ?? null;
   }, [getImage, buildErasePersist]);
@@ -1876,6 +1932,8 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
     editStampRef.current.clear();
     compositingRef.current.clear();
     compositedAtRef.current.clear();
+    // 清缓存后允许重新后台取色（否则旧 key 会让这格一直保持旧色）。
+    inkFetchRef.current.clear();
     aiBaseRebasedRef.current.clear();
     erasedBaseCompositedRef.current.clear();
     setComputedFontSizes(prev => (Object.keys(prev).length === 0 ? prev : {}));

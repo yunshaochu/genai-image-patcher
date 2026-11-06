@@ -32,6 +32,9 @@ class DetectionResult:
     text_mask: Optional[str] = None
     mask_origin: Optional[List[int]] = None
     mask_size: Optional[List[int]] = None
+    # 检测阶段顺手量到的原文墨色 '#rrggbb'：整页 CTD 掩码和原图都在手边，
+    # 不必等擦除时再单独打一次 /erase 取色。量不准时为 None。
+    ink_color: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -50,6 +53,8 @@ class DetectionResult:
             d['text_mask'] = self.text_mask
             d['mask_origin'] = self.mask_origin
             d['mask_size'] = self.mask_size
+        if self.ink_color is not None:
+            d['ink_color'] = self.ink_color
         return d
 
 

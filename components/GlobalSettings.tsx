@@ -53,16 +53,18 @@ const LANGUAGES: { id: Language; label: string }[] = [
 
 
 
-const Toggle: React.FC<{ checked: boolean; onChange: (value: boolean) => void; size?: 'md' | 'sm' }> = ({
+const Toggle: React.FC<{ checked: boolean; onChange: (value: boolean) => void; size?: 'md' | 'sm'; disabled?: boolean }> = ({
     checked,
     onChange,
     size = 'md',
+    disabled = false,
 }) => (
-    <label className="relative inline-flex items-center cursor-pointer">
+    <label className={`relative inline-flex items-center ${disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
         <input
             type="checkbox"
             className="sr-only peer"
             checked={checked}
+            disabled={disabled}
             onChange={(e) => onChange(e.target.checked)}
         />
         <div
@@ -409,7 +411,7 @@ const GlobalSettings: React.FC<GlobalSettingsProps> = ({
                                             <SubRow
                                                 title={t(lang, 'editorAutoTextColor')}
                                                 help={t(lang, 'editorAutoTextColorDesc')}
-                                                control={<Toggle size="sm" checked={config.editorAutoTextColor} onChange={(v) => updateConfig('editorAutoTextColor', v)} />}
+                                                control={<Toggle size="sm" checked={config.editorAutoTextColor} disabled={!config.pythonBackendUrl} onChange={(v) => updateConfig('editorAutoTextColor', v)} />}
                                             />
                                         )}
                                     </OffDim>
