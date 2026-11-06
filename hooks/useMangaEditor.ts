@@ -1091,9 +1091,18 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         // and outlineWidth stays unset so the layout engine auto-sizes it
         // from the resolved font size.
         const textColor = res.color === 'white' ? '#ffffff' : res.color === 'black' ? '#000000' : undefined;
-        // 检测阶段已经量到真实墨色、自动取色又开着时，别让模型「黑/白」的
-        // 粗判把样式冲掉 —— 否则 dock 色块会在翻译之后突然变回黑色。
-        const hasDetectedInk = configRef.current.editorAutoTextColor && !!r.inkColor;
+        // AI 的黑白粗判是优先级最低的一档：手动钉住的色、检测阶段量到的墨色、
+        // 以及后台补色已经写回的实测色都不许被它冲掉（否则翻译一次色块就变回
+        // 黑）。自动取色关着、或确实没量到色时，才让这档粗判作回落。
+        const styleColor = r.editorStyle?.color;
+        const pinnedByHand = r.editorStyle?.colorSource === 'manual';
+        const hasMeasuredInk = configRef.current.editorAutoTextColor && (
+          !!r.inkColor
+          || (r.editorStyle?.colorSource === 'auto'
+              && !!styleColor
+              && styleColor !== '#000000'
+              && styleColor !== '#ffffff')
+        );
         // 字体自动识别：res.font 为具体字体 id 时覆盖本框字体；空串是「常规
         // 印刷体」——不覆盖，让该框继续跟随全局「编辑器字体」。
         const aiFontStack = res.font ? editorFontStack(res.font) : undefined;
@@ -1101,9 +1110,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         const style: Region['editorStyle'] = {
           ...r.editorStyle,
           ...(res.vertical === undefined ? {} : { isVertical: res.vertical }),
-          // colorSource 'auto'：这是模型看图猜的粗判（黑/白）。用户手动选过的
-          // （'manual'）不会被覆盖。
-          ...(textColor && !hasDetectedInk
+          ...(textColor && !pinnedByHand && !hasMeasuredInk
             ? { color: textColor, outlineColor: textColor === '#000000' ? '#ffffff' : '#000000', colorSource: 'auto' as const }
             : {}),
           ...(aiFontStack ? { fontFamily: aiFontStack } : {}),
