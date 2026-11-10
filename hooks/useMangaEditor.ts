@@ -412,7 +412,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
         configRef.current.editorAutoTextColor,
         onStage,
         buildErasePersist(imageId, !!img.appliedAsOriginal),
-        !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor)
+        !!configRef.current.detectionTextMask
       );
       const url = result?.url ?? null;
       // 自动取色量到的墨色写回区域：本版贴图已经用它画过了（合成器先擦除再
@@ -524,7 +524,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
                 imgW, imgH,
                 contextBubbles: getContextBubbles(img),
                 pythonBackendUrl: inkCfg.pythonBackendUrl,
-                useTextMask: !!(inkCfg.detectionTextMask || inkCfg.editorAutoTextColor),
+                useTextMask: !!inkCfg.detectionTextMask,
               });
               if (!color) return;
               // 取色回来时框可能已被删 / 拖动 / 改成手动色 / 开关被关掉。
@@ -1052,7 +1052,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
             imgH: imageEl.naturalHeight,
             contextBubbles: getContextBubbles(img),
             pythonBackendUrl: configRef.current.pythonBackendUrl,
-            useTextMask: !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor),
+            useTextMask: !!configRef.current.detectionTextMask,
             signal,
           });
         } catch (e) {
@@ -1916,7 +1916,7 @@ export function useMangaEditor({ images, updateImage, config, setErrorMsg, onPag
       undefined,
       undefined,
       buildErasePersist(imageId, !!img.appliedAsOriginal),
-      !!(configRef.current.detectionTextMask || configRef.current.editorAutoTextColor)
+      !!configRef.current.detectionTextMask
     );
     return result?.url ?? null;
   }, [getImage, buildErasePersist]);

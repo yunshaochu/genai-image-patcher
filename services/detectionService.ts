@@ -190,9 +190,10 @@ export const detectBubbles = async (
     // are the editable text areas; bubble = 整颗气泡, kept as context-only
     // markers (reserved for later use, e.g. per-bubble styling).
     formData.append('filter_classes', 'bubble,text_bubble,text_free');
-    // 文字掩码：精准擦除或「自动取色」都需要它 —— 墨色只在模型掩码里量，
-    // 所以开着自动取色时即使没开精准擦除也必须带上掩码（首次会触发后端加载
-    // ~90MB 分割模型，检测变慢）。必须显式传 false——后端默认值为 true。
+    // 文字掩码：精准擦除要它来擦，自动取色要它来量墨色，所以两者任一开着都
+    // 要在检测阶段拿掩码。注意「拿到掩码」不等于「用它擦」：擦除是否用掩码
+    // 只由 detectionTextMask 决定（见 eraseRegionRoi）。必须显式传 false——
+    // 后端默认值为 true。
     formData.append('with_masks', String(!!(config.detectionTextMask || config.editorAutoTextColor)));
 
     // 3. Send Request

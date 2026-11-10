@@ -577,7 +577,8 @@ def erase():
         if img.shape[0] < 4 or img.shape[1] < 4:
             return json_error('Image too small')
 
-        # 可选的外部文字掩码（comic-text-detector）：与洞检测结果取并集
+        # 可选的外部文字掩码（comic-text-detector）：与洞检测结果取并集。
+        # 只有「文字掩码精准擦除」开着时前端才会发这个字段。
         text_mask = None
         mask_b64 = request.form.get('mask')
         if mask_b64:
@@ -594,24 +595,40 @@ def erase():
             except Exception as e:
                 return json_error(f'invalid mask: {type(e).__name__}: {e}')
 
-        # 自动取色：前端没带掩码（旧会话的框 / 手画的框 / 检测时没开掩码）时，
-        # 后端自己对这段 ROI 跑一次 comic-text-detector 补掩码。实测单个小 ROI
-        # 直接推理同样取得准（见 erase.measure_ink_color）；只对带 want_ink 的
-        # 请求做，普通擦除不受影响、也不会变慢。
-        if text_mask is None and request.form.get('want_ink') in ('1', 'true', 'yes'):
+        # 取色专用掩码：关闭「文字掩码精准擦除」时擦除不能用它，但自动取色
+        # 仍需要模型轮廓圈笔画（前端把同一份掩码发到 ink_mask）。解析失败就
+        # 当没有 —— 取色是增强功能，不能把擦除绊倒。
+        ink_mask = None
+        ink_b64 = request.form.get('ink_mask')
+        if ink_b64:
             try:
-                text_mask = comic_text_seg.detect_text_mask(img)
+                ibuf = np.frombuffer(base64.b64decode(ink_b64), np.uint8)
+                im = cv2.imdecode(ibuf, cv2.IMREAD_GRAYSCALE)
+                if im is not None and im.shape == img.shape[:2] and im.any():
+                    ink_mask = im > 127
+            except Exception as e:
+                print(f'[erase] invalid ink_mask ignored: '
+                      f'{type(e).__name__}: {e}')
+
+        # 自动取色：连取色掩码都没有（旧会话的框 / 手画的框）时，后端自己对
+        # 这段 ROI 跑一次 comic-text-detector。只对 want_ink 请求做；**结果只
+        # 用于取色**，绝不并进擦除掩码。
+        if ink_mask is None and request.form.get('want_ink') in ('1', 'true', 'yes'):
+            try:
+                ink_mask = comic_text_seg.detect_text_mask(img)
             except Exception as e:
                 print(f'[text-seg] per-ROI ink mask failed: '
                       f'{type(e).__name__}: {e}')
-                text_mask = None
+                ink_mask = None
 
         if kind == 'free':
             out, stats = erase_free_roi_floodfill(
-                img.copy(), dilate, inpaint_radius, text_mask=text_mask)
+                img.copy(), dilate, inpaint_radius,
+                text_mask=text_mask, ink_mask=ink_mask)
         else:
             out, stats = erase_bubble_roi(
-                img.copy(), dilate, inpaint_radius, text_mask=text_mask)
+                img.copy(), dilate, inpaint_radius,
+                text_mask=text_mask, ink_mask=ink_mask)
 
         ok, buf = cv2.imencode('.png', out)
         if not ok:

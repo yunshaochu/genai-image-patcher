@@ -314,9 +314,10 @@ export const eraseRegionRoi = async (
     /** 被气泡框包住的文字按「泡内」处理（见 findCoveringBubbleBox）。 */
     contextBubbles?: Region[];
     pythonBackendUrl?: string;
-    /** 文字掩码开关：精准擦除（detectionTextMask）或「自动取色」开启时由调用方
-     *  传 true —— 墨色只在 comic-text-detector 掩码里量。关着时即使框上存着
-     *  检测阶段的掩码也绝不发给后端，擦除完全走洞检测。默认 false。 */
+    /** **擦除**是否使用文字掩码，只由「文字掩码精准擦除」（detectionTextMask）
+     *  决定。关着时即使框上存着检测阶段的掩码也绝不作为擦除掩码发给后端，
+     *  擦除完全走洞检测；自动取色要的那份掩码走 `wantInk` / `ink_mask`，
+     *  两者互不影响。默认 false。 */
     useTextMask?: boolean;
     /** 这一趟是为了自动取色（后端据此在缺掩码时自跑 CTD 补掩码）。翻译前的
      *  批量预擦除不需要取色，别让它多花一次模型推理。 */
@@ -341,15 +342,20 @@ export const eraseRegionRoi = async (
   if (!ctx) throw new Error('Could not get canvas context');
   ctx.drawImage(source, roi.x, roi.y, roi.w, roi.h, 0, 0, roi.w, roi.h);
 
-  // 文字掩码精准擦除：把整页百分比坐标的掩码 PNG 裁剪/缩放到 ROI 坐标系。
-  // 检测上传的图可能被缩放过，所以 Region.textMask.rect 存的是百分比；
+  // 掩码要分清两种用途，绝不能混：
+  //  - maskPng    擦除用，只由「文字掩码精准擦除」开关决定（关着就绝不发）；
+  //  - inkMaskPng 取色用，自动取色需要模型轮廓圈笔画，但**不参与擦除**。
+  // 内容同一份（把整页百分比坐标的掩码 PNG 裁剪/缩放到 ROI 坐标系），裁一次
+  // 按用途落到不同字段。检测上传的图可能被缩放过，所以存的是百分比；
   // drawImage 的自动缩放正好消化掉检测图与原图的分辨率差。
   let maskPng: string | undefined;
-  // 开关关着 → 丢弃已有掩码，绝不随 /erase 发出去（洞检测照常工作）。
-  const tm = useTextMask ? region.textMask : undefined;
-  if (tm && pythonBackendUrl) {
+  let inkMaskPng: string | undefined;
+  const eraseMask = useTextMask ? region.textMask : undefined;
+  const inkMask = wantInk && !useTextMask ? region.textMask : undefined;
+  const tmToCrop = eraseMask ?? inkMask;
+  if (tmToCrop && pythonBackendUrl) {
     try {
-      const bmp = await maskBitmap(tm.png);
+      const bmp = await maskBitmap(tmToCrop.png);
       if (bmp) {
         const mcanvas = document.createElement('canvas');
         mcanvas.width = roi.w;
@@ -358,12 +364,14 @@ export const eraseRegionRoi = async (
         if (mctx) {
           mctx.drawImage(
             bmp,
-            (tm.rect.x / 100) * imgW - roi.x,
-            (tm.rect.y / 100) * imgH - roi.y,
-            Math.max(1, (tm.rect.w / 100) * imgW),
-            Math.max(1, (tm.rect.h / 100) * imgH)
+            (tmToCrop.rect.x / 100) * imgW - roi.x,
+            (tmToCrop.rect.y / 100) * imgH - roi.y,
+            Math.max(1, (tmToCrop.rect.w / 100) * imgW),
+            Math.max(1, (tmToCrop.rect.h / 100) * imgH)
           );
-          maskPng = mcanvas.toDataURL('image/png').split(',')[1] || undefined;
+          const png = mcanvas.toDataURL('image/png').split(',')[1] || undefined;
+          if (eraseMask) maskPng = png;
+          if (inkMask) inkMaskPng = png;
         }
         bmp.close();
       }
@@ -378,6 +386,7 @@ export const eraseRegionRoi = async (
     dilate: ERASE_DILATE,
     inpaintRadius: ERASE_INPAINT_RADIUS,
     maskPng,
+    inkMaskPng,
     wantInk,
   });
   return { canvas, roi, stats: outcome.stats };
