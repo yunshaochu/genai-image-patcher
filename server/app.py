@@ -33,7 +33,7 @@ from flask_cors import CORS
 import comic_text_seg
 from erase import (erase_bubble_roi, erase_free_roi_floodfill,
                    measure_ink_color)
-from inference_rtdetr import CLASS_NAMES, ComicDetector, DetectionResult
+from inference_rtdetr import CLASS_NAMES, ComicDetector
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -107,16 +107,9 @@ def allowed_file(filename):
 # 导致整框被误判成"掩码为空 → 误检"丢弃
 _MASK_BOX_PAD = 4
 _MASK_TEXT_CLASSES = ('text_bubble', 'text_free')
-# 补框：孤儿掩码连通域的最小像素数（低于此视为 CTD 幻觉噪点）
-_ORPHAN_MIN_AREA = 50
-# 孤儿掩码聚合半径：同一行/列的文字字符互相离得近，先膨胀再取连通域，
-# 免得一个文本行被拆成一堆单字小框
-_ORPHAN_GROUP_RADIUS = 10
-# 补出来的框没有检测器置信度可言，给个固定值。给 1.0 而不是 0.5：这些框是
-# comic-text-detector 逐像素指认出的文字（ogkalu 漏检），证据等级高于检测器的
-# 打分框，不该被前端的「置信度过滤」滑杆抹掉 —— 那会把「开掩码更准」的收益
-# 反向抵消（用户把阈值调到 0.5 以上时，补框恰恰是最不该消失的那批）。
-_ORPHAN_CONFIDENCE = 1.0
+# 掩码连通域的最小像素数（低于此视为 CTD 幻觉噪点）。现在只服务嵌套仲裁：
+# 「外层框里几乎没剩下独占掩码（< 这个数）→ 外层是冗余的分组框，删外层」。
+_MASK_MIN_BLOB_AREA = 50
 
 
 def _resolve_nested_text_boxes(detections, mask):
@@ -172,7 +165,7 @@ def _resolve_nested_text_boxes(detections, mask):
         exclusive = outer_m & ~inner_union
         # 独占掩码几乎为零 → 外层冗余，删外层（内层已覆盖全部文字）；
         # 否则外层是唯一完整的文字区域，内层是碎片，删内层
-        if exclusive.sum() < max(_ORPHAN_MIN_AREA, 0.2 * outer_m.sum()):
+        if exclusive.sum() < max(_MASK_MIN_BLOB_AREA, 0.2 * outer_m.sum()):
             drop_ids.add(id(outer))
         else:
             drop_ids.update(id(d) for d in inners)
@@ -191,9 +184,12 @@ def attach_text_masks(img, detections):
     检测项上；框内一个掩码像素都没有 → 与模型分割结果互相矛盾，大概率是
     RT-DETR 误检，直接丢弃。
 
-    反向补框：不落在任何文本框内的掩码连通域 = ogkalu 漏检的文字（双向过滤
-    的另一半），按掩码形状补一个框返回，掩码直接现成。类别猜测：质心落在
-    ogkalu 的 bubble 框里 → text_bubble，否则 text_free。
+    **只做过滤，不做补框**：不落在任何文本框内的掩码连通域一律忽略。历史上这里
+    还会「孤儿掩码补框」（按掩码形状给 ogkalu 漏检的文字补一个检测框），但实际用
+    下来弊大于利 —— 补出来的是 CTD 的掩码块而不是语义框，网点 / 线条 / 签名都被
+    切成小框，而且它们没有检测器分数（曾写死 1.0），前端的「置信度过滤」根本筛不
+    掉。要更细的文字掩码请用「文字掩码精准擦除」（擦除时并进洞检测），不要指望它
+    变成可以编辑的文本框。
 
     CTD 不可用（模型未下载完/加载失败/推理异常）时静默降级：原样返回检测框，
     text_mask_available=False，前端擦除走后端启发式，功能不受影响。
@@ -213,7 +209,6 @@ def attach_text_masks(img, detections):
     kept = []
     dropped = 0
     h, w = img.shape[:2]
-    claimed = np.zeros_like(mask)
     for det in detections:
         if det.class_name not in _MASK_TEXT_CLASSES:
             kept.append(det)
@@ -225,7 +220,6 @@ def attach_text_masks(img, detections):
         if not sub.any():
             dropped += 1
             continue
-        claimed[ey1:ey2, ex1:ex2] |= sub
         ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
         if not ok:
             kept.append(det)
@@ -239,47 +233,9 @@ def attach_text_masks(img, detections):
         det.ink_color = measured[0] if measured is not None else None
         kept.append(det)
 
-    # ── 补框：孤儿掩码（ogkalu 漏检的文字）───────────────────────
-    added = 0
-    orphan = mask & ~claimed
-    if orphan.any():
-        grouped = cv2.dilate(orphan.astype(np.uint8), np.ones(
-            (_ORPHAN_GROUP_RADIUS * 2 + 1,) * 2, np.uint8), iterations=1)
-        num, labels = cv2.connectedComponents(grouped, connectivity=8)
-        bubble_boxes = [d.bbox for d in detections if d.class_name == 'bubble']
-        for i in range(1, num):
-            comp = orphan & (labels == i)
-            px = int(comp.sum())
-            if px < _ORPHAN_MIN_AREA:
-                continue
-            ys, xs = np.where(comp)
-            x1, y1 = int(xs.min()), int(ys.min())
-            x2, y2 = int(xs.max()) + 1, int(ys.max()) + 1
-            cy, cx = (y1 + y2) / 2, (x1 + x2) / 2
-            in_bubble = any(bx1 <= cx <= bx2 and by1 <= cy <= by2
-                            for bx1, by1, bx2, by2 in bubble_boxes)
-            cls = 'text_bubble' if in_bubble else 'text_free'
-            sub = comp[y1:y2, x1:x2]
-            ok, buf = cv2.imencode('.png', sub.astype(np.uint8) * 255)
-            if not ok:
-                continue
-            measured = measure_ink_color(img[y1:y2, x1:x2], sub)
-            kept.append(DetectionResult(
-                bbox=[x1, y1, x2, y2],
-                class_id=1 if cls == 'text_bubble' else 2,
-                class_name=cls,
-                confidence=_ORPHAN_CONFIDENCE,
-                text_mask=base64.b64encode(buf.tobytes()).decode('ascii'),
-                mask_origin=[x1, y1],
-                mask_size=[int(sub.shape[1]), int(sub.shape[0])],
-                ink_color=measured[0] if measured is not None else None,
-            ))
-            added += 1
-
     info.update({
         'available': True,
         'dropped_empty_mask': dropped,
-        'added_from_mask': added,
         'elapsed_ms': round((time.time() - t0) * 1000, 1),
     })
     detections[:] = kept
