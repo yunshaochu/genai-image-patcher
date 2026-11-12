@@ -54,6 +54,9 @@ interface EraseOptions {
   /**
    * 只量色、不擦除：算完文字掩码的统计值立刻返回，跳过 inpaint / 残留清理
    * 这些纯为了"输出干净图"的步骤。批量吸管取色用它 —— 它只要墨色，不需要画面。
+   *
+   * 后端路径还把它当「允许自跑 comic-text-detector 补掩码」的许可证（见
+   * 编辑器自动取色的后台补色，mangaEditor.measureRegionInk）。
    */
   measureOnly?: boolean;
   /**
@@ -62,8 +65,9 @@ interface EraseOptions {
    * 路径使用——后端把它与洞检测结果取并集；本地兜底算法忽略它。
    */
   maskPng?: string;
-  /** 自动取色：告诉后端这段 ROI 需要返回墨色 —— 没带 maskPng 时后端会自己
-   *  跑 comic-text-detector 补掩码。只有 Python 后端路径认它，本地兜底忽略。 */
+  /** 自动取色：告诉后端这段 ROI 需要返回墨色（有 maskPng / inkMaskPng 时才量得
+   *  出来）。**不许诺后端替你跑模型** —— 补推理只由 measureOnly 触发。只有
+   *  Python 后端路径认它，本地兜底忽略。 */
   wantInk?: boolean;
   /** 取色专用掩码（base64 PNG，与 canvas 同尺寸）。与 maskPng 分开传：
    *  「文字掩码精准擦除」关着时 maskPng 不发，但自动取色仍需要模型轮廓。 */
@@ -131,6 +135,9 @@ export const eraseTextInCanvasViaBackend = async (
     form.append('ink_mask', options.inkMaskPng);
   }
   if (options.wantInk) form.append('want_ink', '1');
+  // 显式「只为取色」：只有这种请求允许后端在没有掩码时自己跑 CTD（2.4s/次）。
+  // 普通擦除请求即便带 want_ink 也不会触发，否则每次擦除凭空多两秒多。
+  if (options.measureOnly) form.append('measure_only', '1');
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);

@@ -557,10 +557,15 @@ def erase():
       - mask: 可选，/detect 返回的 text_mask（base64 PNG）。形状必须与上传的
         裁剪图一致（前端用同一坐标裁图和掩码）。后端把它与洞检测结果取并集：
         洞检测保细微处（省略号、小注音），掩码保彩色字/极性难例
+      - ink_mask: 可选，**只用于取色**的同一份掩码（形状同上），绝不参与擦除
+      - want_ink: 可选，希望顺带返回实测墨色（有掩码时才有得量）
+      - measure_only: 可选，显式声明「这次只为取色」。**只有带它时**后端才会在
+        没有掩码的情况下自己跑 comic-text-detector（2.4s/次），普通擦除请求永远
+        不会触发逐 ROI 推理
 
     返回：image/png 二进制（与原图同尺寸）；失败返回 JSON {success:false,error}
 
-    顺带取色（不额外花时间：文字掩码本来就要算）——擦除时量到的原文墨色 / 底色
+    顺带取色（不额外花时间：取色掩码本来就在手上）——擦除时量到的原文墨色 / 底色
     放在响应头里（没有文字时这些头不出现）：
       - X-Text-Color: '#rrggbb' 原文墨色（嵌字可直接沿用）
       - X-Bg-Color:   '#rrggbb' 文字所在底色
@@ -610,10 +615,17 @@ def erase():
                 print(f'[erase] invalid ink_mask ignored: '
                       f'{type(e).__name__}: {e}')
 
-        # 自动取色：连取色掩码都没有（旧会话的框 / 手画的框）时，后端自己对
-        # 这段 ROI 跑一次 comic-text-detector。只对 want_ink 请求做；**结果只
-        # 用于取色**，绝不并进擦除掩码。
-        if ink_mask is None and request.form.get('want_ink') in ('1', 'true', 'yes'):
+        # 自动取色：连取色掩码都没有（旧会话的框 / 手画的框）时，后端可以自己
+        # 对这段 ROI 跑一次 comic-text-detector 补一份。**结果只用于取色**，绝
+        # 不并进擦除掩码。
+        #
+        # 只对显式的 `measure_only` 请求做（前端只有「后台补色」那一路会发）：
+        # CTD 是 1024x1024 的 ONNX 前向，实测 2.4s/次，而且与 ROI 大小无关。
+        # 普通擦除请求也带 want_ink（合成器第一帧就想把墨色一起拿回来），若在这里
+        # 补推理，每次擦除都会凭空多 2.4s —— 取色是增强功能，绝不能拖慢擦除。
+        want_ink = request.form.get('want_ink') in ('1', 'true', 'yes')
+        measure_only = request.form.get('measure_only') in ('1', 'true', 'yes')
+        if ink_mask is None and want_ink and measure_only:
             try:
                 ink_mask = comic_text_seg.detect_text_mask(img)
             except Exception as e:

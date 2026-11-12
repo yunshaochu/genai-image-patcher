@@ -319,13 +319,17 @@ export const eraseRegionRoi = async (
      *  擦除完全走洞检测；自动取色要的那份掩码走 `wantInk` / `ink_mask`，
      *  两者互不影响。默认 false。 */
     useTextMask?: boolean;
-    /** 这一趟是为了自动取色（后端据此在缺掩码时自跑 CTD 补掩码）。翻译前的
-     *  批量预擦除不需要取色，别让它多花一次模型推理。 */
+    /** 这一趟想要墨色：有掩码（mask / ink_mask）时后端顺手量出来带回去，没有就
+     *  只做擦除。**不许诺**后端替你补做模型推理 —— 那要 measureOnly。 */
     wantInk?: boolean;
+    /** 这一趟只为取色（丢弃画面）：允许后端在没有掩码时自跑 comic-text-detector
+     *  补一份（实测 2.4s/次，与 ROI 大小无关）。只有后台补色用它，普通擦除绝不
+     *  能带 —— 否则每次擦除凭空多两秒多。见 server/app.py 的 /erase。 */
+    measureOnly?: boolean;
   }
 ): Promise<ErasedRoi> => {
   const { imgW, imgH, contextBubbles, pythonBackendUrl,
-    useTextMask = false, wantInk = false } = options;
+    useTextMask = false, wantInk = false, measureOnly = false } = options;
   // 被气泡框包住的文字一律按「泡内文字」处理：它的底色就是那层泡底，而 free
   // 模式会把整块泡底也当成「文字」擦掉（实测整块泡底被抹平、白字反而留下）——
   // 检测把锯齿状/异形气泡里的文字标成 text_free 时就会走到那一步。
@@ -388,13 +392,18 @@ export const eraseRegionRoi = async (
     maskPng,
     inkMaskPng,
     wantInk,
+    measureOnly,
   });
   return { canvas, roi, stats: outcome.stats };
 };
 
 /** 只量墨色、不改画面：给「检测没给色、也没走过擦除」的框做后台补色。
  *  复用 eraseRegionRoi 的 ROI / 掩码对齐逻辑，结果 canvas 直接丢弃。
- *  后端不在线或量不出来时返回 undefined，调用方保持黑字白边。 */
+ *  后端不在线或量不出来时返回 undefined，调用方保持黑字白边。
+ *
+ *  measureOnly: 这一路是唯一允许后端「没有掩码就自己补跑 CTD」的入口（手画框 /
+ *  旧会话的框）。它慢（2.4s/次），所以只在后台跑、而且同一个几何只跑一次
+ *  （useMangaEditor 的 inkFetchRef），绝不阻塞首帧合成。 */
 export const measureRegionInk = async (
   source: CanvasImageSource,
   region: Region,
@@ -410,6 +419,7 @@ export const measureRegionInk = async (
   const { stats } = await eraseRegionRoi(source, region, {
     ...options,
     wantInk: true,
+    measureOnly: true,
   });
   return stats?.textColor;
 };
@@ -842,7 +852,8 @@ export const compositeRegionPatch = async (
           contextBubbles,
           pythonBackendUrl,
           useTextMask,
-          // 自动取色开着时，即使本框没有检测掩码也让后端自己补一份。
+          // 自动取色开着就顺便带走墨色 —— 但只有手上真有掩码时才量得到；缺掩码
+          // 的框（手画 / 旧会话）不在这里补推理，交给首帧之后的后台补色。
           wantInk: !!autoTextColor,
         });
         // 编码成 WebP（见 ERASE_IMAGE_TYPE）：这份 ROI 只算一次、之后被反复重画，

@@ -368,13 +368,27 @@ def _inpaint_holes(bgr_roi, gray, R, dl, rad, text_mask=None, ink_mask=None):
     # R 足够平坦（纯白/纯黑泡底）时掩码直接平铺 R 中位色，不扩散：TELEA 的
     # 采样带里有暗像素时会把灰色晕进填充区 —— 文字在窄气泡里几乎顶到描边，
     # 四角离描边最近，实测填出四团灰痕。平坦底色下中位色就是正确答案。
+    #
+    # 判据不看 have_mask：底色平不平是图像自身的属性，与掩码来自模型还是洞检测
+    # 无关。反过来，把它锁在 have_mask 上代价极大：关掉「文字掩码精准擦除」后每
+    # 一帧都要走全量 TELEA —— 实测 400x600、掩码占 3~4% 就要 80~100 ms，整页尺寸
+    # 的框直接到秒级（gen_free_text 单次 14.8s），而平铺只是一次 numpy 赋值。
+    zone = m & ~ext
     flat_fill = None
-    if have_mask and R is not None and R.any() and float(gray[R].std()) < 12:
-        flat_fill = np.median(bgr_roi[R], axis=0)
+    if (zone.any() and R is not None and R.any()
+            and float(gray[R].std()) < 12
+            # R 顺着渐变爬到泡外、吞掉大半 ROI 时它的中位色不再代表泡底
+            and R.sum() <= 0.85 * gray.size):
+        # 洞必须被这层平坦底色包住：zone 紧邻的那一圈以 R 为主时，平铺才是「填回
+        # 底色」；否则是「拿别处的颜色盖住一块画面」（free 模式在渐变/画面上偶尔
+        # 会把整片异色区域判成文字），那种情况宁可交回 TELEA，也别留下硬边色块。
+        ring = cv2.dilate(zone.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        ring &= ~zone
+        if not ring.any() or (ring & R).sum() >= 0.6 * ring.sum():
+            flat_fill = np.median(bgr_roi[R], axis=0)
 
     if flat_fill is not None:
         roi = bgr_roi.copy()
-        zone = m & ~ext
         roi[zone] = flat_fill
         rest = m & ~zone
         if rest.any():
